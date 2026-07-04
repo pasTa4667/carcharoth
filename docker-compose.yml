@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: carcharoth
+      POSTGRES_PASSWORD: carcharoth
+      POSTGRES_DB: carcharoth
+    ports:
+      - "5432:5432"
+    volumes:
+      - carcharoth_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carcharoth -d carcharoth"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  carcharoth_pgdata:

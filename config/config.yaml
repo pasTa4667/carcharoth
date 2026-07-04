@@ -1,0 +1,25 @@
+# Carcharoth runtime configuration.
+# Secrets (API keys, database URL) live in .env, not here.
+
+watchlist:
+  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA]
+
+engine:
+  tick_interval_seconds: 60
+  bar_timeframe_minutes: 5
+
+strategy:
+  name: mean_reversion
+  params:
+    lookback: 20        # bars used for rolling mean/std
+    entry_z: -2.0       # buy when price is this many std devs below the mean
+    exit_z: -0.5        # sell (exit) once the z-score reverts above this
+
+risk:
+  max_position_notional: 1000.0   # hard cap per position, in account currency
+  max_position_pct_equity: 0.10   # per-position cap as fraction of equity
+  max_total_exposure_pct: 0.50    # cap on sum of all position values vs equity
+  max_open_positions: 5
+  buying_power_buffer: 0.95       # only ever use this fraction of buying power
+  slippage_buffer: 0.02           # assume fills up to this much worse than quote
+  max_daily_loss_pct: 0.03        # stop opening positions after this daily drawdown
