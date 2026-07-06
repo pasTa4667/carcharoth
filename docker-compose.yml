@@ -1,4 +1,19 @@
 services:
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY}
+      APCA_API_BASE_URL: ${APCA_API_BASE_URL:-https://paper-api.alpaca.markets/v2}
+      DATABASE_URL: postgresql+psycopg://carcharoth:carcharoth@db:5432/carcharoth
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    restart: unless-stopped
+
   db:
     image: postgres:16-alpine
     environment:
