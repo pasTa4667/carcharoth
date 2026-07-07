@@ -8,14 +8,14 @@ from carcharoth.domain.models import AccountState, Bar, Position, Quote
 BASE_TIME = datetime(2026, 7, 1, 15, 0, tzinfo=UTC)
 
 
-def make_bars(prices: Sequence[float], symbol: str = "AAPL") -> list[Bar]:
+def make_bars(prices: Sequence[float], symbol: str = "AAPL", hl_range: float = 0.0) -> list[Bar]:
     return [
         Bar(
             symbol=symbol,
             timestamp=BASE_TIME + timedelta(minutes=5 * i),
             open=price,
-            high=price,
-            low=price,
+            high=price + hl_range / 2,
+            low=price - hl_range / 2,
             close=price,
             volume=1000,
         )

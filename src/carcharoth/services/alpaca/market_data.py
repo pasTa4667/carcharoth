@@ -12,8 +12,9 @@ from carcharoth.interfaces.market_data import MarketDataService
 from carcharoth.services.alpaca.mappers import to_bar, to_quote
 from carcharoth.services.cache.noop import NoOpCache
 
-# Fetch a generous window so weekends/closed hours still yield enough bars.
-_WINDOW_MULTIPLIER = 5
+# Fetch a generous window so weekends/closed hours still yield enough bars;
+# 8x a 205-bar 5-minute lookback spans ~5.7 days, covering a 3-day weekend.
+_WINDOW_MULTIPLIER = 8
 _BARS_CACHE_TTL_SECONDS = 30.0
 
 

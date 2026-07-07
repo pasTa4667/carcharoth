@@ -2,6 +2,11 @@
 
 Buys when the current price is far below the rolling mean of recent closes
 (z-score <= entry_z) and exits once the price reverts (z-score >= exit_z).
+
+Entries are additionally gated by a trend filter (price must be above a long
+EMA) and an RSI filter (RSI must confirm selling exhaustion). Positions carry
+an ATR-based stop loss: exit when price drops more than atr_stop_multiplier
+ATRs below the average entry price.
 """
 
 from datetime import UTC, datetime
@@ -10,6 +15,7 @@ import pandas as pd
 
 from carcharoth.domain.models import Bar, Position, Quote, Signal, SignalAction
 from carcharoth.interfaces.strategy import Strategy
+from carcharoth.strategies import indicators
 
 _MIN_STD = 1e-9
 _LOOKBACK_PADDING = 5
@@ -23,17 +29,49 @@ class MeanReversionStrategy(Strategy):
         lookback: int = 20,
         entry_z: float = -2.0,
         exit_z: float = -0.5,
+        trend_ema_period: int = 200,
+        rsi_period: int = 14,
+        rsi_entry_max: float = 35.0,
+        atr_period: int = 14,
+        atr_stop_multiplier: float = 2.5,
     ) -> None:
         if lookback < 2:
             raise ValueError("lookback must be >= 2")
         if exit_z <= entry_z:
             raise ValueError("exit_z must be greater than entry_z")
+        if trend_ema_period < 2:
+            raise ValueError("trend_ema_period must be >= 2")
+        if rsi_period < 2:
+            raise ValueError("rsi_period must be >= 2")
+        if not 0 < rsi_entry_max < 100:
+            raise ValueError("rsi_entry_max must be between 0 and 100")
+        if atr_period < 1:
+            raise ValueError("atr_period must be >= 1")
+        if atr_stop_multiplier <= 0:
+            raise ValueError("atr_stop_multiplier must be > 0")
         self._lookback = lookback
         self._entry_z = entry_z
         self._exit_z = exit_z
+        self._trend_ema_period = trend_ema_period
+        self._rsi_period = rsi_period
+        self._rsi_entry_max = rsi_entry_max
+        self._atr_period = atr_period
+        self._atr_stop_multiplier = atr_stop_multiplier
 
     def required_lookback(self) -> int:
-        return self._lookback + _LOOKBACK_PADDING
+        # TA-Lib's EMA is SMA-seeded, so at ~trend_ema_period bars the value is
+        # an approximation of the steady-state EMA. Requesting several times the
+        # period for warm-up is impractical at intraday resolution; the filter
+        # is a coarse regime gate, so this trade-off is accepted.
+        return (
+            max(
+                self._lookback,
+                self._trend_ema_period,
+                self._rsi_period + 1,
+                self._atr_period + 1,
+            )
+            + _LOOKBACK_PADDING
+        )
 
     def evaluate(
         self,
@@ -43,6 +81,32 @@ class MeanReversionStrategy(Strategy):
         position: Position | None,
     ) -> Signal:
         now = datetime.now(UTC)
+        if not bars:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"insufficient history (0/{self._lookback} bars)",
+                {},
+                now,
+            )
+
+        price = quote.mid if quote is not None else bars[-1].close
+
+        # Stop loss comes before every history gate: an open position must be
+        # protectable even when there are too few bars for the other signals.
+        atr_value = indicators.atr(bars, self._atr_period) if position is not None else None
+        if position is not None and atr_value is not None:
+            stop_price = position.avg_entry_price - self._atr_stop_multiplier * atr_value
+            if price < stop_price:
+                return self._signal(
+                    symbol,
+                    SignalAction.SELL,
+                    f"stop loss: price {price:.2f} < entry {position.avg_entry_price:.2f}"
+                    f" - {self._atr_stop_multiplier} x ATR {atr_value:.2f}",
+                    {"price": price, "atr": atr_value, "stop_price": stop_price},
+                    now,
+                )
+
         if len(bars) < self._lookback:
             return self._signal(
                 symbol,
@@ -55,7 +119,6 @@ class MeanReversionStrategy(Strategy):
         closes = pd.Series([bar.close for bar in bars[-self._lookback :]])
         mean = float(closes.mean())
         std = float(closes.std())
-        price = quote.mid if quote is not None else float(closes.iloc[-1])
 
         if std < _MIN_STD:
             return self._signal(
@@ -63,19 +126,89 @@ class MeanReversionStrategy(Strategy):
             )
 
         zscore = (price - mean) / std
-        indicators = {"zscore": zscore, "mean": mean, "std": std, "price": price}
+        indicator_values = {"zscore": zscore, "mean": mean, "std": std, "price": price}
+        if position is not None and atr_value is not None:
+            indicator_values["atr"] = atr_value
+            indicator_values["stop_price"] = (
+                position.avg_entry_price - self._atr_stop_multiplier * atr_value
+            )
 
-        if position is None and zscore <= self._entry_z:
-            action = SignalAction.BUY
-            reason = f"price {zscore:.2f} std devs below {self._lookback}-bar mean"
-        elif position is not None and zscore >= self._exit_z:
-            action = SignalAction.SELL
-            reason = f"mean reverted (z={zscore:.2f} >= {self._exit_z}), exiting"
-        else:
-            action = SignalAction.HOLD
-            reason = f"z={zscore:.2f} within thresholds"
+        if position is not None:
+            if zscore >= self._exit_z:
+                action = SignalAction.SELL
+                reason = f"mean reverted (z={zscore:.2f} >= {self._exit_z}), exiting"
+            else:
+                action = SignalAction.HOLD
+                reason = f"z={zscore:.2f} within thresholds"
+            return self._signal(symbol, action, reason, indicator_values, now)
 
-        return self._signal(symbol, action, reason, indicators, now)
+        if zscore > self._entry_z:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"z={zscore:.2f} within thresholds",
+                indicator_values,
+                now,
+            )
+        return self._evaluate_entry(symbol, bars, price, zscore, indicator_values, now)
+
+    def _evaluate_entry(
+        self,
+        symbol: str,
+        bars: list[Bar],
+        price: float,
+        zscore: float,
+        indicator_values: dict[str, float],
+        now: datetime,
+    ) -> Signal:
+        """Gate a z-score entry signal through the trend and RSI filters."""
+        ema_value = indicators.ema(bars, self._trend_ema_period)
+        if ema_value is None:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"entry blocked: insufficient history for trend EMA({self._trend_ema_period})",
+                indicator_values,
+                now,
+            )
+        indicator_values["trend_ema"] = ema_value
+        if price <= ema_value:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"entry blocked: price {price:.2f} below"
+                f" EMA({self._trend_ema_period}) {ema_value:.2f} (downtrend)",
+                indicator_values,
+                now,
+            )
+
+        rsi_value = indicators.rsi(bars, self._rsi_period)
+        if rsi_value is None:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"entry blocked: insufficient history for RSI({self._rsi_period})",
+                indicator_values,
+                now,
+            )
+        indicator_values["rsi"] = rsi_value
+        if rsi_value >= self._rsi_entry_max:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"entry blocked: RSI {rsi_value:.1f} >= {self._rsi_entry_max}",
+                indicator_values,
+                now,
+            )
+
+        return self._signal(
+            symbol,
+            SignalAction.BUY,
+            f"price {zscore:.2f} std devs below {self._lookback}-bar mean,"
+            f" uptrend (EMA{self._trend_ema_period}), RSI {rsi_value:.1f}",
+            indicator_values,
+            now,
+        )
 
     def _signal(
         self,
