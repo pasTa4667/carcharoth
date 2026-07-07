@@ -13,3 +13,8 @@ class OrderExecutor(ABC):
     @abstractmethod
     def get_order(self, broker_order_id: str) -> OrderResult:
         """Fetch the current state of an order (used for fill reconciliation)."""
+
+    @abstractmethod
+    def cancel_order(self, broker_order_id: str) -> None:
+        """Request cancellation of an open order (async at the broker).
+        Raises BrokerError on failure."""

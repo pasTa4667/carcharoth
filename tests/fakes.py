@@ -5,9 +5,11 @@ from datetime import datetime
 from uuid import uuid4
 
 from carcharoth.domain.models import (
+    TERMINAL_ORDER_STATUSES,
     AccountState,
     Bar,
     MarketSnapshot,
+    OpenOrder,
     OrderRequest,
     OrderResult,
     OrderStatus,
@@ -109,10 +111,17 @@ class FakeRiskManager(RiskManager):
 class FakeOrderExecutor(OrderExecutor):
     def __init__(self, order_states: dict[str, OrderResult] | None = None) -> None:
         self.submitted: list[OrderRequest] = []
+        self.canceled: list[str] = []
         #: broker_order_id -> result returned by get_order (reconciliation)
         self.order_states = order_states or {}
+        #: when set, submit raises it instead of accepting the order
+        self.submit_error: Exception | None = None
+        #: when set, cancel_order raises it
+        self.cancel_error: Exception | None = None
 
     def submit(self, request: OrderRequest) -> OrderResult:
+        if self.submit_error is not None:
+            raise self.submit_error
         self.submitted.append(request)
         return OrderResult(
             broker_order_id=uuid4().hex,
@@ -129,6 +138,11 @@ class FakeOrderExecutor(OrderExecutor):
 
     def get_order(self, broker_order_id: str) -> OrderResult:
         return self.order_states[broker_order_id]
+
+    def cancel_order(self, broker_order_id: str) -> None:
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        self.canceled.append(broker_order_id)
 
 
 class FakeClock(MarketClock):
@@ -162,12 +176,17 @@ class InMemoryOrderRepository(OrderRepository):
         self.rows[result.broker_order_id] = result
 
     def find_open_broker_order_ids(self) -> list[str]:
-        from carcharoth.domain.models import TERMINAL_ORDER_STATUSES
-
         return [
             broker_id
             for broker_id, row in self.rows.items()
             if row.status not in TERMINAL_ORDER_STATUSES
+        ]
+
+    def find_open_orders(self, symbol: str) -> list[OpenOrder]:
+        return [
+            OpenOrder(broker_order_id=row.broker_order_id, symbol=row.symbol, side=row.side)
+            for row in self.rows.values()
+            if row.symbol == symbol and row.status not in TERMINAL_ORDER_STATUSES
         ]
 
 

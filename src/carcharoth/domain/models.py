@@ -122,6 +122,16 @@ class OrderRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class OpenOrder:
+    """A not-yet-terminal order as recorded locally; used to detect conflicts
+    before submitting a new order for the same symbol."""
+
+    broker_order_id: str
+    symbol: str
+    side: Side
+
+
+@dataclass(frozen=True, slots=True)
 class OrderResult:
     broker_order_id: str
     client_order_id: str | None

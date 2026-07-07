@@ -1,9 +1,11 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from carcharoth.domain.errors import BrokerError, OrderConflictError
 from carcharoth.domain.models import (
     MarketSnapshot,
     OrderStatus,
+    Side,
     Signal,
     SignalAction,
 )
@@ -36,6 +38,10 @@ def make_snapshot(symbols: list[str] = SYMBOLS) -> MarketSnapshot:
 
 def buy_signal(symbol: str) -> Signal:
     return Signal(symbol=symbol, action=SignalAction.BUY, strategy="fake", reason="test buy")
+
+
+def sell_signal(symbol: str) -> Signal:
+    return Signal(symbol=symbol, action=SignalAction.SELL, strategy="fake", reason="test sell")
 
 
 def build_engine(
@@ -156,3 +162,81 @@ def test_fill_reconciliation_records_trade_once() -> None:
 
     engine.tick()  # reconciliation is idempotent
     assert len(trades.fills) == 1
+
+
+def test_same_side_open_order_skips_duplicate_submit() -> None:
+    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
+    engine, executor, _, orders, _, _ = build_engine(strategy)
+
+    engine.tick()
+    engine.tick()  # BUY still open, BUY signals again
+
+    assert len(executor.submitted) == 1
+    assert executor.canceled == []
+    assert len(orders.rows) == 1
+
+
+def test_opposite_side_open_order_is_canceled_and_submit_skipped() -> None:
+    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
+    engine, executor, _, orders, _, _ = build_engine(strategy)
+
+    engine.tick()
+    broker_order_id = next(iter(orders.rows))
+    executor.order_states[broker_order_id] = orders.rows[broker_order_id]  # still open
+
+    strategy._signals["AAPL"] = sell_signal("AAPL")
+    engine.tick()
+
+    assert executor.canceled == [broker_order_id]
+    assert len(executor.submitted) == 1  # only the original BUY
+
+
+def test_order_placed_after_conflicting_order_cancels() -> None:
+    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
+    engine, executor, _, orders, _, _ = build_engine(strategy)
+
+    engine.tick()
+    broker_order_id = next(iter(orders.rows))
+    executor.order_states[broker_order_id] = orders.rows[broker_order_id]
+
+    strategy._signals["AAPL"] = sell_signal("AAPL")
+    engine.tick()  # cancel requested, no submit yet
+    assert len(executor.submitted) == 1
+
+    executor.order_states[broker_order_id] = replace(
+        orders.rows[broker_order_id], status=OrderStatus.CANCELED
+    )
+    engine.tick()  # reconciliation sees the cancel, SELL goes through
+
+    assert len(executor.submitted) == 2
+    assert executor.submitted[1].side is Side.SELL
+
+
+def test_cancel_failure_still_skips_submit() -> None:
+    strategy = FakeStrategy({"AAPL": buy_signal("AAPL"), "MSFT": buy_signal("MSFT")})
+    engine, executor, _, orders, _, _ = build_engine(strategy)
+
+    engine.tick()
+    for broker_order_id, row in orders.rows.items():
+        executor.order_states[broker_order_id] = row  # both stay open
+
+    strategy._signals["AAPL"] = sell_signal("AAPL")
+    executor.cancel_error = BrokerError("cancel failed", retryable=True)
+    engine.tick()
+
+    assert executor.canceled == []
+    assert len(executor.submitted) == 2  # no new orders beyond the two original BUYs
+    assert strategy.evaluated == SYMBOLS * 2  # MSFT still processed
+
+
+def test_broker_wash_trade_rejection_is_swallowed() -> None:
+    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
+    executor = FakeOrderExecutor()
+    executor.submit_error = OrderConflictError("wash-trade rejection for AAPL")
+    engine, executor, _, orders, _, _ = build_engine(strategy, executor=executor)
+
+    engine.tick()
+
+    assert executor.submitted == []
+    assert orders.rows == {}
+    assert strategy.evaluated == SYMBOLS  # tick completed, MSFT still evaluated

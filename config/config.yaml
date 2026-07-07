@@ -2,7 +2,7 @@
 # Secrets (API keys, database URL) live in .env, not here.
 
 watchlist:
-  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA]
+  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA, JPM, KO, TSLA, SPCX, AMD]
 
 engine:
   tick_interval_seconds: 60

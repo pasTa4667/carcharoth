@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
+    OpenOrder,
     OrderRequest,
     OrderResult,
     Position,
     RiskDecision,
+    Side,
     Signal,
 )
 from carcharoth.persistence.orm import (
@@ -43,6 +45,9 @@ class OrderRepository(ABC):
 
     @abstractmethod
     def find_open_broker_order_ids(self) -> list[str]: ...
+
+    @abstractmethod
+    def find_open_orders(self, symbol: str) -> list[OpenOrder]: ...
 
 
 class TradeRepository(ABC):
@@ -126,6 +131,19 @@ class SqlAlchemyOrderRepository(OrderRepository):
                     select(OrderRow.broker_order_id).where(OrderRow.status.not_in(terminal))
                 )
             )
+
+    def find_open_orders(self, symbol: str) -> list[OpenOrder]:
+        terminal = [status.value for status in TERMINAL_ORDER_STATUSES]
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(OrderRow.broker_order_id, OrderRow.side).where(
+                    OrderRow.symbol == symbol, OrderRow.status.not_in(terminal)
+                )
+            )
+            return [
+                OpenOrder(broker_order_id=broker_order_id, symbol=symbol, side=Side(side))
+                for broker_order_id, side in rows
+            ]
 
 
 class SqlAlchemyTradeRepository(TradeRepository):

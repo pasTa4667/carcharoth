@@ -19,3 +19,8 @@ class BrokerError(ServiceError):
     def __init__(self, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+class OrderConflictError(BrokerError):
+    """Broker rejected the order because an opposite-side order is already
+    open for the symbol (Alpaca wash-trade protection, code 40310000)."""
