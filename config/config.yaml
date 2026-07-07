@@ -2,7 +2,7 @@
 # Secrets (API keys, database URL) live in .env, not here.
 
 watchlist:
-  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA, JPM, KO, TSLA, SPCX, AMD]
+  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA, JPM, KO, TSLA, SPCX, AMD, T, AAL, INTC, SMCI, PFE]
 
 engine:
   tick_interval_seconds: 60
@@ -12,13 +12,13 @@ strategy:
   name: mean_reversion
   params:
     lookback: 20              # bars used for rolling mean/std
-    entry_z: -2.0             # buy when price is this many std devs below the mean
-    exit_z: -0.5              # sell (exit) once the z-score reverts above this
-    trend_ema_period: 200     # only buy when price is above this EMA (trend filter)
+    entry_z: -1.5             # buy when price is this many std devs below the mean
+    exit_z: 0.0               # sell (exit) once the z-score reverts to/above the mean
+    trend_ema_period: 50      # only buy when the rolling mean is above this EMA (trend filter)
     rsi_period: 14
-    rsi_entry_max: 35.0       # only buy when RSI is below this (oversold confirmation)
+    rsi_entry_max: 45.0       # only buy when RSI is below this (oversold confirmation)
     atr_period: 14
-    atr_stop_multiplier: 2.5  # exit when price < avg_entry - this * ATR
+    atr_stop_multiplier: 3.5  # exit when price < avg_entry - this * ATR
 
 risk:
   max_position_notional: 1000.0   # hard cap per position, in account currency

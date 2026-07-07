@@ -3,8 +3,11 @@
 Buys when the current price is far below the rolling mean of recent closes
 (z-score <= entry_z) and exits once the price reverts (z-score >= exit_z).
 
-Entries are additionally gated by a trend filter (price must be above a long
-EMA) and an RSI filter (RSI must confirm selling exhaustion). Positions carry
+Entries are additionally gated by a trend filter (the rolling mean must be
+above a long EMA — the dip is judged against the pre-dip anchor, since the
+dipped price itself is below any trend line at exactly the moment a dip
+signal fires) and an RSI filter (RSI must confirm selling exhaustion).
+Positions carry
 an ATR-based stop loss: exit when price drops more than atr_stop_multiplier
 ATRs below the average entry price.
 """
@@ -150,13 +153,13 @@ class MeanReversionStrategy(Strategy):
                 indicator_values,
                 now,
             )
-        return self._evaluate_entry(symbol, bars, price, zscore, indicator_values, now)
+        return self._evaluate_entry(symbol, bars, mean, zscore, indicator_values, now)
 
     def _evaluate_entry(
         self,
         symbol: str,
         bars: list[Bar],
-        price: float,
+        mean: float,
         zscore: float,
         indicator_values: dict[str, float],
         now: datetime,
@@ -172,11 +175,14 @@ class MeanReversionStrategy(Strategy):
                 now,
             )
         indicator_values["trend_ema"] = ema_value
-        if price <= ema_value:
+        # Compare the rolling mean, not the dipped price: a -2 sigma dip sits
+        # below any trend line by construction, so gating on price would veto
+        # exactly the entries the strategy is built to take.
+        if mean <= ema_value:
             return self._signal(
                 symbol,
                 SignalAction.HOLD,
-                f"entry blocked: price {price:.2f} below"
+                f"entry blocked: {self._lookback}-bar mean {mean:.2f} below"
                 f" EMA({self._trend_ema_period}) {ema_value:.2f} (downtrend)",
                 indicator_values,
                 now,

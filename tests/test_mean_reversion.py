@@ -9,9 +9,14 @@ from tests.factories import make_bars, make_position, make_quote
 
 STABLE = [100.0, 101.0, 99.0, 100.0, 101.0, 99.0, 100.0, 101.0, 99.0, 100.0] * 2
 
-# Long-ago cheap bars keep the trend EMA below the dipped price, so the final
-# dip reads as a pullback within an uptrend rather than a downtrend.
-DIP_IN_UPTREND = [50.0] * 10 + [*STABLE[:-1], 90.0]
+# Long-ago cheaper bars keep the trend EMA (~94.7) below the recent rolling
+# mean (~99.5) but above the dipped price (90): a pullback within an uptrend,
+# in the shape it takes live — the dip itself pierces the trend line.
+DIP_IN_UPTREND = [85.0] * 10 + [*STABLE[:-1], 90.0]
+
+# Long-ago expensive bars keep the trend EMA above the recent rolling mean, so
+# the final dip reads as a continuation of a downtrend.
+DIP_IN_DOWNTREND = [200.0] * 10 + [*STABLE[:-1], 90.0]
 
 
 def make_strategy(**overrides: Any) -> MeanReversionStrategy:
@@ -112,11 +117,22 @@ def test_stop_loss_works_with_short_history() -> None:
 
 
 def test_trend_filter_blocks_entry() -> None:
-    strategy = make_strategy(trend_ema_period=5)
-    bars = make_bars([*STABLE[:-1], 80.0])
-    signal = strategy.evaluate("AAPL", bars, make_quote(80.0), position=None)
+    strategy = make_strategy()
+    bars = make_bars(DIP_IN_DOWNTREND)
+    signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
     assert signal.action is SignalAction.HOLD
     assert "below EMA" in signal.reason
+
+
+def test_trend_filter_judges_mean_not_dipped_price() -> None:
+    # The dipped price sits below the trend EMA (that is what a dip is), but
+    # the pre-dip mean is above it, so the entry must not be blocked.
+    strategy = make_strategy()
+    bars = make_bars(DIP_IN_UPTREND)
+    signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
+    assert signal.indicators["price"] < signal.indicators["trend_ema"]
+    assert signal.indicators["mean"] > signal.indicators["trend_ema"]
+    assert signal.action is SignalAction.BUY
 
 
 def test_rsi_filter_blocks_entry() -> None:
