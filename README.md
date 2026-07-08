@@ -52,7 +52,7 @@ uv sync
 # 2. Configure secrets — fill in your Alpaca paper API key + secret
 cp .env.example .env
 
-# 3. Start PostgreSQL
+# 3. Start PostgreSQL (+ Grafana)
 docker compose up -d
 
 # 4. Create the schema
@@ -67,7 +67,7 @@ while it is closed, and shuts down cleanly on Ctrl-C / SIGTERM.
 
 ## Configuration
 
-- **Secrets** (`.env`, gitignored): Alpaca key/secret, database URL. See `.env.example`.
+- **Secrets** (`.env`, gitignored): Alpaca key/secret, database URL, Grafana credentials. See `.env.example`.
 - **Everything else** (`config/config.yaml`): watchlist symbols, tick interval, bar timeframe,
   strategy name + parameters, risk limits. Validated with pydantic at startup.
 
@@ -81,6 +81,53 @@ Written to `logs/` (rotating, 10 MB × 5):
 | `errors.log` | every error/exception |
 | `trades.log` | order submissions and fills |
 | `decisions.log` | every signal + risk verdict incl. indicator values |
+
+## Monitoring (Grafana)
+
+Grafana runs as a Docker service and reads trading history from PostgreSQL via SQL panels.
+The datasource and a starter dashboard are provisioned from `grafana/provisioning/`.
+
+```bash
+# start the full stack (app, postgres, grafana)
+docker compose up -d
+
+# if the postgres volume already existed before grafana was added, create the
+# read-only DB user once (password must match GRAFANA_DB_PASSWORD in .env)
+./scripts/sync-grafana-db-user.sh
+
+# open grafana
+open http://localhost:3333
+```
+
+Log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`. The provisioned
+dashboard is **Dashboards → Carcharoth → Trading Overview** — positions, PnL, signals, trades,
+and open orders.
+
+| `.env` variable | Purpose |
+|---|---|
+| `GRAFANA_ADMIN_USER` | Grafana UI login (default: `admin`) |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana UI password — pick any strong value |
+| `GRAFANA_DB_PASSWORD` | Password for the `grafana_reader` Postgres role |
+
+Grafana connects as `grafana_reader`, a read-only Postgres user. On a **fresh** database volume
+the init script in `docker/postgres/init-grafana-reader.sql` creates that user automatically; on
+an **existing** volume run `./scripts/sync-grafana-db-user.sh` so the role and password match
+`.env`.
+
+To verify Postgres has data:
+
+```bash
+docker compose exec db psql -U carcharoth -d carcharoth -c "\dt"
+docker compose exec db psql -U carcharoth -d carcharoth -c \
+  "SELECT 'strategy_decisions' AS t, COUNT(*) FROM strategy_decisions;"
+```
+
+If panels show no data but the database has rows, test the datasource under
+**Connections → Data sources → Carcharoth Postgres → Save & test**, then re-run the sync script
+and restart grafana: `docker compose restart grafana`.
+
+Dashboard JSON lives in `grafana/provisioning/dashboards/trading-overview.json`. Edit panels in
+the UI, then export and commit if you want changes versioned.
 
 ## Development
 

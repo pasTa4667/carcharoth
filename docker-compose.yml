@@ -24,11 +24,32 @@ services:
       - "5432:5432"
     volumes:
       - carcharoth_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-grafana-reader.sql:/docker-entrypoint-initdb.d/02-grafana-reader.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U carcharoth -d carcharoth"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3333:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: ""
+      # lets provisioning YAML reference env vars
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana_reader}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped 
+
 volumes:
   carcharoth_pgdata:
+  grafana_data:
