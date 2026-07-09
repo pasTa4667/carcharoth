@@ -8,10 +8,12 @@ from collections.abc import Callable
 from typing import Any
 
 from carcharoth.interfaces.strategy import Strategy
+from carcharoth.strategies.ema_vwap import EmaVwapStrategy
 from carcharoth.strategies.mean_reversion import MeanReversionStrategy
 
 STRATEGIES: dict[str, Callable[..., Strategy]] = {
     MeanReversionStrategy.name: MeanReversionStrategy,
+    EmaVwapStrategy.name: EmaVwapStrategy,
 }
 
 

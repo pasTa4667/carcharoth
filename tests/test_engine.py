@@ -72,9 +72,29 @@ def build_engine(
         trades_repo=trades,
         snapshots_repo=snapshots,
         symbols=SYMBOLS,
-        timeframe_minutes=5,
     )
     return engine, executor, decisions, orders, trades, snapshots
+
+
+def test_engine_requests_strategy_declared_bars() -> None:
+    strategy = FakeStrategy({}, lookback=42)
+    market_data = FakeMarketDataService(make_snapshot())
+    engine = TradingEngine(
+        market_data=market_data,
+        account=FakeAccountService(make_account()),
+        strategy=strategy,
+        risk=FakeRiskManager(),
+        executor=FakeOrderExecutor(),
+        decisions_repo=InMemoryStrategyDecisionRepository(),
+        orders_repo=InMemoryOrderRepository(),
+        trades_repo=InMemoryTradeRepository(),
+        snapshots_repo=InMemoryPositionSnapshotRepository(),
+        symbols=SYMBOLS,
+    )
+
+    engine.tick()
+
+    assert market_data.calls == [(SYMBOLS, strategy.required_bars())]
 
 
 def test_approved_buy_submits_exactly_one_order() -> None:

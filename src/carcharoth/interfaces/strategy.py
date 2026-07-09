@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from carcharoth.domain.models import Bar, Position, Quote, Signal
+from carcharoth.domain.models import Bar, BarSpec, Position, Quote, Signal
 
 
 class Strategy(ABC):
@@ -23,5 +23,5 @@ class Strategy(ABC):
         """Return a BUY/SELL/HOLD signal for one symbol."""
 
     @abstractmethod
-    def required_lookback(self) -> int:
-        """Number of bars the strategy needs; the engine requests this many."""
+    def required_bars(self) -> BarSpec:
+        """The bar data (timeframe + lookback) this strategy needs each tick."""

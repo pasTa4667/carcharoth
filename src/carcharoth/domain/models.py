@@ -39,6 +39,46 @@ TERMINAL_ORDER_STATUSES = frozenset(
 )
 
 
+class TimeframeUnit(StrEnum):
+    MINUTE = "minute"
+    DAY = "day"
+
+
+@dataclass(frozen=True, slots=True)
+class Timeframe:
+    """Bar resolution. Daily bars are a distinct unit because providers
+    aggregate them by trading session, not by fixed-minute windows."""
+
+    amount: int
+    unit: TimeframeUnit
+
+    def __post_init__(self) -> None:
+        if self.amount < 1:
+            raise ValueError("timeframe amount must be >= 1")
+        if self.unit is TimeframeUnit.DAY and self.amount != 1:
+            raise ValueError("daily timeframe must have amount 1")
+
+    @classmethod
+    def minutes(cls, amount: int) -> Timeframe:
+        return cls(amount, TimeframeUnit.MINUTE)
+
+    @classmethod
+    def daily(cls) -> Timeframe:
+        return cls(1, TimeframeUnit.DAY)
+
+
+@dataclass(frozen=True, slots=True)
+class BarSpec:
+    """A strategy's bar-data requirement: resolution plus how many bars."""
+
+    timeframe: Timeframe
+    lookback: int
+
+    def __post_init__(self) -> None:
+        if self.lookback < 1:
+            raise ValueError("lookback must be >= 1")
+
+
 @dataclass(frozen=True, slots=True)
 class Bar:
     symbol: str

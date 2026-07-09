@@ -31,7 +31,7 @@ strategy:
     assert config.strategy.params == {"lookback": 30}
     # defaults kick in for omitted sections
     assert config.risk.max_open_positions == 5
-    assert config.engine.bar_timeframe_minutes == 5
+    assert config.engine.tick_interval_seconds == 60
 
 
 def test_empty_watchlist_rejected() -> None:

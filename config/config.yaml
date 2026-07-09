@@ -2,15 +2,15 @@
 # Secrets (API keys, database URL) live in .env, not here.
 
 watchlist:
-  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA, JPM, KO, TSLA, SPCX, AMD, T, AAL, INTC, SMCI, PFE]
+  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA, JPM, KO, AMD, T, AAL, INTC, SMCI, PFE]
 
 engine:
   tick_interval_seconds: 60
-  bar_timeframe_minutes: 5
 
 strategy:
   name: mean_reversion
   params:
+    timeframe_minutes: 5      # bar resolution the strategy evaluates on
     lookback: 20              # bars used for rolling mean/std
     entry_z: -1.5             # buy when price is this many std devs below the mean
     exit_z: 0.0               # sell (exit) once the z-score reverts to/above the mean
@@ -19,6 +19,23 @@ strategy:
     rsi_entry_max: 45.0       # only buy when RSI is below this (oversold confirmation)
     atr_period: 14
     atr_stop_multiplier: 3.5  # exit when price < avg_entry - this * ATR
+    entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
+    flatten_minutes: 15       # force-exit open positions within this window before close
+
+# Alternative: intraday EMA crossover with VWAP bias and ATR exit bracket.
+# Swap the strategy block above for this one to activate it.
+# strategy:
+#   name: ema_vwap
+#   params:
+#     timeframe_minutes: 5           # bar resolution the strategy evaluates on
+#     ema_fast: 9
+#     ema_slow: 21
+#     cross_within_bars: 2           # fast EMA must have crossed above slow within this many bars
+#     atr_period: 14
+#     atr_stop_multiplier: 1.0       # exit when price < avg_entry - this * ATR
+#     atr_take_profit_multiplier: 2.0 # exit when price >= avg_entry + this * ATR
+#     entry_cutoff_minutes: 30       # no new entries within this many minutes of the close
+#     flatten_minutes: 15            # force-exit open positions within this window before close
 
 risk:
   max_position_notional: 1000.0   # hard cap per position, in account currency

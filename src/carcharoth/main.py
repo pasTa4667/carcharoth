@@ -71,7 +71,6 @@ def main() -> None:
         trades_repo=SqlAlchemyTradeRepository(session_factory),
         snapshots_repo=SqlAlchemyPositionSnapshotRepository(session_factory),
         symbols=config.watchlist.symbols,
-        timeframe_minutes=config.engine.bar_timeframe_minutes,
     )
     scheduler = Scheduler(
         engine,

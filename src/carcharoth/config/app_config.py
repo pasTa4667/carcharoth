@@ -13,7 +13,6 @@ class WatchlistConfig(BaseModel):
 
 class EngineConfig(BaseModel):
     tick_interval_seconds: int = Field(default=60, gt=0)
-    bar_timeframe_minutes: int = Field(default=5, gt=0)
 
 
 class StrategyConfig(BaseModel):

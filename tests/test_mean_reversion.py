@@ -1,8 +1,9 @@
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-from carcharoth.domain.models import SignalAction
+from carcharoth.domain.models import SignalAction, Timeframe
 from carcharoth.strategies.mean_reversion import MeanReversionStrategy
 from carcharoth.strategies.registry import build_strategy
 from tests.factories import make_bars, make_position, make_quote
@@ -116,6 +117,35 @@ def test_stop_loss_works_with_short_history() -> None:
     assert "stop loss" in signal.reason
 
 
+def test_end_of_day_flattens_position() -> None:
+    # 20 stable bars ending at 15:50 ET (19:50 UTC on an EDT date), 10 minutes
+    # before the close; the price is inside stop and exit-z thresholds.
+    strategy = make_strategy()
+    bars = make_bars(STABLE, start=datetime(2026, 7, 1, 18, 15, tzinfo=UTC))
+    signal = strategy.evaluate("AAPL", bars, make_quote(99.0), position=make_position())
+    assert signal.action is SignalAction.SELL
+    assert "end of day" in signal.reason
+
+
+def test_end_of_day_flatten_works_with_short_history() -> None:
+    strategy = make_strategy()
+    bars = make_bars(STABLE[:8], start=datetime(2026, 7, 1, 19, 15, tzinfo=UTC))
+    signal = strategy.evaluate("AAPL", bars, make_quote(99.0), position=make_position())
+    assert signal.action is SignalAction.SELL
+    assert "end of day" in signal.reason
+
+
+def test_entry_blocked_inside_cutoff_window() -> None:
+    # A dip that would otherwise buy, but the last bar is 15 minutes before
+    # the close.
+    strategy = make_strategy()
+    bars = make_bars(DIP_IN_UPTREND, start=datetime(2026, 7, 1, 17, 20, tzinfo=UTC))
+    signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
+    assert signal.action is SignalAction.HOLD
+    assert "entry blocked" in signal.reason
+    assert "entry cutoff" in signal.reason
+
+
 def test_trend_filter_blocks_entry() -> None:
     strategy = make_strategy()
     bars = make_bars(DIP_IN_DOWNTREND)
@@ -160,15 +190,22 @@ def test_insufficient_bars_for_trend_ema_blocks_entry() -> None:
     assert "insufficient history for trend" in signal.reason
 
 
-def test_required_lookback_covers_all_periods() -> None:
-    assert MeanReversionStrategy().required_lookback() == 205
-    assert make_strategy().required_lookback() == 35
+def test_required_bars_covers_all_periods() -> None:
+    assert MeanReversionStrategy().required_bars().lookback == 205
+    assert make_strategy().required_bars().lookback == 35
+
+
+def test_required_bars_uses_configured_minute_timeframe() -> None:
+    assert MeanReversionStrategy().required_bars().timeframe == Timeframe.minutes(5)
+    assert MeanReversionStrategy(timeframe_minutes=15).required_bars().timeframe == (
+        Timeframe.minutes(15)
+    )
 
 
 def test_registry_builds_with_params() -> None:
     strategy = build_strategy("mean_reversion", {"lookback": 30, "entry_z": -1.5})
     assert isinstance(strategy, MeanReversionStrategy)
-    assert strategy.required_lookback() == 205
+    assert strategy.required_bars().lookback == 205
 
 
 def test_registry_rejects_unknown_strategy() -> None:

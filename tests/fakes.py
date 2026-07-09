@@ -8,6 +8,7 @@ from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
     Bar,
+    BarSpec,
     MarketSnapshot,
     OpenOrder,
     OrderRequest,
@@ -18,6 +19,7 @@ from carcharoth.domain.models import (
     RiskDecision,
     Signal,
     SignalAction,
+    Timeframe,
 )
 from carcharoth.interfaces import (
     AccountService,
@@ -38,12 +40,10 @@ from carcharoth.persistence.repositories import (
 class FakeMarketDataService(MarketDataService):
     def __init__(self, snapshot: MarketSnapshot) -> None:
         self.snapshot = snapshot
-        self.calls: list[tuple[list[str], int, int]] = []
+        self.calls: list[tuple[list[str], BarSpec]] = []
 
-    def get_snapshot(
-        self, symbols: Sequence[str], timeframe_minutes: int, lookback: int
-    ) -> MarketSnapshot:
-        self.calls.append((list(symbols), timeframe_minutes, lookback))
+    def get_snapshot(self, symbols: Sequence[str], spec: BarSpec) -> MarketSnapshot:
+        self.calls.append((list(symbols), spec))
         return self.snapshot
 
 
@@ -72,8 +72,8 @@ class FakeStrategy(Strategy):
             return Signal(symbol=symbol, action=SignalAction.HOLD, strategy=self.name, reason="")
         return signal
 
-    def required_lookback(self) -> int:
-        return self._lookback
+    def required_bars(self) -> BarSpec:
+        return BarSpec(Timeframe.minutes(5), self._lookback)
 
 
 class RaisingStrategy(FakeStrategy):

@@ -52,7 +52,6 @@ class TradingEngine:
         trades_repo: TradeRepository,
         snapshots_repo: PositionSnapshotRepository,
         symbols: list[str],
-        timeframe_minutes: int,
     ) -> None:
         self._market_data = market_data
         self._account = account
@@ -64,15 +63,12 @@ class TradingEngine:
         self._trades_repo = trades_repo
         self._snapshots_repo = snapshots_repo
         self._symbols = symbols
-        self._timeframe_minutes = timeframe_minutes
 
     def tick(self) -> None:
         self._reconcile_fills()
 
         try:
-            snapshot = self._market_data.get_snapshot(
-                self._symbols, self._timeframe_minutes, self._strategy.required_lookback()
-            )
+            snapshot = self._market_data.get_snapshot(self._symbols, self._strategy.required_bars())
         except MarketDataError:
             logger.exception("market data unavailable, aborting tick")
             return

@@ -9,16 +9,27 @@ dipped price itself is below any trend line at exactly the moment a dip
 signal fires) and an RSI filter (RSI must confirm selling exhaustion).
 Positions carry
 an ATR-based stop loss: exit when price drops more than atr_stop_multiplier
-ATRs below the average entry price.
+ATRs below the average entry price. The strategy is strictly intraday: no
+new entries inside the entry cutoff window before the close, and open
+positions are flattened inside the flatten window.
 """
 
 from datetime import UTC, datetime
 
 import pandas as pd
 
-from carcharoth.domain.models import Bar, Position, Quote, Signal, SignalAction
+from carcharoth.domain.models import (
+    Bar,
+    BarSpec,
+    Position,
+    Quote,
+    Signal,
+    SignalAction,
+    Timeframe,
+)
 from carcharoth.interfaces.strategy import Strategy
 from carcharoth.strategies import indicators
+from carcharoth.strategies.filters import AtrBracket, EndOfDayFilter
 
 _MIN_STD = 1e-9
 _LOOKBACK_PADDING = 5
@@ -37,9 +48,14 @@ class MeanReversionStrategy(Strategy):
         rsi_entry_max: float = 35.0,
         atr_period: int = 14,
         atr_stop_multiplier: float = 2.5,
+        timeframe_minutes: int = 5,
+        entry_cutoff_minutes: int = 30,
+        flatten_minutes: int = 15,
     ) -> None:
         if lookback < 2:
             raise ValueError("lookback must be >= 2")
+        if timeframe_minutes < 1:
+            raise ValueError("timeframe_minutes must be >= 1")
         if exit_z <= entry_z:
             raise ValueError("exit_z must be greater than entry_z")
         if trend_ema_period < 2:
@@ -58,23 +74,25 @@ class MeanReversionStrategy(Strategy):
         self._trend_ema_period = trend_ema_period
         self._rsi_period = rsi_period
         self._rsi_entry_max = rsi_entry_max
-        self._atr_period = atr_period
-        self._atr_stop_multiplier = atr_stop_multiplier
+        self._timeframe_minutes = timeframe_minutes
+        self._bracket = AtrBracket(atr_period, atr_stop_multiplier, take_profit_multiplier=None)
+        self._eod = EndOfDayFilter(entry_cutoff_minutes, flatten_minutes)
 
-    def required_lookback(self) -> int:
+    def required_bars(self) -> BarSpec:
         # TA-Lib's EMA is SMA-seeded, so at ~trend_ema_period bars the value is
         # an approximation of the steady-state EMA. Requesting several times the
         # period for warm-up is impractical at intraday resolution; the filter
         # is a coarse regime gate, so this trade-off is accepted.
-        return (
+        lookback = (
             max(
                 self._lookback,
                 self._trend_ema_period,
                 self._rsi_period + 1,
-                self._atr_period + 1,
+                self._bracket.required_lookback(),
             )
             + _LOOKBACK_PADDING
         )
+        return BarSpec(Timeframe.minutes(self._timeframe_minutes), lookback)
 
     def evaluate(
         self,
@@ -95,18 +113,28 @@ class MeanReversionStrategy(Strategy):
 
         price = quote.mid if quote is not None else bars[-1].close
 
-        # Stop loss comes before every history gate: an open position must be
-        # protectable even when there are too few bars for the other signals.
-        atr_value = indicators.atr(bars, self._atr_period) if position is not None else None
-        if position is not None and atr_value is not None:
-            stop_price = position.avg_entry_price - self._atr_stop_multiplier * atr_value
-            if price < stop_price:
+        # Stop loss and end-of-day flatten come before every history gate: an
+        # open position must be exitable even when there are too few bars for
+        # the other signals.
+        bracket_indicators: dict[str, float] = {}
+        if position is not None:
+            bracket = self._bracket.check(bars, position.avg_entry_price, price)
+            bracket_indicators = bracket.indicators
+            if bracket.passed:
                 return self._signal(
                     symbol,
                     SignalAction.SELL,
-                    f"stop loss: price {price:.2f} < entry {position.avg_entry_price:.2f}"
-                    f" - {self._atr_stop_multiplier} x ATR {atr_value:.2f}",
-                    {"price": price, "atr": atr_value, "stop_price": stop_price},
+                    bracket.reason,
+                    {"price": price, **bracket.indicators},
+                    now,
+                )
+            flatten = self._eod.should_flatten(bars[-1].timestamp)
+            if flatten.passed:
+                return self._signal(
+                    symbol,
+                    SignalAction.SELL,
+                    flatten.reason,
+                    {"price": price, **bracket.indicators, **flatten.indicators},
                     now,
                 )
 
@@ -130,11 +158,7 @@ class MeanReversionStrategy(Strategy):
 
         zscore = (price - mean) / std
         indicator_values = {"zscore": zscore, "mean": mean, "std": std, "price": price}
-        if position is not None and atr_value is not None:
-            indicator_values["atr"] = atr_value
-            indicator_values["stop_price"] = (
-                position.avg_entry_price - self._atr_stop_multiplier * atr_value
-            )
+        indicator_values.update(bracket_indicators)
 
         if position is not None:
             if zscore >= self._exit_z:
@@ -164,7 +188,18 @@ class MeanReversionStrategy(Strategy):
         indicator_values: dict[str, float],
         now: datetime,
     ) -> Signal:
-        """Gate a z-score entry signal through the trend and RSI filters."""
+        """Gate a z-score entry signal through the end-of-day cutoff and the
+        trend and RSI filters."""
+        cutoff = self._eod.blocks_entry(bars[-1].timestamp)
+        if cutoff.passed:
+            return self._signal(
+                symbol,
+                SignalAction.HOLD,
+                f"entry blocked: {cutoff.reason}",
+                indicator_values | cutoff.indicators,
+                now,
+            )
+
         ema_value = indicators.ema(bars, self._trend_ema_period)
         if ema_value is None:
             return self._signal(
