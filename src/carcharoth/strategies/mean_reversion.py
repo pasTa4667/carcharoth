@@ -51,6 +51,7 @@ class MeanReversionStrategy(Strategy):
         timeframe_minutes: int = 5,
         entry_cutoff_minutes: int = 30,
         flatten_minutes: int = 15,
+        entry_delay_minutes: int = 0,
     ) -> None:
         if lookback < 2:
             raise ValueError("lookback must be >= 2")
@@ -76,7 +77,7 @@ class MeanReversionStrategy(Strategy):
         self._rsi_entry_max = rsi_entry_max
         self._timeframe_minutes = timeframe_minutes
         self._bracket = AtrBracket(atr_period, atr_stop_multiplier, take_profit_multiplier=None)
-        self._eod = EndOfDayFilter(entry_cutoff_minutes, flatten_minutes)
+        self._eod = EndOfDayFilter(entry_cutoff_minutes, flatten_minutes, entry_delay_minutes)
 
     def required_bars(self) -> BarSpec:
         # TA-Lib's EMA is SMA-seeded, so at ~trend_ema_period bars the value is

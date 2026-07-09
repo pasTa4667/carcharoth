@@ -127,7 +127,8 @@ def test_bracket_invalid_params_rejected() -> None:
 
 # --- EndOfDayFilter ---
 
-# 2026-07-01 is an EDT date: the 16:00 ET close is 20:00 UTC.
+# 2026-07-01 is an EDT date: the 09:30 ET open is 13:30 UTC, the 16:00 ET close is 20:00 UTC.
+EARLY_SESSION = datetime(2026, 7, 1, 13, 40, tzinfo=UTC)  # 09:40 ET, 10 min after open
 MID_SESSION = datetime(2026, 7, 1, 15, 0, tzinfo=UTC)  # 11:00 ET
 NEAR_CLOSE = datetime(2026, 7, 1, 19, 45, tzinfo=UTC)  # 15:45 ET
 FLATTEN_TIME = datetime(2026, 7, 1, 19, 50, tzinfo=UTC)  # 15:50 ET
@@ -172,3 +173,27 @@ def test_eod_invalid_params_rejected() -> None:
         EndOfDayFilter(flatten_minutes=-1)
     with pytest.raises(ValueError, match="entry_cutoff_minutes"):
         EndOfDayFilter(entry_cutoff_minutes=5, flatten_minutes=15)
+    with pytest.raises(ValueError, match="entry_delay_minutes"):
+        EndOfDayFilter(entry_delay_minutes=-1)
+
+
+def test_eod_allows_entry_after_delay_expires() -> None:
+    eod = EndOfDayFilter(entry_delay_minutes=15, entry_cutoff_minutes=30, flatten_minutes=15)
+    result = eod.blocks_entry(MID_SESSION)
+    assert not result.passed
+    assert "entry delay" not in result.reason
+
+
+def test_eod_blocks_entry_inside_delay_window() -> None:
+    eod = EndOfDayFilter(entry_delay_minutes=15, entry_cutoff_minutes=30, flatten_minutes=15)
+    result = eod.blocks_entry(EARLY_SESSION)
+    assert result.passed
+    assert "entry delay" in result.reason
+
+
+def test_eod_delay_and_cutoff_both_block() -> None:
+    eod = EndOfDayFilter(entry_delay_minutes=15, entry_cutoff_minutes=30, flatten_minutes=15)
+    result = eod.blocks_entry(EARLY_SESSION)
+    assert result.passed
+    # Should indicate the delay issue, not the cutoff
+    assert "entry delay" in result.reason

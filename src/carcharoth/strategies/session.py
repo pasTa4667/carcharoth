@@ -39,3 +39,13 @@ def minutes_until_close(ts: datetime) -> float:
         hour=SESSION_CLOSE.hour, minute=SESSION_CLOSE.minute, second=0, microsecond=0
     )
     return (close - local).total_seconds() / 60.0
+
+
+def minutes_since_open(ts: datetime) -> float:
+    """Minutes from the regular session open to ts on ts's market-timezone
+    date; negative if before the open."""
+    local = ts.astimezone(MARKET_TZ)
+    open_ = local.replace(
+        hour=SESSION_OPEN.hour, minute=SESSION_OPEN.minute, second=0, microsecond=0
+    )
+    return (local - open_).total_seconds() / 60.0

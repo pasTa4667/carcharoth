@@ -132,7 +132,8 @@ class AtrBracket:
 
 class EndOfDayFilter:
     """Blocks entries and forces exits in the final minutes of the regular
-    session so intraday strategies never hold positions overnight.
+    session so intraday strategies never hold positions overnight. Also blocks
+    entries in the opening minutes to allow price action to stabilize.
 
     Decisions are based on the supplied timestamp — typically the latest
     bar's, which lags real time by up to one bar interval, so pick cutoffs
@@ -140,18 +141,35 @@ class EndOfDayFilter:
     session module).
     """
 
-    def __init__(self, entry_cutoff_minutes: int = 30, flatten_minutes: int = 15) -> None:
+    def __init__(
+        self,
+        entry_cutoff_minutes: int = 30,
+        flatten_minutes: int = 15,
+        entry_delay_minutes: int = 0,
+    ) -> None:
         if flatten_minutes < 0:
             raise ValueError("flatten_minutes must be >= 0")
         if entry_cutoff_minutes < flatten_minutes:
             raise ValueError("entry_cutoff_minutes must be >= flatten_minutes")
+        if entry_delay_minutes < 0:
+            raise ValueError("entry_delay_minutes must be >= 0")
         self._entry_cutoff_minutes = entry_cutoff_minutes
         self._flatten_minutes = flatten_minutes
+        self._entry_delay_minutes = entry_delay_minutes
 
     def blocks_entry(self, ts: datetime) -> FilterResult:
         """`passed=True` when new entries must not be opened at `ts`."""
+        elapsed = session.minutes_since_open(ts)
+        indicator_values = {"minutes_since_open": elapsed}
+        if elapsed < self._entry_delay_minutes:
+            return FilterResult(
+                passed=True,
+                reason=f"{elapsed:.0f} min since open, inside"
+                f" {self._entry_delay_minutes} min entry delay",
+                indicators=indicator_values,
+            )
         remaining = session.minutes_until_close(ts)
-        indicator_values = {"minutes_until_close": remaining}
+        indicator_values["minutes_until_close"] = remaining
         if remaining <= self._entry_cutoff_minutes:
             return FilterResult(
                 passed=True,
@@ -161,7 +179,7 @@ class EndOfDayFilter:
             )
         return FilterResult(
             passed=False,
-            reason=f"{remaining:.0f} min to close",
+            reason=f"{elapsed:.0f} min since open, {remaining:.0f} min to close",
             indicators=indicator_values,
         )
 

@@ -79,6 +79,35 @@ class OrderRow(Base):
     filled_avg_price: Mapped[Decimal | None]
 
 
+class RegimeEvaluationRow(Base):
+    __tablename__ = "regime_evaluations"
+    __table_args__ = (Index("ix_regime_evaluations_symbol_ts", "symbol", "timestamp"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    timestamp: Mapped[datetime]
+    symbol: Mapped[str]
+    regime: Mapped[str]
+    score: Mapped[float]
+    directional_score: Mapped[float]
+    stability: Mapped[float]
+    features: Mapped[dict[str, Any]] = mapped_column(default=dict)
+
+
+class StrategyAssignmentRow(Base):
+    """Append-only history of which strategy trades a symbol; the newest row
+    per symbol is the current assignment (DISTINCT ON (symbol) ... ORDER BY
+    since DESC)."""
+
+    __tablename__ = "strategy_assignments"
+    __table_args__ = (Index("ix_strategy_assignments_symbol_since", "symbol", "since"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str]
+    strategy: Mapped[str]
+    regime: Mapped[str]
+    since: Mapped[datetime]
+
+
 class ConfigurationRow(Base):
     __tablename__ = "configurations"
 

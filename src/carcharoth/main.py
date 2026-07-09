@@ -9,20 +9,28 @@ import logging
 import signal
 import types
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from carcharoth.config.app_config import load_config
+from carcharoth.config.app_config import AppConfig, load_config
 from carcharoth.config.settings import Settings
 from carcharoth.engine.engine import TradingEngine
 from carcharoth.engine.scheduler import Scheduler
+from carcharoth.engine.strategy_provider import RegimeStrategyProvider, SingleStrategyProvider
+from carcharoth.interfaces import StrategyProvider
 from carcharoth.logging_setup import setup_logging
 from carcharoth.persistence.db import build_engine, build_session_factory
 from carcharoth.persistence.repositories import (
     SqlAlchemyConfigurationRepository,
     SqlAlchemyOrderRepository,
     SqlAlchemyPositionSnapshotRepository,
+    SqlAlchemyRegimeEvaluationRepository,
+    SqlAlchemyStrategyAssignmentRepository,
     SqlAlchemyStrategyDecisionRepository,
     SqlAlchemyTradeRepository,
 )
+from carcharoth.regime.detector import RegimeDetector
+from carcharoth.regime.models import Regime
+from carcharoth.regime.registry import build_feature
 from carcharoth.risk.basic import BasicRiskManager
 from carcharoth.services.alpaca import (
     AlpacaAccountService,
@@ -35,12 +43,42 @@ from carcharoth.services.alpaca import (
 from carcharoth.services.cache.noop import NoOpCache
 from carcharoth.strategies.registry import build_strategy
 
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session, sessionmaker
+
 logger = logging.getLogger(__name__)
 
 # All paths (including the .env read by Settings) are resolved relative to
 # the working directory; run the bot from the project root.
 CONFIG_PATH = Path("config/config.yaml")
 LOG_DIR = Path("logs")
+
+
+def build_strategy_provider(
+    config: AppConfig, session_factory: "sessionmaker[Session]"
+) -> StrategyProvider:
+    if config.regime is None:
+        assert config.strategy is not None  # guaranteed by AppConfig validation
+        return SingleStrategyProvider(build_strategy(config.strategy.name, config.strategy.params))
+    detector = RegimeDetector(
+        features=[
+            (build_feature(name, fc.params), fc.weight)
+            for name, fc in config.regime.features.items()
+        ],
+        lookback=config.regime.lookback,
+        winsorize_sigma=config.regime.winsorize_sigma,
+    )
+    return RegimeStrategyProvider(
+        detector=detector,
+        strategies={
+            Regime(name): build_strategy(rc.strategy, rc.params)
+            for name, rc in config.regime.regimes.items()
+        },
+        evaluations_repo=SqlAlchemyRegimeEvaluationRepository(session_factory),
+        assignments_repo=SqlAlchemyStrategyAssignmentRepository(session_factory),
+        evaluate_every_ticks=config.regime.evaluate_every_ticks,
+        default_regime=Regime(config.regime.default_regime),
+    )
 
 
 def main() -> None:
@@ -63,7 +101,7 @@ def main() -> None:
     engine = TradingEngine(
         market_data=AlpacaMarketDataService(data_client, cache=NoOpCache()),
         account=AlpacaAccountService(trading_client),
-        strategy=build_strategy(config.strategy.name, config.strategy.params),
+        strategies=build_strategy_provider(config, session_factory),
         risk=BasicRiskManager(config.risk),
         executor=AlpacaOrderExecutor(trading_client),
         decisions_repo=SqlAlchemyStrategyDecisionRepository(session_factory),
@@ -84,9 +122,16 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
+    if config.regime is not None:
+        strategy_desc = "regime-driven " + str(
+            {name: rc.strategy for name, rc in config.regime.regimes.items()}
+        )
+    else:
+        assert config.strategy is not None  # guaranteed by AppConfig validation
+        strategy_desc = config.strategy.name
     logger.info(
         "starting carcharoth: strategy=%s watchlist=%s",
-        config.strategy.name,
+        strategy_desc,
         config.watchlist.symbols,
     )
     try:

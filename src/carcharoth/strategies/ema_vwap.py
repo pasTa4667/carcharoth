@@ -43,6 +43,7 @@ class EmaVwapStrategy(Strategy):
         timeframe_minutes: int = 5,
         entry_cutoff_minutes: int = 30,
         flatten_minutes: int = 15,
+        entry_delay_minutes: int = 0,
     ) -> None:
         if ema_fast < 2:
             raise ValueError("ema_fast must be >= 2")
@@ -63,7 +64,7 @@ class EmaVwapStrategy(Strategy):
         self._cross_within_bars = cross_within_bars
         self._timeframe_minutes = timeframe_minutes
         self._bracket = AtrBracket(atr_period, atr_stop_multiplier, atr_take_profit_multiplier)
-        self._eod = EndOfDayFilter(entry_cutoff_minutes, flatten_minutes)
+        self._eod = EndOfDayFilter(entry_cutoff_minutes, flatten_minutes, entry_delay_minutes)
 
     def required_bars(self) -> BarSpec:
         # 2x the slow EMA period for the SMA-seeded TA-Lib EMA to converge

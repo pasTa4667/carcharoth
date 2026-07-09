@@ -22,7 +22,7 @@ from carcharoth.interfaces import (
     MarketDataService,
     OrderExecutor,
     RiskManager,
-    Strategy,
+    StrategyProvider,
 )
 from carcharoth.logging_setup import DECISIONS_LOGGER, TRADES_LOGGER
 from carcharoth.persistence.repositories import (
@@ -44,7 +44,7 @@ class TradingEngine:
         self,
         market_data: MarketDataService,
         account: AccountService,
-        strategy: Strategy,
+        strategies: StrategyProvider,
         risk: RiskManager,
         executor: OrderExecutor,
         decisions_repo: StrategyDecisionRepository,
@@ -55,7 +55,7 @@ class TradingEngine:
     ) -> None:
         self._market_data = market_data
         self._account = account
-        self._strategy = strategy
+        self._strategies = strategies
         self._risk = risk
         self._executor = executor
         self._decisions_repo = decisions_repo
@@ -68,7 +68,9 @@ class TradingEngine:
         self._reconcile_fills()
 
         try:
-            snapshot = self._market_data.get_snapshot(self._symbols, self._strategy.required_bars())
+            snapshot = self._market_data.get_snapshot(
+                self._symbols, self._strategies.required_bars()
+            )
         except MarketDataError:
             logger.exception("market data unavailable, aborting tick")
             return
@@ -84,12 +86,10 @@ class TradingEngine:
 
     def _process_symbol(self, symbol: str, snapshot: MarketSnapshot, state: AccountState) -> None:
         quote = snapshot.quotes.get(symbol)
-        signal = self._strategy.evaluate(
-            symbol,
-            snapshot.bars.get(symbol, []),
-            quote,
-            state.positions.get(symbol),
-        )
+        bars = snapshot.bars.get(symbol, [])
+        position = state.positions.get(symbol)
+        strategy = self._strategies.resolve(symbol, bars, position, snapshot.as_of)
+        signal = strategy.evaluate(symbol, bars, quote, position)
         decisions_log.info(
             "%s signal=%s reason=%r indicators=%s",
             symbol,

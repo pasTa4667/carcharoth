@@ -5,7 +5,7 @@ across engine steps. Tests use in-memory fakes of the ABCs instead.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from decimal import Decimal
 
@@ -26,9 +26,12 @@ from carcharoth.persistence.orm import (
     ConfigurationRow,
     OrderRow,
     PositionSnapshotRow,
+    RegimeEvaluationRow,
+    StrategyAssignmentRow,
     StrategyDecisionRow,
     TradeRow,
 )
+from carcharoth.regime.models import Regime, RegimeAssessment, StrategyAssignment
 
 
 class StrategyDecisionRepository(ABC):
@@ -66,6 +69,22 @@ class PositionSnapshotRepository(ABC):
 class ConfigurationRepository(ABC):
     @abstractmethod
     def upsert(self, key: str, value: str) -> None: ...
+
+
+class RegimeEvaluationRepository(ABC):
+    @abstractmethod
+    def save(
+        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
+    ) -> None: ...
+
+
+class StrategyAssignmentRepository(ABC):
+    @abstractmethod
+    def save(self, assignment: StrategyAssignment) -> None: ...
+
+    @abstractmethod
+    def load_current(self) -> dict[str, StrategyAssignment]:
+        """The newest assignment per symbol (restart recovery)."""
 
 
 class SqlAlchemyStrategyDecisionRepository(StrategyDecisionRepository):
@@ -190,6 +209,69 @@ class SqlAlchemyPositionSnapshotRepository(PositionSnapshotRepository):
                         unrealized_pnl=Decimal(str(position.unrealized_pnl)),
                     )
                 )
+
+
+class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save(
+        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
+    ) -> None:
+        features = {
+            e.feature: {
+                "value": e.value,
+                "direction": e.direction,
+                "stability": e.stability,
+                "weight": weights.get(e.feature),
+            }
+            for e in assessment.evidence
+        }
+        with self._session_factory.begin() as session:
+            session.add(
+                RegimeEvaluationRow(
+                    timestamp=timestamp,
+                    symbol=assessment.symbol,
+                    regime=assessment.regime.value,
+                    score=assessment.score,
+                    directional_score=assessment.directional_score,
+                    stability=assessment.stability,
+                    features=features,
+                )
+            )
+
+
+class SqlAlchemyStrategyAssignmentRepository(StrategyAssignmentRepository):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save(self, assignment: StrategyAssignment) -> None:
+        with self._session_factory.begin() as session:
+            session.add(
+                StrategyAssignmentRow(
+                    symbol=assignment.symbol,
+                    strategy=assignment.strategy,
+                    regime=assignment.regime.value,
+                    since=assignment.since,
+                )
+            )
+
+    def load_current(self) -> dict[str, StrategyAssignment]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(StrategyAssignmentRow)
+                .distinct(StrategyAssignmentRow.symbol)
+                .order_by(StrategyAssignmentRow.symbol, StrategyAssignmentRow.since.desc())
+            )
+            return {
+                row.symbol: StrategyAssignment(
+                    symbol=row.symbol,
+                    strategy=row.strategy,
+                    regime=Regime(row.regime),
+                    since=row.since,
+                )
+                for row in rows
+            }
 
 
 class SqlAlchemyConfigurationRepository(ConfigurationRepository):

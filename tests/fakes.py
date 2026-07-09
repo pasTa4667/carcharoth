@@ -1,6 +1,6 @@
 """In-memory fake implementations of every interface, for engine tests."""
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from uuid import uuid4
 
@@ -32,9 +32,13 @@ from carcharoth.interfaces import (
 from carcharoth.persistence.repositories import (
     OrderRepository,
     PositionSnapshotRepository,
+    RegimeEvaluationRepository,
+    StrategyAssignmentRepository,
     StrategyDecisionRepository,
     TradeRepository,
 )
+from carcharoth.regime.detector import RegimeDetector
+from carcharoth.regime.models import RegimeAssessment, StrategyAssignment
 
 
 class FakeMarketDataService(MarketDataService):
@@ -207,3 +211,55 @@ class InMemoryPositionSnapshotRepository(PositionSnapshotRepository):
 
     def save_snapshot(self, timestamp: datetime, positions: Iterable[Position]) -> None:
         self.snapshots.append((timestamp, list(positions)))
+
+
+class InMemoryRegimeEvaluationRepository(RegimeEvaluationRepository):
+    def __init__(self) -> None:
+        self.saved: list[tuple[RegimeAssessment, dict[str, float], datetime]] = []
+
+    def save(
+        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
+    ) -> None:
+        self.saved.append((assessment, dict(weights), timestamp))
+
+
+class InMemoryStrategyAssignmentRepository(StrategyAssignmentRepository):
+    def __init__(self, current: dict[str, StrategyAssignment] | None = None) -> None:
+        #: seeded "current" state returned by load_current (simulates restart)
+        self.current = dict(current or {})
+        self.saved: list[StrategyAssignment] = []
+
+    def save(self, assignment: StrategyAssignment) -> None:
+        self.saved.append(assignment)
+        self.current[assignment.symbol] = assignment
+
+    def load_current(self) -> dict[str, StrategyAssignment]:
+        return dict(self.current)
+
+
+class FakeDetector(RegimeDetector):
+    """Returns a scripted sequence of assessments per symbol; the last one
+    sticks once the script is exhausted."""
+
+    def __init__(
+        self,
+        assessments: dict[str, list[RegimeAssessment | None]] | None = None,
+        lookback: int = 100,
+    ) -> None:
+        self._scripted = {s: list(seq) for s, seq in (assessments or {}).items()}
+        self._sticky: dict[str, RegimeAssessment | None] = {}
+        self._fake_lookback = lookback
+        self.calls: list[str] = []
+
+    def required_lookback(self) -> int:
+        return self._fake_lookback
+
+    def assess(self, symbol: str, bars: Sequence[Bar]) -> RegimeAssessment | None:
+        self.calls.append(symbol)
+        script = self._scripted.get(symbol)
+        if script:
+            self._sticky[symbol] = script.pop(0)
+        return self._sticky.get(symbol)
+
+    def weight_of(self, feature_name: str) -> float | None:
+        return 1.0

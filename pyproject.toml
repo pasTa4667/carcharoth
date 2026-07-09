@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",
+    "scipy>=1.16",
     "sqlalchemy>=2.0",
     "ta-lib>=0.6",
 ]
@@ -33,6 +34,7 @@ dev = [
     "pandas-stubs>=3.0.3.260530",
     "pytest>=9.1.1",
     "ruff>=0.15.20",
+    "scipy-stubs>=1.18.0.0",
     "types-pyyaml>=6.0.12.20260518",
 ]
 

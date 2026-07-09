@@ -5,6 +5,7 @@ from carcharoth.interfaces.execution import OrderExecutor
 from carcharoth.interfaces.market_data import MarketDataService
 from carcharoth.interfaces.risk import RiskManager
 from carcharoth.interfaces.strategy import Strategy
+from carcharoth.interfaces.strategy_provider import StrategyProvider
 
 __all__ = [
     "AccountService",
@@ -14,4 +15,5 @@ __all__ = [
     "OrderExecutor",
     "RiskManager",
     "Strategy",
+    "StrategyProvider",
 ]

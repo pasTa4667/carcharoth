@@ -950,6 +950,422 @@
       ],
       "title": "Open Orders",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "regime"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "trending": {
+                        "color": "blue",
+                        "index": 0,
+                        "text": "Trending"
+                      },
+                      "mean_reverting": {
+                        "color": "orange",
+                        "index": 1,
+                        "text": "Mean Reverting"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "since"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "id": 11,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "symbol"
+          }
+        ]
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH latest_assignments AS (\n  SELECT DISTINCT ON (symbol) symbol, strategy, regime, since\n  FROM strategy_assignments\n  ORDER BY symbol, since DESC\n)\nSELECT\n  la.symbol,\n  la.strategy,\n  la.regime,\n  la.since,\n  CASE\n    WHEN ps.qty > 0 THEN 'OPEN'\n    ELSE 'FLAT'\n  END AS position_status,\n  COALESCE(ps.unrealized_pnl, 0) AS position_pnl\nFROM latest_assignments la\nLEFT JOIN positions_snapshot ps ON la.symbol = ps.symbol \n  AND ps.timestamp = (SELECT MAX(timestamp) FROM positions_snapshot)\nORDER BY la.symbol",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Strategy Assignments",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trending"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean_reverting"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "id": 12,
+      "options": {
+        "displayLabels": ["value"],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": ["value"]
+        },
+        "pieType": "pie",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH latest_assignments AS (\n  SELECT DISTINCT ON (symbol) symbol, regime\n  FROM strategy_assignments\n  ORDER BY symbol, since DESC\n)\nSELECT\n  CASE\n    WHEN regime = 'trending' THEN 'Trending'\n    WHEN regime = 'mean_reverting' THEN 'Mean Reverting'\n    ELSE regime\n  END AS regime,\n  COUNT(*) AS value\nFROM latest_assignments\nGROUP BY regime",
+          "refId": "A"
+        }
+      ],
+      "title": "Regime Distribution (Current)",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  timestamp AS time,\n  symbol,\n  score AS score,\n  directional_score AS directional_score,\n  stability AS stability\nFROM regime_evaluations\nWHERE $__timeFilter(timestamp)\n  AND symbol IN (${symbol:sqlstring})\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Regime Scores Over Time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 3,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "regime"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "trending": {
+                        "color": "blue",
+                        "index": 0,
+                        "text": "Trending"
+                      },
+                      "mean_reverting": {
+                        "color": "orange",
+                        "index": 1,
+                        "text": "Mean Reverting"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "id": 14,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "timestamp"
+          }
+        ]
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH feature_data AS (\n  SELECT\n    timestamp,\n    symbol,\n    regime,\n    score,\n    directional_score,\n    stability,\n    jsonb_object_keys(features) AS feature_name,\n    (features ->> jsonb_object_keys(features))::numeric AS feature_value\n  FROM regime_evaluations\n  WHERE $__timeFilter(timestamp)\n    AND symbol IN (${symbol:sqlstring})\n)\nSELECT\n  timestamp,\n  symbol,\n  regime,\n  ROUND(score::numeric, 3) AS score,\n  ROUND(directional_score::numeric, 3) AS directional_score,\n  ROUND(stability::numeric, 3) AS stability,\n  string_agg(feature_name || '=' || ROUND(feature_value::numeric, 3), ', ' ORDER BY feature_name) AS features\nFROM feature_data\nGROUP BY timestamp, symbol, regime, score, directional_score, stability\nORDER BY timestamp DESC\nLIMIT 30",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Regime Evaluations",
+      "type": "table"
     }
   ],
   "preload": false,

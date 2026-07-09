@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from carcharoth.regime.models import Regime
 
 
 class WatchlistConfig(BaseModel):
@@ -20,6 +22,40 @@ class StrategyConfig(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class RegimeFeatureConfig(BaseModel):
+    weight: float = Field(default=1.0, gt=0)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegimeStrategyConfig(BaseModel):
+    strategy: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegimeConfig(BaseModel):
+    lookback: int = Field(default=400, gt=1)
+    evaluate_every_ticks: int = Field(default=5, gt=0)
+    winsorize_sigma: float = Field(default=5.0, gt=0)
+    default_regime: str = Regime.MEAN_REVERTING.value
+    features: dict[str, RegimeFeatureConfig] = Field(min_length=1)
+    regimes: dict[str, RegimeStrategyConfig]
+
+    @model_validator(mode="after")
+    def _validate_regime_names(self) -> "RegimeConfig":
+        valid = {regime.value for regime in Regime}
+        unknown = set(self.regimes) - valid
+        if unknown:
+            raise ValueError(f"unknown regimes {sorted(unknown)}; valid: {sorted(valid)}")
+        missing = valid - set(self.regimes)
+        if missing:
+            raise ValueError(f"regimes without a mapped strategy: {sorted(missing)}")
+        if self.default_regime not in valid:
+            raise ValueError(
+                f"unknown default_regime {self.default_regime!r}; valid: {sorted(valid)}"
+            )
+        return self
+
+
 class RiskConfig(BaseModel):
     max_position_notional: float = Field(default=1000.0, gt=0)
     max_position_pct_equity: float = Field(default=0.10, gt=0, le=1)
@@ -33,8 +69,18 @@ class RiskConfig(BaseModel):
 class AppConfig(BaseModel):
     watchlist: WatchlistConfig
     engine: EngineConfig = EngineConfig()
-    strategy: StrategyConfig
+    strategy: StrategyConfig | None = None
+    regime: RegimeConfig | None = None
     risk: RiskConfig = RiskConfig()
+
+    @model_validator(mode="after")
+    def _exactly_one_strategy_source(self) -> "AppConfig":
+        if (self.strategy is None) == (self.regime is None):
+            raise ValueError(
+                "exactly one of 'strategy' (single-strategy mode) or 'regime' "
+                "(regime-driven mode) must be configured"
+            )
+        return self
 
 
 def load_config(path: Path) -> AppConfig:

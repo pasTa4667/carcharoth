@@ -10,15 +10,20 @@ from carcharoth.domain.models import (
     SignalAction,
 )
 from carcharoth.engine.engine import TradingEngine
+from carcharoth.engine.strategy_provider import RegimeStrategyProvider, SingleStrategyProvider
+from carcharoth.regime.models import Regime, RegimeAssessment
 from tests.factories import make_account, make_bars, make_quote
 from tests.fakes import (
     FakeAccountService,
+    FakeDetector,
     FakeMarketDataService,
     FakeOrderExecutor,
     FakeRiskManager,
     FakeStrategy,
     InMemoryOrderRepository,
     InMemoryPositionSnapshotRepository,
+    InMemoryRegimeEvaluationRepository,
+    InMemoryStrategyAssignmentRepository,
     InMemoryStrategyDecisionRepository,
     InMemoryTradeRepository,
     RaisingStrategy,
@@ -64,7 +69,7 @@ def build_engine(
     engine = TradingEngine(
         market_data=FakeMarketDataService(make_snapshot()),
         account=FakeAccountService(make_account()),
-        strategy=strategy,
+        strategies=SingleStrategyProvider(strategy),
         risk=risk or FakeRiskManager(),
         executor=executor,
         decisions_repo=decisions,
@@ -76,13 +81,13 @@ def build_engine(
     return engine, executor, decisions, orders, trades, snapshots
 
 
-def test_engine_requests_strategy_declared_bars() -> None:
-    strategy = FakeStrategy({}, lookback=42)
+def test_engine_requests_provider_declared_bars() -> None:
+    provider = SingleStrategyProvider(FakeStrategy({}, lookback=42))
     market_data = FakeMarketDataService(make_snapshot())
     engine = TradingEngine(
         market_data=market_data,
         account=FakeAccountService(make_account()),
-        strategy=strategy,
+        strategies=provider,
         risk=FakeRiskManager(),
         executor=FakeOrderExecutor(),
         decisions_repo=InMemoryStrategyDecisionRepository(),
@@ -94,7 +99,56 @@ def test_engine_requests_strategy_declared_bars() -> None:
 
     engine.tick()
 
-    assert market_data.calls == [(SYMBOLS, strategy.required_bars())]
+    assert market_data.calls == [(SYMBOLS, provider.required_bars())]
+
+
+def test_engine_routes_symbols_to_their_regime_strategies() -> None:
+    """One tick, two symbols, two different strategies via the regime provider."""
+
+    class TrendStrategy(FakeStrategy):
+        name = "trend_fake"
+
+    def assessment(symbol: str, regime: Regime) -> RegimeAssessment:
+        score = 0.5 if regime is Regime.TRENDING else -0.5
+        return RegimeAssessment(
+            symbol=symbol,
+            regime=regime,
+            score=score,
+            directional_score=score,
+            stability=1.0,
+            evidence=(),
+        )
+
+    trending = TrendStrategy({})
+    reverting = FakeStrategy({})
+    provider = RegimeStrategyProvider(
+        detector=FakeDetector(
+            {
+                "AAPL": [assessment("AAPL", Regime.TRENDING)],
+                "MSFT": [assessment("MSFT", Regime.MEAN_REVERTING)],
+            }
+        ),
+        strategies={Regime.TRENDING: trending, Regime.MEAN_REVERTING: reverting},
+        evaluations_repo=InMemoryRegimeEvaluationRepository(),
+        assignments_repo=InMemoryStrategyAssignmentRepository(),
+    )
+    engine = TradingEngine(
+        market_data=FakeMarketDataService(make_snapshot()),
+        account=FakeAccountService(make_account()),
+        strategies=provider,
+        risk=FakeRiskManager(),
+        executor=FakeOrderExecutor(),
+        decisions_repo=InMemoryStrategyDecisionRepository(),
+        orders_repo=InMemoryOrderRepository(),
+        trades_repo=InMemoryTradeRepository(),
+        snapshots_repo=InMemoryPositionSnapshotRepository(),
+        symbols=SYMBOLS,
+    )
+
+    engine.tick()
+
+    assert trending.evaluated == ["AAPL"]
+    assert reverting.evaluated == ["MSFT"]
 
 
 def test_approved_buy_submits_exactly_one_order() -> None:
