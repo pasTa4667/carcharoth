@@ -20,6 +20,38 @@ Scheduler (every minute, market hours only)
 Each step passes **typed domain objects** between components. The engine itself is "stupid"
 (it just orchestrates); all logic lives inside the components.
 
+### Backtesting Flow
+
+The same `TradingEngine` replays historical data — no engine changes, only different wiring:
+
+```
+carcharoth backtest --start ... --end ...
+   │
+   ├─ fetch_historical_bars()          — one-shot Alpaca fetch incl. warm-up window
+   └──> BacktestRunner (no scheduler; one tick per historical bar, as fast as possible)
+        ├─ market_data.advance_to(ts)          — move the simulated "now"
+        ├─ broker.mark_to_market(ts, closes)   — reprice positions, roll last_equity per session
+        └─ TradingEngine.tick()                — unchanged live tick sequence
+   after the loop: final reconcile pass, then BacktestAnalyzer computes + persists metrics
+```
+
+Backtest-specific components (wired in `main.py` instead of the Alpaca services):
+- `HistoricalMarketDataService` (implements `MarketDataService`) — preloaded bars behind a
+  movable cursor; synthesizes quotes from the newest bar close ± half the configured spread
+- `SimulatedBroker` (implements `AccountService` + `OrderExecutor`) — tracks cash/positions
+  from a configurable initial capital; market orders fill instantly at close ± spread/slippage.
+  **Fill contract:** `submit()` returns ACCEPTED (while filling internally); `get_order()`
+  reports FILLED — so the engine's normal reconcile step records the trade, exactly as live.
+
+### Run Tracking
+
+Every start creates a row in `runs` (`run_type` PAPER for live sessions, BACKTEST for
+backtests). All data repositories are **run-scoped**: constructed with the `run_id`, they
+read and write only that run's rows. This isolates backtests from live data and from each
+other, and `carcharoth delete-run` removes a run with all its data via FK cascade.
+Trade-offs: a restarted live process does not reconcile the previous run's open orders
+(negligible — DAY market orders fill in seconds) and regime assignments start fresh per run.
+
 ---
 
 ## Folder Structure & Responsibilities
@@ -68,11 +100,31 @@ interfaces in order.
   - `market_data.py` → `AlpacaMarketDataService` (implements `MarketDataService`)
   - `execution.py` → `AlpacaOrderExecutor` (implements `OrderExecutor`)
   - `clock.py` → `AlpacaMarketClock` (implements `MarketClock`)
+  - `historical.py` — one-shot historical bar fetch + shared warm-up window heuristics
   - `mappers.py` — converts Alpaca SDK types → domain models (type boundary crossing here)
+- `backtest/` — simulation implementations used by `carcharoth backtest`
+  - `market_data.py` → `HistoricalMarketDataService` (implements `MarketDataService`)
+  - `broker.py` → `SimulatedBroker` (implements `AccountService` + `OrderExecutor`)
 - `cache/` — caching implementations
   - `noop.py` → `NoOpCache` — no-op cache (current default)
 
 All Alpaca SDK types stay inside `alpaca/`; external code works with domain models.
+
+### `src/carcharoth/backtest/`
+**Backtest Orchestration**
+
+- `runner.py` — `BacktestRunner` — iterates the historical bar grid (regular session bars
+  only, mirroring the live scheduler) and calls `engine.tick()` per bar; one tick == one bar,
+  so tick-counted settings like `regime.evaluate_every_ticks` count bars in a backtest
+
+### `src/carcharoth/analysis/`
+**Post-Run Analysis**
+
+- `metrics.py` — pure metric computations: FIFO round-trip matching, total return, max
+  drawdown, annualized Sharpe, win rate, profit factor, per-symbol PnL
+- `analyzer.py` — `BacktestAnalyzer` — reads a run's persisted trades/equity, computes
+  metrics and persists them to `backtest_metrics` (runs automatically after each backtest;
+  re-run anytime with `carcharoth analyze --run-id X`)
 
 ### `src/carcharoth/strategies/`
 **Trading Strategies**
@@ -119,9 +171,11 @@ Override this to add custom risk logic (volatility-based sizing, drawdown limits
 ### `src/carcharoth/persistence/`
 **Data Access Layer**
 
-- `orm.py` — SQLAlchemy schema (tables: `trades`, `orders`, `positions_snapshot`,
-  `strategy_decisions`, `configurations`, `regime_evaluations`, `strategy_assignments`)
-- `repositories.py` — Repository ABCs + SQLAlchemy implementations (`SqlAlchemy*Repository`)
+- `orm.py` — SQLAlchemy schema (tables: `runs`, `trades`, `orders`, `positions_snapshot`,
+  `strategy_decisions`, `configurations`, `regime_evaluations`, `strategy_assignments`,
+  `equity_snapshots`, `backtest_metrics`)
+- `repositories.py` — Repository ABCs + SQLAlchemy implementations (`SqlAlchemy*Repository`);
+  data repositories are run-scoped (constructed with a `run_id`)
 - `db.py` — session factory and connection setup
 
 All reads/writes to Postgres go through repositories; this layer translates between domain
@@ -172,13 +226,17 @@ scheduler.tick()
 
 ### Persistence
 
-Every decision and fill is logged to the database:
+Every decision and fill is logged to the database, tagged with the `run_id` of the
+producing run:
+- `runs` — one row per app start / backtest (run_type, config, symbols, date range)
 - `strategy_decisions` — signal, indicator values (JSONB), confidence
 - `trades` — fills and execution records
 - `orders` — order history
+- `positions_snapshot` / `equity_snapshots` — per-symbol positions and total equity per tick
+- `backtest_metrics` — analyzer output per backtest run (key/value, optional symbol)
 - `configurations` — the config snapshot that was in effect
 
-This enables post-trade analysis and regime/strategy evaluation.
+This enables post-trade analysis, regime/strategy evaluation and comparison between runs.
 
 ---
 
@@ -246,8 +304,19 @@ docker run --env-file .env carcharoth
 
 The bot ticks every minute during market hours and shuts down cleanly on SIGTERM.
 
+### Backtesting
+```bash
+uv run carcharoth backtest --start 2026-06-01 --end 2026-06-30 [--symbols AAPL,MSFT]
+uv run carcharoth analyze --run-id <uuid>       # recompute metrics
+uv run carcharoth delete-run --run-id <uuid>    # or --all-backtests
+```
+
 ### Monitoring
-- **Grafana Dashboard**: `http://localhost:3333` — positions, PnL, signals, trades
+- **Grafana Dashboards**: `http://localhost:3333`
+  - *Trading Overview* — live positions, PnL, signals, trades (PAPER runs only)
+  - *Live Analysis (Paper Trading)* — equity curve, drawdown, trades per paper run
+  - *Backtest Results* — metrics, equity curve, per-symbol PnL per backtest run (empty
+    until a backtest has been run; pick the run in the dashboard variable)
 - **Logs**: `logs/` — app, errors, trades, decisions
 - **Database**: query `trades`, `strategy_decisions`, etc. for analysis
 

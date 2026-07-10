@@ -76,7 +76,7 @@ class TradingEngine:
             return
 
         state = self._account.get_account_state()
-        self._snapshots_repo.save_snapshot(snapshot.as_of, state.positions.values())
+        self._snapshots_repo.save_snapshot(snapshot.as_of, state)
 
         for symbol in self._symbols:
             try:

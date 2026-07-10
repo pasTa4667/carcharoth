@@ -79,6 +79,12 @@ regime:
 #     entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
 #     flatten_minutes: 15       # force-exit open positions within this window before close
 
+# Simulation parameters used by `carcharoth backtest` (ignored in live mode).
+backtest:
+  initial_capital: 100000.0  # starting cash of the simulated account
+  spread_pct: 0.0005         # synthetic quote spread around the bar close
+  slippage_pct: 0.0005       # fills execute this fraction worse than the quote
+
 risk:
   max_position_notional: 1000.0   # hard cap per position, in account currency
   max_position_pct_equity: 0.10   # per-position cap as fraction of equity

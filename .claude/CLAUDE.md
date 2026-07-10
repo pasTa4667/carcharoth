@@ -75,13 +75,17 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
   ```
 
 **Tables:**
+- `runs` — one row per app start or backtest (`run_type` PAPER | BACKTEST); all data tables
+  below carry a `run_id` FK with cascade delete
 - `trades` — order fills and execution records
 - `orders` — order submissions and status history
 - `positions_snapshot` — point-in-time portfolio state
+- `equity_snapshots` — total equity/cash/buying power per tick (the equity curve)
 - `strategy_decisions` — decision log with JSONB indicator values
 - `configurations` — effective config of each run
 - `regime_evaluations` — market regime classifications
 - `strategy_assignments` — which regime → strategy assignment was active
+- `backtest_metrics` — analyzer results per backtest run (key/value rows, optional symbol)
 
 ### 8. Logging
 - Rotating logs in `logs/`:
@@ -134,13 +138,33 @@ docker compose up -d
 uv run alembic upgrade head
 
 # Run the bot (ticks every minute during market hours)
-uv run python -m carcharoth
+uv run python -m carcharoth        # equivalent: uv run carcharoth run
 ```
 
 The bot shuts down cleanly on Ctrl-C or SIGTERM.
 
+### Running a Backtest
+Replays historical Alpaca data through the unchanged trading engine, as fast as possible
+(no scheduler). All data is persisted under a new `run_id` with `run_type = BACKTEST`; the
+analyzer runs automatically at the end and persists metrics to `backtest_metrics`.
+
+```bash
+uv run carcharoth backtest --start 2026-06-01 --end 2026-06-30            # --end inclusive
+uv run carcharoth backtest --start 2026-06-01 --end 2026-06-30 --symbols AAPL,MSFT
+uv run carcharoth analyze --run-id <uuid>            # recompute metrics for a run
+uv run carcharoth delete-run --run-id <uuid>         # delete one run + all its data
+uv run carcharoth delete-run --all-backtests         # delete every backtest run
+```
+
+Simulation parameters (initial capital, spread, slippage) live in the `backtest` section of
+`config/config.yaml`. The bar timeframe and warm-up window are derived from the configured
+strategies (`required_bars()`), so there is no `--timeframe` flag. Results appear in the
+**Backtest Results** Grafana dashboard (pick the run in the dashboard variable).
+
 ### Monitoring
-- **Grafana**: `http://localhost:3333` (see `.env` for credentials)
+- **Grafana**: `http://localhost:3333` (see `.env` for credentials) — dashboards:
+  *Trading Overview* (live, PAPER runs only), *Live Analysis* (equity/drawdown per paper
+  run), *Backtest Results* (metrics + equity curve per backtest run)
 - **Logs**: `logs/` directory
 - **Database**: `docker compose exec db psql -U carcharoth -d carcharoth -c "\dt"`
 
@@ -159,13 +183,15 @@ then restart: `docker compose restart grafana`
 
 ```
 src/carcharoth/
-├── main.py                # Composition root (wiring)
+├── main.py                # Composition root (wiring) + CLI subcommands
 ├── engine/                # Scheduler + trading logic
 ├── interfaces/            # Component contracts (ABCs)
-├── services/              # Provider implementations
+├── services/              # Provider implementations (alpaca/, backtest/, cache/)
 ├── strategies/            # Trading strategies
 ├── domain/                # Pure domain models
 ├── risk/                  # Risk management
+├── backtest/              # Backtest runner (historical replay loop)
+├── analysis/              # Post-run metrics + analyzer
 ├── persistence/           # Data access (ORM, repos)
 ├── config/                # Configuration + validation
 ├── regime/                # Market regime detection

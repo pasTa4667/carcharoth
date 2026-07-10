@@ -1,15 +1,18 @@
 """In-memory fake implementations of every interface, for engine tests."""
 
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
-from uuid import uuid4
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID, uuid4
 
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
     Bar,
     BarSpec,
+    EquityPoint,
     MarketSnapshot,
+    MetricValue,
     OpenOrder,
     OrderRequest,
     OrderResult,
@@ -17,9 +20,12 @@ from carcharoth.domain.models import (
     Position,
     Quote,
     RiskDecision,
+    RunInfo,
+    RunType,
     Signal,
     SignalAction,
     Timeframe,
+    TradeRecord,
 )
 from carcharoth.interfaces import (
     AccountService,
@@ -30,9 +36,12 @@ from carcharoth.interfaces import (
     Strategy,
 )
 from carcharoth.persistence.repositories import (
+    AnalysisReader,
+    BacktestMetricsRepository,
     OrderRepository,
     PositionSnapshotRepository,
     RegimeEvaluationRepository,
+    RunRepository,
     StrategyAssignmentRepository,
     StrategyDecisionRepository,
     TradeRepository,
@@ -113,7 +122,12 @@ class FakeRiskManager(RiskManager):
 
 
 class FakeOrderExecutor(OrderExecutor):
-    def __init__(self, order_states: dict[str, OrderResult] | None = None) -> None:
+    def __init__(
+        self,
+        order_states: dict[str, OrderResult] | None = None,
+        submitted_at: datetime | None = None,
+    ) -> None:
+        self.submitted_at = submitted_at or datetime(2026, 7, 1, 15, 0, tzinfo=UTC)
         self.submitted: list[OrderRequest] = []
         self.canceled: list[str] = []
         #: broker_order_id -> result returned by get_order (reconciliation)
@@ -136,7 +150,7 @@ class FakeOrderExecutor(OrderExecutor):
             status=OrderStatus.ACCEPTED,
             filled_qty=0,
             filled_avg_price=None,
-            submitted_at=datetime.now(),
+            submitted_at=self.submitted_at,
             filled_at=None,
         )
 
@@ -208,9 +222,11 @@ class InMemoryTradeRepository(TradeRepository):
 class InMemoryPositionSnapshotRepository(PositionSnapshotRepository):
     def __init__(self) -> None:
         self.snapshots: list[tuple[datetime, list[Position]]] = []
+        self.equity_points: list[EquityPoint] = []
 
-    def save_snapshot(self, timestamp: datetime, positions: Iterable[Position]) -> None:
-        self.snapshots.append((timestamp, list(positions)))
+    def save_snapshot(self, timestamp: datetime, state: AccountState) -> None:
+        self.snapshots.append((timestamp, list(state.positions.values())))
+        self.equity_points.append(EquityPoint(timestamp=timestamp, equity=state.equity))
 
 
 class InMemoryRegimeEvaluationRepository(RegimeEvaluationRepository):
@@ -235,6 +251,81 @@ class InMemoryStrategyAssignmentRepository(StrategyAssignmentRepository):
 
     def load_current(self) -> dict[str, StrategyAssignment]:
         return dict(self.current)
+
+
+class InMemoryRunRepository(RunRepository):
+    def __init__(self) -> None:
+        self.runs: dict[UUID, RunInfo] = {}
+
+    def create(
+        self,
+        run_type: RunType,
+        config: dict[str, Any],
+        symbols: Sequence[str],
+        started_at: datetime,
+        backtest_start: datetime | None = None,
+        backtest_end: datetime | None = None,
+    ) -> UUID:
+        run_id = uuid4()
+        self.runs[run_id] = RunInfo(
+            run_id=run_id,
+            run_type=run_type,
+            started_at=started_at,
+            finished_at=None,
+            symbols=list(symbols),
+            backtest_start=backtest_start,
+            backtest_end=backtest_end,
+        )
+        return run_id
+
+    def finish(self, run_id: UUID, finished_at: datetime) -> None:
+        info = self.runs[run_id]
+        self.runs[run_id] = RunInfo(
+            run_id=info.run_id,
+            run_type=info.run_type,
+            started_at=info.started_at,
+            finished_at=finished_at,
+            symbols=info.symbols,
+            backtest_start=info.backtest_start,
+            backtest_end=info.backtest_end,
+        )
+
+    def get(self, run_id: UUID) -> RunInfo | None:
+        return self.runs.get(run_id)
+
+    def list_run_ids(self, run_type: RunType | None = None) -> list[UUID]:
+        return [
+            run_id
+            for run_id, info in self.runs.items()
+            if run_type is None or info.run_type is run_type
+        ]
+
+    def delete(self, run_id: UUID) -> None:
+        self.runs.pop(run_id, None)
+
+
+class InMemoryBacktestMetricsRepository(BacktestMetricsRepository):
+    def __init__(self) -> None:
+        self.saved: dict[UUID, list[MetricValue]] = {}
+
+    def save_metrics(self, run_id: UUID, metrics: Sequence[MetricValue]) -> None:
+        self.saved[run_id] = list(metrics)
+
+
+class InMemoryAnalysisReader(AnalysisReader):
+    def __init__(
+        self,
+        trades: dict[UUID, list[TradeRecord]] | None = None,
+        equity: dict[UUID, list[EquityPoint]] | None = None,
+    ) -> None:
+        self.trades = trades or {}
+        self.equity = equity or {}
+
+    def list_trades(self, run_id: UUID) -> list[TradeRecord]:
+        return list(self.trades.get(run_id, []))
+
+    def list_equity(self, run_id: UUID) -> list[EquityPoint]:
+        return list(self.equity.get(run_id, []))
 
 
 class FakeDetector(RegimeDetector):

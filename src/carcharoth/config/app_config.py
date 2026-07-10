@@ -66,12 +66,21 @@ class RiskConfig(BaseModel):
     max_daily_loss_pct: float = Field(default=0.03, gt=0, le=1)
 
 
+class BacktestConfig(BaseModel):
+    initial_capital: float = Field(default=100_000.0, gt=0)
+    #: synthetic quote spread: bid/ask = close * (1 -/+ spread_pct / 2)
+    spread_pct: float = Field(default=0.0005, ge=0)
+    #: fills execute this fraction worse than the quoted side
+    slippage_pct: float = Field(default=0.0005, ge=0)
+
+
 class AppConfig(BaseModel):
     watchlist: WatchlistConfig
     engine: EngineConfig = EngineConfig()
     strategy: StrategyConfig | None = None
     regime: RegimeConfig | None = None
     risk: RiskConfig = RiskConfig()
+    backtest: BacktestConfig = BacktestConfig()
 
     @model_validator(mode="after")
     def _exactly_one_strategy_source(self) -> "AppConfig":

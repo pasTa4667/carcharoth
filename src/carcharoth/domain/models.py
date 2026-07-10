@@ -10,11 +10,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
+from uuid import UUID
 
 
 class Side(StrEnum):
     BUY = "buy"
     SELL = "sell"
+
+
+class RunType(StrEnum):
+    """What produced a run's data: a live paper-trading session or a backtest."""
+
+    PAPER = "PAPER"
+    BACKTEST = "BACKTEST"
 
 
 class SignalAction(StrEnum):
@@ -169,6 +177,47 @@ class OpenOrder:
     broker_order_id: str
     symbol: str
     side: Side
+
+
+@dataclass(frozen=True, slots=True)
+class RunInfo:
+    """Metadata of one run (a live session or a backtest)."""
+
+    run_id: UUID
+    run_type: RunType
+    started_at: datetime
+    finished_at: datetime | None
+    symbols: list[str]
+    backtest_start: datetime | None = None
+    backtest_end: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TradeRecord:
+    """A persisted fill, as read back for analysis."""
+
+    symbol: str
+    side: Side
+    qty: float
+    price: float
+    timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EquityPoint:
+    """One point of a run's equity curve."""
+
+    timestamp: datetime
+    equity: float
+
+
+@dataclass(frozen=True, slots=True)
+class MetricValue:
+    """One analyzer result; symbol is set for per-symbol metrics only."""
+
+    name: str
+    value: float
+    symbol: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

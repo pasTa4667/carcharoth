@@ -2,31 +2,48 @@
 
 Each repository opens a short transaction per call; nothing holds a session
 across engine steps. Tests use in-memory fakes of the ABCs instead.
+
+Data repositories are scoped to one run: they are constructed with a run_id
+and both writes and reads only touch that run's rows. This isolates
+backtests from live data (and from each other). Consequences: a restarted
+live process does not reconcile the previous run's open orders (DAY market
+orders fill within seconds, so this is negligible) and regime assignments
+start fresh each run.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
+    AccountState,
+    EquityPoint,
+    MetricValue,
     OpenOrder,
     OrderRequest,
     OrderResult,
-    Position,
     RiskDecision,
+    RunInfo,
+    RunType,
     Side,
     Signal,
+    TradeRecord,
 )
 from carcharoth.persistence.orm import (
+    BacktestMetricRow,
     ConfigurationRow,
+    EquitySnapshotRow,
     OrderRow,
     PositionSnapshotRow,
     RegimeEvaluationRow,
+    RunRow,
     StrategyAssignmentRow,
     StrategyDecisionRow,
     TradeRow,
@@ -63,7 +80,8 @@ class TradeRepository(ABC):
 
 class PositionSnapshotRepository(ABC):
     @abstractmethod
-    def save_snapshot(self, timestamp: datetime, positions: Iterable[Position]) -> None: ...
+    def save_snapshot(self, timestamp: datetime, state: AccountState) -> None:
+        """Persist all open positions plus one equity-curve point."""
 
 
 class ConfigurationRepository(ABC):
@@ -87,14 +105,58 @@ class StrategyAssignmentRepository(ABC):
         """The newest assignment per symbol (restart recovery)."""
 
 
+class RunRepository(ABC):
+    @abstractmethod
+    def create(
+        self,
+        run_type: RunType,
+        config: dict[str, Any],
+        symbols: Sequence[str],
+        started_at: datetime,
+        backtest_start: datetime | None = None,
+        backtest_end: datetime | None = None,
+    ) -> UUID: ...
+
+    @abstractmethod
+    def finish(self, run_id: UUID, finished_at: datetime) -> None: ...
+
+    @abstractmethod
+    def get(self, run_id: UUID) -> RunInfo | None: ...
+
+    @abstractmethod
+    def list_run_ids(self, run_type: RunType | None = None) -> list[UUID]: ...
+
+    @abstractmethod
+    def delete(self, run_id: UUID) -> None:
+        """Delete the run; all of its data rows cascade."""
+
+
+class BacktestMetricsRepository(ABC):
+    @abstractmethod
+    def save_metrics(self, run_id: UUID, metrics: Sequence[MetricValue]) -> None:
+        """Replace the run's metrics (re-analysis is idempotent)."""
+
+
+class AnalysisReader(ABC):
+    """Read-back of one run's persisted data for the analyzer."""
+
+    @abstractmethod
+    def list_trades(self, run_id: UUID) -> list[TradeRecord]: ...
+
+    @abstractmethod
+    def list_equity(self, run_id: UUID) -> list[EquityPoint]: ...
+
+
 class SqlAlchemyStrategyDecisionRepository(StrategyDecisionRepository):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
+        self._run_id = run_id
 
     def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None:
         with self._session_factory.begin() as session:
             session.add(
                 StrategyDecisionRow(
+                    run_id=self._run_id,
                     timestamp=timestamp,
                     symbol=signal.symbol,
                     strategy=signal.strategy,
@@ -109,13 +171,15 @@ class SqlAlchemyStrategyDecisionRepository(StrategyDecisionRepository):
 
 
 class SqlAlchemyOrderRepository(OrderRepository):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
+        self._run_id = run_id
 
     def save_submitted(self, request: OrderRequest, result: OrderResult) -> None:
         with self._session_factory.begin() as session:
             session.add(
                 OrderRow(
+                    run_id=self._run_id,
                     broker_order_id=result.broker_order_id,
                     client_order_id=result.client_order_id,
                     symbol=result.symbol,
@@ -147,7 +211,9 @@ class SqlAlchemyOrderRepository(OrderRepository):
         with self._session_factory() as session:
             return list(
                 session.scalars(
-                    select(OrderRow.broker_order_id).where(OrderRow.status.not_in(terminal))
+                    select(OrderRow.broker_order_id).where(
+                        OrderRow.run_id == self._run_id, OrderRow.status.not_in(terminal)
+                    )
                 )
             )
 
@@ -156,7 +222,9 @@ class SqlAlchemyOrderRepository(OrderRepository):
         with self._session_factory() as session:
             rows = session.execute(
                 select(OrderRow.broker_order_id, OrderRow.side).where(
-                    OrderRow.symbol == symbol, OrderRow.status.not_in(terminal)
+                    OrderRow.run_id == self._run_id,
+                    OrderRow.symbol == symbol,
+                    OrderRow.status.not_in(terminal),
                 )
             )
             return [
@@ -166,13 +234,15 @@ class SqlAlchemyOrderRepository(OrderRepository):
 
 
 class SqlAlchemyTradeRepository(TradeRepository):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
+        self._run_id = run_id
 
     def save_fill(self, result: OrderResult) -> None:
         with self._session_factory.begin() as session:
             session.add(
                 TradeRow(
+                    run_id=self._run_id,
                     broker_order_id=result.broker_order_id,
                     symbol=result.symbol,
                     side=result.side.value,
@@ -186,21 +256,26 @@ class SqlAlchemyTradeRepository(TradeRepository):
         with self._session_factory() as session:
             return (
                 session.scalars(
-                    select(TradeRow.id).where(TradeRow.broker_order_id == broker_order_id)
+                    select(TradeRow.id).where(
+                        TradeRow.run_id == self._run_id,
+                        TradeRow.broker_order_id == broker_order_id,
+                    )
                 ).first()
                 is not None
             )
 
 
 class SqlAlchemyPositionSnapshotRepository(PositionSnapshotRepository):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
+        self._run_id = run_id
 
-    def save_snapshot(self, timestamp: datetime, positions: Iterable[Position]) -> None:
+    def save_snapshot(self, timestamp: datetime, state: AccountState) -> None:
         with self._session_factory.begin() as session:
-            for position in positions:
+            for position in state.positions.values():
                 session.add(
                     PositionSnapshotRow(
+                        run_id=self._run_id,
                         timestamp=timestamp,
                         symbol=position.symbol,
                         qty=Decimal(str(position.qty)),
@@ -209,11 +284,21 @@ class SqlAlchemyPositionSnapshotRepository(PositionSnapshotRepository):
                         unrealized_pnl=Decimal(str(position.unrealized_pnl)),
                     )
                 )
+            session.add(
+                EquitySnapshotRow(
+                    run_id=self._run_id,
+                    timestamp=timestamp,
+                    equity=Decimal(str(state.equity)),
+                    cash=Decimal(str(state.cash)),
+                    buying_power=Decimal(str(state.buying_power)),
+                )
+            )
 
 
 class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
+        self._run_id = run_id
 
     def save(
         self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
@@ -230,6 +315,7 @@ class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
         with self._session_factory.begin() as session:
             session.add(
                 RegimeEvaluationRow(
+                    run_id=self._run_id,
                     timestamp=timestamp,
                     symbol=assessment.symbol,
                     regime=assessment.regime.value,
@@ -242,13 +328,15 @@ class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
 
 
 class SqlAlchemyStrategyAssignmentRepository(StrategyAssignmentRepository):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
+        self._run_id = run_id
 
     def save(self, assignment: StrategyAssignment) -> None:
         with self._session_factory.begin() as session:
             session.add(
                 StrategyAssignmentRow(
+                    run_id=self._run_id,
                     symbol=assignment.symbol,
                     strategy=assignment.strategy,
                     regime=assignment.regime.value,
@@ -260,6 +348,7 @@ class SqlAlchemyStrategyAssignmentRepository(StrategyAssignmentRepository):
         with self._session_factory() as session:
             rows = session.scalars(
                 select(StrategyAssignmentRow)
+                .where(StrategyAssignmentRow.run_id == self._run_id)
                 .distinct(StrategyAssignmentRow.symbol)
                 .order_by(StrategyAssignmentRow.symbol, StrategyAssignmentRow.since.desc())
             )
@@ -272,6 +361,119 @@ class SqlAlchemyStrategyAssignmentRepository(StrategyAssignmentRepository):
                 )
                 for row in rows
             }
+
+
+class SqlAlchemyRunRepository(RunRepository):
+    """Unscoped by design: manages the runs themselves."""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def create(
+        self,
+        run_type: RunType,
+        config: dict[str, Any],
+        symbols: Sequence[str],
+        started_at: datetime,
+        backtest_start: datetime | None = None,
+        backtest_end: datetime | None = None,
+    ) -> UUID:
+        run_id = uuid4()
+        with self._session_factory.begin() as session:
+            session.add(
+                RunRow(
+                    run_id=run_id,
+                    run_type=run_type.value,
+                    started_at=started_at,
+                    finished_at=None,
+                    config=config,
+                    symbols=list(symbols),
+                    backtest_start=backtest_start,
+                    backtest_end=backtest_end,
+                    note=None,
+                )
+            )
+        return run_id
+
+    def finish(self, run_id: UUID, finished_at: datetime) -> None:
+        with self._session_factory.begin() as session:
+            row = session.get(RunRow, run_id)
+            if row is not None:
+                row.finished_at = finished_at
+
+    def get(self, run_id: UUID) -> RunInfo | None:
+        with self._session_factory() as session:
+            row = session.get(RunRow, run_id)
+            if row is None:
+                return None
+            return RunInfo(
+                run_id=row.run_id,
+                run_type=RunType(row.run_type),
+                started_at=row.started_at,
+                finished_at=row.finished_at,
+                symbols=list(row.symbols),
+                backtest_start=row.backtest_start,
+                backtest_end=row.backtest_end,
+            )
+
+    def list_run_ids(self, run_type: RunType | None = None) -> list[UUID]:
+        stmt = select(RunRow.run_id).order_by(RunRow.started_at)
+        if run_type is not None:
+            stmt = stmt.where(RunRow.run_type == run_type.value)
+        with self._session_factory() as session:
+            return list(session.scalars(stmt))
+
+    def delete(self, run_id: UUID) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(delete(RunRow).where(RunRow.run_id == run_id))
+
+
+class SqlAlchemyBacktestMetricsRepository(BacktestMetricsRepository):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save_metrics(self, run_id: UUID, metrics: Sequence[MetricValue]) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(delete(BacktestMetricRow).where(BacktestMetricRow.run_id == run_id))
+            for metric in metrics:
+                session.add(
+                    BacktestMetricRow(
+                        run_id=run_id,
+                        name=metric.name,
+                        symbol=metric.symbol,
+                        value=Decimal(str(metric.value)),
+                    )
+                )
+
+
+class SqlAlchemyAnalysisReader(AnalysisReader):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def list_trades(self, run_id: UUID) -> list[TradeRecord]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(TradeRow).where(TradeRow.run_id == run_id).order_by(TradeRow.timestamp)
+            )
+            return [
+                TradeRecord(
+                    symbol=row.symbol,
+                    side=Side(row.side),
+                    qty=float(row.qty),
+                    price=float(row.price),
+                    timestamp=row.timestamp,
+                )
+                for row in rows
+            ]
+
+    def list_equity(self, run_id: UUID) -> list[EquityPoint]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EquitySnapshotRow)
+                .where(EquitySnapshotRow.run_id == run_id)
+                .order_by(EquitySnapshotRow.timestamp)
+            )
+            return [EquityPoint(timestamp=row.timestamp, equity=float(row.equity)) for row in rows]
 
 
 class SqlAlchemyConfigurationRepository(ConfigurationRepository):
