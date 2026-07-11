@@ -60,7 +60,7 @@ def upgrade() -> None:
 
     for table, (index_name, index_columns) in _RUN_SCOPED_TABLES.items():
         op.add_column(table, sa.Column("run_id", sa.Uuid(), nullable=True))
-        op.execute(f"UPDATE {table} SET run_id = '{LEGACY_RUN_ID}'")  # noqa: S608
+        op.execute(f"UPDATE {table} SET run_id = '{LEGACY_RUN_ID}'")
         op.alter_column(table, "run_id", nullable=False)
         op.create_foreign_key(
             f"fk_{table}_run_id_runs", table, "runs", ["run_id"], ["run_id"], ondelete="CASCADE"

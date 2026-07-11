@@ -414,6 +414,7 @@ class SqlAlchemyRunRepository(RunRepository):
                 symbols=list(row.symbols),
                 backtest_start=row.backtest_start,
                 backtest_end=row.backtest_end,
+                config=dict(row.config),
             )
 
     def list_run_ids(self, run_type: RunType | None = None) -> list[UUID]:

@@ -1,7 +1,7 @@
 """Application config (watchlist, strategy and risk parameters) from YAML."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -74,6 +74,21 @@ class BacktestConfig(BaseModel):
     slippage_pct: float = Field(default=0.0005, ge=0)
 
 
+class ObjectiveConfig(BaseModel):
+    """A named fitness definition: weighted composite of analyzer metrics.
+
+    The weight's sign encodes direction: positive -> higher is better,
+    negative -> lower is better. Every run's analysis computes one fitness
+    score per named objective, so runs are comparable regardless of what
+    launched them (manual, optimizer, ...).
+    """
+
+    weights: dict[str, float] = Field(min_length=1)
+    #: what to do when a weighted metric is absent from the run's results
+    on_missing_metric: Literal["penalize", "zero", "fail"] = "penalize"
+    penalty_score: float = -1_000_000.0
+
+
 class AppConfig(BaseModel):
     watchlist: WatchlistConfig
     engine: EngineConfig = EngineConfig()
@@ -81,6 +96,7 @@ class AppConfig(BaseModel):
     regime: RegimeConfig | None = None
     risk: RiskConfig = RiskConfig()
     backtest: BacktestConfig = BacktestConfig()
+    objectives: dict[str, ObjectiveConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _exactly_one_strategy_source(self) -> "AppConfig":

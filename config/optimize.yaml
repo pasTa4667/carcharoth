@@ -1,0 +1,36 @@
+# Optimization study configuration for `carcharoth optimize`.
+#
+# Each search_space key is a dot-path into config.yaml; changing which
+# parameters get optimized never requires a code change. Every trial is a
+# normal, fully persisted backtest run (visible in Grafana); Optuna keeps
+# its own study data in separate tables in the same Postgres.
+
+study:
+  name: mr-sweep-2026h1
+  n_trials: 10
+  sampler_seed: 42           # omit for nondeterministic sampling
+
+backtest:
+  start: 2026-06-01          # YYYY-MM-DD (UTC)
+  end: 2026-06-30            # inclusive, like `carcharoth backtest --end`
+  symbols: [AAPL, MSFT, TSLA, JPM]    # optional; defaults to the config.yaml watchlist
+
+# Which named objective (config.yaml `objectives:` section) the study
+# maximizes. The optimizer reads the run's persisted `fitness_<name>` metric.
+objective: default
+
+# Hard constraints: a violating trial is reported to the sampler as heavily
+# penalized (search guidance); the run's stored fitness stays untouched.
+constraints:
+  - {metric: num_trades, min: 20}
+  - {metric: max_drawdown, max: 0.30}
+
+search_space:
+  regime.regimes.mean_reverting.params.entry_z:
+    {type: float, low: -3.0, high: -0.5, step: 0.1}
+  regime.regimes.mean_reverting.params.lookback:
+    {type: int, low: 10, high: 60}
+  regime.regimes.mean_reverting.params.atr_stop_multiplier:
+    {type: float, low: 1.5, high: 5.0}
+  risk.max_position_pct_equity:
+    {type: float, low: 0.05, high: 0.25, log: true}

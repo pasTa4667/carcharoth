@@ -5,9 +5,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from carcharoth.config.app_config import AppConfig
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
+    BacktestResult,
     Bar,
     BarSpec,
     EquityPoint,
@@ -275,6 +277,7 @@ class InMemoryRunRepository(RunRepository):
             symbols=list(symbols),
             backtest_start=backtest_start,
             backtest_end=backtest_end,
+            config=dict(config),
         )
         return run_id
 
@@ -288,6 +291,7 @@ class InMemoryRunRepository(RunRepository):
             symbols=info.symbols,
             backtest_start=info.backtest_start,
             backtest_end=info.backtest_end,
+            config=info.config,
         )
 
     def get(self, run_id: UUID) -> RunInfo | None:
@@ -326,6 +330,32 @@ class InMemoryAnalysisReader(AnalysisReader):
 
     def list_equity(self, run_id: UUID) -> list[EquityPoint]:
         return list(self.equity.get(run_id, []))
+
+
+class FakeBacktestFunc:
+    """Scripted BacktestFunc: returns one metrics list per call (the last
+    entry repeats once exhausted); an Exception entry is raised instead.
+    Records every received config and the run_ids it handed out."""
+
+    def __init__(self, scripted: Sequence[Sequence[MetricValue] | Exception]) -> None:
+        self.scripted = list(scripted)
+        self.calls: list[AppConfig] = []
+        self.run_ids: list[UUID] = []
+
+    def __call__(
+        self,
+        config: AppConfig,
+        start: datetime,
+        end_exclusive: datetime,
+        symbols: Sequence[str],
+    ) -> BacktestResult:
+        self.calls.append(config)
+        entry = self.scripted[min(len(self.calls) - 1, len(self.scripted) - 1)]
+        if isinstance(entry, Exception):
+            raise entry
+        run_id = uuid4()
+        self.run_ids.append(run_id)
+        return BacktestResult(run_id=run_id, metrics=list(entry))
 
 
 class FakeDetector(RegimeDetector):

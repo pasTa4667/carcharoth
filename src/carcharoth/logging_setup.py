@@ -14,8 +14,9 @@ from uuid import UUID
 
 import yaml
 
+from carcharoth.analysis.objective import FITNESS_PREFIX
 from carcharoth.config.app_config import RegimeConfig, RiskConfig
-from carcharoth.domain.models import MetricValue
+from carcharoth.domain.models import MetricValue, OptimizationResult
 
 TRADES_LOGGER = "carcharoth.trades"
 DECISIONS_LOGGER = "carcharoth.decisions"
@@ -85,9 +86,12 @@ def write_backtest_summary(
 
     flat: dict[str, float] = {}
     per_symbol: dict[str, float] = {}
+    fitness: dict[str, float] = {}
     for m in metrics:
         if m.symbol is not None:
             per_symbol[m.symbol] = m.value
+        elif m.name.startswith(FITNESS_PREFIX):
+            fitness[m.name.removeprefix(FITNESS_PREFIX)] = m.value
         else:
             flat[m.name] = m.value
     results: dict[str, object] = {**flat}
@@ -105,6 +109,38 @@ def write_backtest_summary(
         "config": config_block,
         "results": results,
     }
+    if fitness:
+        summary["fitness"] = fitness
 
     with open(backtest_dir / f"{run_id}.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def write_optimize_summary(
+    log_dir: Path, finished_at: datetime, objective: str, result: OptimizationResult
+) -> None:
+    """Study-level summary only. Per-trial data lives in Optuna's storage;
+    each trial run has its own backtest summary and database rows."""
+    optimize_dir = log_dir / "optimize"
+    optimize_dir.mkdir(parents=True, exist_ok=True)
+
+    summary: dict[str, object] = {
+        "study": result.study_name,
+        "date": finished_at.isoformat(),
+        "objective": objective,
+        "trials": {
+            "complete": result.n_complete,
+            "infeasible": result.n_infeasible,
+            "failed": result.n_failed,
+        },
+    }
+    if result.best_trial_number is not None:
+        summary["best"] = {
+            "trial": result.best_trial_number,
+            "score": result.best_score,
+            "run_id": str(result.best_run_id) if result.best_run_id else None,
+            "params": dict(result.best_params),
+        }
+
+    with open(optimize_dir / f"{result.study_name}.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

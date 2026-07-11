@@ -10,3 +10,5 @@ class Settings(BaseSettings):
     apca_api_secret_key: str
     apca_api_base_url: str = "https://paper-api.alpaca.markets/v2"
     database_url: str = "postgresql+psycopg://carcharoth:carcharoth@localhost:5432/carcharoth"
+    #: where Optuna keeps its study tables; defaults to database_url
+    optuna_database_url: str | None = None

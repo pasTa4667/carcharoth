@@ -60,7 +60,10 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
 ### 6. Configuration
 - **Secrets** (`.env`, gitignored): API keys, database URL, Grafana credentials
 - **Everything else** (`config/config.yaml`): watchlist, tick interval, bar timeframe, strategy
-  parameters, risk limits
+  parameters, risk limits, named fitness objectives (`objectives:` — weighted metric
+  composites every backtest analysis scores itself against)
+- **Optimization studies** (`config/optimize.yaml`): search space (dot-paths into
+  config.yaml), study budget, backtest window, constraints — see *Running an Optimization*
 - Config is validated with Pydantic at startup; invalid config fails fast
 
 **Why:** Secrets are never committed; configuration is version-controlled and auditable.
@@ -85,7 +88,14 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
 - `configurations` — effective config of each run
 - `regime_evaluations` — market regime classifications
 - `strategy_assignments` — which regime → strategy assignment was active
-- `backtest_metrics` — analyzer results per backtest run (key/value rows, optional symbol)
+- `backtest_metrics` — analyzer results per backtest run (key/value rows, optional symbol),
+  including one `fitness_<objective>` row per named objective
+
+**Optuna** (`carcharoth optimize`) keeps its own tables (`studies`, `trials`, ...) in a
+dedicated `optuna` schema of the same Postgres (created automatically; Optuna's internal
+`alembic_version` table would collide with carcharoth's in `public`). They are not part of
+`orm.py`, and `alembic/env.py` additionally filters autogenerate to tables in
+`Base.metadata`, so Optuna's tables are never picked up (or dropped) by migrations.
 
 ### 8. Logging
 - Rotating logs in `logs/`:
@@ -161,6 +171,34 @@ Simulation parameters (initial capital, spread, slippage) live in the `backtest`
 strategies (`required_bars()`), so there is no `--timeframe` flag. Results appear in the
 **Backtest Results** Grafana dashboard (pick the run in the dashboard variable).
 
+Every backtest's analysis also scores the run against each named objective in
+`config/config.yaml` (`objectives:` — weighted metric composites) and persists the score as
+a `fitness_<name>` metric plus a `fitness:` block in the run's summary YAML
+(`logs/backtests/<run_id>.yaml`) — so runs are comparable no matter what launched them.
+
+### Running an Optimization
+`carcharoth optimize` runs an Optuna study: each trial suggests parameter values from the
+search space in `config/optimize.yaml` (dot-paths into config.yaml, e.g.
+`regime.regimes.mean_reverting.params.entry_z`), runs a **normal fully-persisted backtest**
+with the overridden config, and maximizes the run's `fitness_<objective>` metric. Which
+parameters are optimized is pure configuration — no code changes.
+
+```bash
+uv run carcharoth optimize                                   # config/optimize.yaml
+uv run carcharoth optimize --n-trials 20 --study-name probe  # budget/identity overrides
+```
+
+- Studies are **resumable**: re-running with the same study name continues it (Optuna's
+  storage defaults to `DATABASE_URL`; override with `OPTUNA_DATABASE_URL` in `.env`)
+- Trial runs are indistinguishable from manual backtests; the trial → `run_id` linkage
+  lives only in Optuna's trial user attributes
+- Hard `constraints` in optimize.yaml (e.g. `num_trades` ≥ 20) steer the sampler via a
+  penalty score; the run's stored fitness stays the honest weighted score
+- A study summary is written to `logs/optimize/<study_name>.yaml`; browse trials with
+  `uvx --with 'psycopg[binary]' optuna-dashboard '<storage url>'` — the exact URL (scoped
+  to the `optuna` schema) is printed at the end of every optimize run
+- Historical bars are cached in-process across trials (one fetch per distinct timeframe)
+
 ### Monitoring
 - **Grafana**: `http://localhost:3333` (see `.env` for credentials) — dashboards:
   *Trading Overview* (live, PAPER runs only), *Live Analysis* (equity/drawdown per paper
@@ -186,12 +224,13 @@ src/carcharoth/
 ├── main.py                # Composition root (wiring) + CLI subcommands
 ├── engine/                # Scheduler + trading logic
 ├── interfaces/            # Component contracts (ABCs)
-├── services/              # Provider implementations (alpaca/, backtest/, cache/)
+├── services/              # Provider implementations (alpaca/, backtest/, cache/, optuna/)
 ├── strategies/            # Trading strategies
 ├── domain/                # Pure domain models
 ├── risk/                  # Risk management
 ├── backtest/              # Backtest runner (historical replay loop)
-├── analysis/              # Post-run metrics + analyzer
+├── analysis/              # Post-run metrics + analyzer + objective (fitness) scoring
+├── optimize/              # Optimization support logic (overrides, constraints, bars cache)
 ├── persistence/           # Data access (ORM, repos)
 ├── config/                # Configuration + validation
 ├── regime/                # Market regime detection
@@ -203,7 +242,8 @@ tests/
 └── conftest.py            # Fixtures
 
 config/
-└── config.yaml            # App configuration (YAML)
+├── config.yaml            # App configuration (YAML)
+└── optimize.yaml          # Optimization study configuration (search space, budget)
 
 alembic/
 ├── versions/              # Database migration scripts
@@ -219,6 +259,7 @@ docker/
 
 ## Links
 - [Alpaca API Docs](https://docs.alpaca.markets)
+- [Optuna Documentation](https://optuna.readthedocs.io)
 - [Alembic Migration Guide](https://alembic.sqlalchemy.org)
 - [Pydantic Documentation](https://docs.pydantic.dev)
 - [SQLAlchemy ORM](https://docs.sqlalchemy.org/en/20)

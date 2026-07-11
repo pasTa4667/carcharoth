@@ -3,9 +3,14 @@ from datetime import UTC, datetime
 
 import yaml
 
-from carcharoth.config.app_config import RegimeConfig, RegimeFeatureConfig, RegimeStrategyConfig, RiskConfig
-from carcharoth.domain.models import MetricValue
-from carcharoth.logging_setup import write_backtest_summary
+from carcharoth.config.app_config import (
+    RegimeConfig,
+    RegimeFeatureConfig,
+    RegimeStrategyConfig,
+    RiskConfig,
+)
+from carcharoth.domain.models import MetricValue, OptimizationResult
+from carcharoth.logging_setup import write_backtest_summary, write_optimize_summary
 
 
 def _run_id() -> uuid.UUID:
@@ -101,9 +106,68 @@ def test_per_symbol_metrics_grouped(tmp_path):
     assert doc["results"]["per_symbol"]["MSFT"] == -10.5
 
 
+def test_fitness_metrics_get_own_block(tmp_path):
+    run_id = _run_id()
+    metrics = [
+        MetricValue(name="sharpe", value=1.2),
+        MetricValue(name="fitness_default", value=3.82),
+    ]
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), metrics)
+    doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
+    assert doc["fitness"]["default"] == 3.82
+    assert "fitness_default" not in doc["results"]
+    assert doc["results"]["sharpe"] == 1.2
+
+
+def test_no_fitness_key_when_no_objectives(tmp_path):
+    run_id = _run_id()
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), [])
+    doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
+    assert "fitness" not in doc
+
+
 def test_no_per_symbol_key_when_empty(tmp_path):
     run_id = _run_id()
     metrics = [MetricValue(name="total_return", value=0.01)]
     write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), metrics)
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert "per_symbol" not in doc["results"]
+
+
+def test_optimize_summary_contains_study_and_best(tmp_path):
+    run_id = _run_id()
+    result = OptimizationResult(
+        study_name="sweep",
+        best_trial_number=3,
+        best_score=3.82,
+        best_params={"risk.max_open_positions": 4},
+        best_run_id=run_id,
+        n_complete=10,
+        n_failed=1,
+        n_infeasible=2,
+    )
+    write_optimize_summary(tmp_path, _started_at(), "default", result)
+    doc = yaml.safe_load((tmp_path / "optimize" / "sweep.yaml").read_text())
+    assert doc["study"] == "sweep"
+    assert doc["objective"] == "default"
+    assert doc["trials"] == {"complete": 10, "infeasible": 2, "failed": 1}
+    assert doc["best"]["trial"] == 3
+    assert doc["best"]["score"] == 3.82
+    assert doc["best"]["run_id"] == str(run_id)
+    assert doc["best"]["params"] == {"risk.max_open_positions": 4}
+
+
+def test_optimize_summary_without_completed_trials_omits_best(tmp_path):
+    result = OptimizationResult(
+        study_name="dry",
+        best_trial_number=None,
+        best_score=None,
+        best_params={},
+        best_run_id=None,
+        n_complete=0,
+        n_failed=5,
+        n_infeasible=0,
+    )
+    write_optimize_summary(tmp_path, _started_at(), "default", result)
+    doc = yaml.safe_load((tmp_path / "optimize" / "dry.yaml").read_text())
+    assert "best" not in doc

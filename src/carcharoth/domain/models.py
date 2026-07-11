@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 
@@ -190,6 +190,8 @@ class RunInfo:
     symbols: list[str]
     backtest_start: datetime | None = None
     backtest_end: datetime | None = None
+    #: the effective configuration the run started with (JSON dump of AppConfig)
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +220,29 @@ class MetricValue:
     name: str
     value: float
     symbol: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestResult:
+    """Outcome of one backtest run: its id plus the analyzer's metrics."""
+
+    run_id: UUID
+    metrics: list[MetricValue]
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizationResult:
+    """Outcome of one optimization study; best_* fields are None when no
+    trial completed."""
+
+    study_name: str
+    best_trial_number: int | None
+    best_score: float | None
+    best_params: dict[str, Any]
+    best_run_id: UUID | None
+    n_complete: int
+    n_failed: int
+    n_infeasible: int
 
 
 @dataclass(frozen=True, slots=True)

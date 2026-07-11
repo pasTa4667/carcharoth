@@ -43,6 +43,42 @@ Backtest-specific components (wired in `main.py` instead of the Alpaca services)
   **Fill contract:** `submit()` returns ACCEPTED (while filling internally); `get_order()`
   reports FILLED — so the engine's normal reconcile step records the trade, exactly as live.
 
+### Optimization Flow
+
+`carcharoth optimize` wraps the unchanged backtest flow in an Optuna study:
+
+```
+carcharoth optimize
+   │
+   ├─ load config.yaml (raw + validated) and optimize.yaml (search space, budget, window)
+   └──> OptunaOptimizer (services/optuna/) — the only optuna-importing package
+        per trial:
+        ├─ suggest values for each search-space dot-path (e.g. risk.max_position_pct_equity)
+        ├─ apply_overrides() on the raw config dict → AppConfig.model_validate()
+        │    (invalid combinations FAIL the trial; the study continues)
+        ├─ BacktestFunc → run_backtest_once()   — a normal, fully persisted backtest run
+        ├─ trial.user_attr run_id = <run's id>  — linkage lives on the Optuna side only
+        └─ objective value = the run's fitness_<objective> metric
+             (constraint violations return the penalty score instead — search guidance
+              only; the run's persisted fitness is untouched)
+   after the study: study summary → logs/optimize/<study_name>.yaml
+```
+
+Key properties:
+- **Runs stay independent**: a trial's backtest run is indistinguishable from a manual one;
+  the backtest side knows nothing about Optuna.
+- **Fitness is an analysis output, not an optimizer computation**: every backtest scores
+  itself against each named objective in `config.yaml` (`objectives:`) and persists
+  `fitness_<name>` to `backtest_metrics`. The optimizer just reads it.
+- **Config-driven search space**: `config/optimize.yaml` maps dot-paths to distributions
+  (int/float/categorical); changing what gets optimized requires no code change.
+- **Optuna storage**: its own `optuna` schema in the same Postgres (`OPTUNA_DATABASE_URL`
+  overrides; `services/optuna/storage.py` creates the schema and scopes the URL — Optuna's
+  internal `alembic_version` would otherwise collide with carcharoth's). Studies are
+  resumable by name. `alembic/env.py` also filters autogenerate to carcharoth tables.
+- **Bars cache**: one in-process union-window cache (`optimize/bars_cache.py`) serves all
+  trials; the warm-up prefix varies per trial, so the cache widens instead of re-fetching.
+
 ### Run Tracking
 
 Every start creates a row in `runs` (`run_type` PAPER for live sessions, BACKTEST for
@@ -76,6 +112,9 @@ Each module defines one abstract class that a concrete implementation must exten
 - `strategy_provider.py` → `StrategyProvider` — provide strategy (single or regime-based)
 - `risk.py` → `RiskManager` — approve/reject orders and size positions
 - `cache.py` → `Cache` — optional caching layer
+- `optimization.py` → `BarsFetcher` / `BacktestFunc` (Protocols) + `ParameterOptimizer` (ABC)
+  — the optimizer consumes a backtest as a callable; swapping the optimization library
+  touches only `services/optuna/`
 - `repository.py` — SQLAlchemy repository ABCs for persistence
 
 **Why:** Tests inject fakes; real code uses Alpaca. Swapping providers means 4 interface
@@ -107,6 +146,9 @@ interfaces in order.
   - `broker.py` → `SimulatedBroker` (implements `AccountService` + `OrderExecutor`)
 - `cache/` — caching implementations
   - `noop.py` → `NoOpCache` — no-op cache (current default)
+- `optuna/` — Optuna adapter (the only package that imports optuna)
+  - `optimizer.py` → `OptunaOptimizer` (implements `ParameterOptimizer`)
+  - `search_space.py` — config-driven search space → `trial.suggest_*` mapping
 
 All Alpaca SDK types stay inside `alpaca/`; external code works with domain models.
 
@@ -122,9 +164,20 @@ All Alpaca SDK types stay inside `alpaca/`; external code works with domain mode
 
 - `metrics.py` — pure metric computations: FIFO round-trip matching, total return, max
   drawdown, annualized Sharpe, win rate, profit factor, per-symbol PnL
+- `objective.py` — pure fitness scoring: weighted composite over metrics per named
+  objective (`objectives:` in config.yaml); persisted as `fitness_<name>` per run
 - `analyzer.py` — `BacktestAnalyzer` — reads a run's persisted trades/equity, computes
-  metrics and persists them to `backtest_metrics` (runs automatically after each backtest;
-  re-run anytime with `carcharoth analyze --run-id X`)
+  metrics (incl. fitness) and persists them to `backtest_metrics` (runs automatically after
+  each backtest; `carcharoth analyze --run-id X` recomputes against the run's own config)
+
+### `src/carcharoth/optimize/`
+**Optimization Support Logic** (pure, optimizer-library-agnostic)
+
+- `overrides.py` — dot-path overrides on the raw config dict; strict paths so a typo'd
+  search-space entry fails fast instead of silently optimizing a dead parameter
+- `constraints.py` — hard-constraint checks on trial metrics (optimizer-side only)
+- `bars_cache.py` — `BarsCache` (implements `BarsFetcher`) — in-process union-window cache
+  of historical bars across trials
 
 ### `src/carcharoth/strategies/`
 **Trading Strategies**
@@ -261,6 +314,15 @@ This enables post-trade analysis, regime/strategy evaluation and comparison betw
 1. Create `risk/my_risk_manager.py` → implement `RiskManager`
 2. Update `main.py` to instantiate it
 
+### Change What Gets Optimized
+Edit `config/optimize.yaml` only — search-space entries are dot-paths into `config.yaml`.
+New objective? Add it under `objectives:` in `config.yaml` and reference it by name.
+
+### Swap the Optimization Library
+1. Create `services/<library>/` → implement `ParameterOptimizer`
+   (consume the `BacktestFunc` callable; read the run's `fitness_<objective>` metric)
+2. Update `main.py` wiring — `optimize/` (overrides, constraints, bars cache) is reusable
+
 ---
 
 ## Testing Philosophy
@@ -330,6 +392,7 @@ uv run carcharoth delete-run --run-id <uuid>    # or --all-backtests
 | `sqlalchemy` | ORM |
 | `alembic` | Database migrations |
 | `pydantic` | Config validation |
+| `optuna` | Parameter optimization (`carcharoth optimize`) |
 | `pandas` | Data analysis |
 | `ta-lib` | Technical indicators (RSI, MACD, etc.) |
 | `numpy`, `scipy` | Numerical computation |
