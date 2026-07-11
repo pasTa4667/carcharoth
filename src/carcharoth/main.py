@@ -345,7 +345,7 @@ def _run_optimize(
         )
         logger.info(
             "inspect the winning run in the 'Backtest Results' Grafana dashboard "
-            "(run %s); browse the study: uvx optuna-dashboard '%s'",
+            "(run %s); browse the study: uvx --with 'psycopg[binary]' optuna-dashboard '%s'",
             result.best_run_id,
             storage_url,
         )
@@ -416,6 +416,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--symbols", type=lambda s: s.split(","), default=None, help="comma-separated override"
     )
     backtest.add_argument("--config", type=Path, default=CONFIG_PATH, help="config YAML path")
+    backtest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
     optimize = subparsers.add_parser(
         "optimize", help="optimize config parameters over backtests (Optuna)"
@@ -429,6 +430,7 @@ def _build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--config", type=Path, default=CONFIG_PATH, help="base config YAML path")
     optimize.add_argument("--n-trials", type=int, default=None, help="override study.n_trials")
     optimize.add_argument("--study-name", type=str, default=None, help="override study.name")
+    optimize.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
     analyze = subparsers.add_parser("analyze", help="recompute metrics for a run")
     analyze.add_argument("--run-id", type=UUID, required=True)
@@ -449,7 +451,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         args_list = ["run"]  # plain `carcharoth` keeps starting the live bot
     args = _build_parser().parse_args(args_list)
 
-    setup_logging(LOG_DIR)
+    console_level = (
+        "INFO" if args.command == "run" or getattr(args, "verbose", False) else "WARNING"
+    )
+    setup_logging(LOG_DIR, console_level=console_level)
 
     if args.command == "run":
         _run_live(args.config)

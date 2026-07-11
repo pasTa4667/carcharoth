@@ -24,7 +24,7 @@ DECISIONS_LOGGER = "carcharoth.decisions"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 
-def setup_logging(log_dir: Path) -> None:
+def setup_logging(log_dir: Path, console_level: str = "INFO") -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     def file_handler(filename: str, level: str = "INFO") -> dict[str, object]:
@@ -46,7 +46,7 @@ def setup_logging(log_dir: Path) -> None:
                 "console": {
                     "class": "logging.StreamHandler",
                     "formatter": "standard",
-                    "level": "INFO",
+                    "level": console_level,
                 },
                 "app_file": file_handler("app.log"),
                 "errors_file": file_handler("errors.log", level="ERROR"),
