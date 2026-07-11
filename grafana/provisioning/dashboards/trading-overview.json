@@ -671,6 +671,142 @@
                         "index": 0,
                         "text": "BUY"
                       },
+                      "sell": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "SELL"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "risk_approved"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "false": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "rejected"
+                      },
+                      "true": {
+                        "color": "green",
+                        "index": 1,
+                        "text": "approved"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "id": 15,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "timestamp"
+          }
+        ]
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  timestamp,\n  symbol,\n  signal,\n  risk_approved,\n  reason,\n  (indicators->>'zscore')::double precision AS zscore,\n  (indicators->>'rsi')::double precision AS rsi,\n  (indicators->>'price')::double precision AS price\nFROM strategy_decisions\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND $__timeFilter(timestamp)\n  AND symbol IN (${symbol:sqlstring})\n  AND signal IN ('buy', 'sell')\nORDER BY timestamp DESC\nLIMIT 50",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Buy/Sell Decisions",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "buy": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "BUY"
+                      },
                       "hold": {
                         "color": "yellow",
                         "index": 1,
@@ -729,7 +865,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 22
       },
       "id": 8,
       "options": {
@@ -929,7 +1065,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 32
       },
       "id": 10,
       "options": {
@@ -1152,7 +1288,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 40
       },
       "id": 12,
       "options": {
@@ -1353,7 +1489,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 38
+        "y": 48
       },
       "id": 14,
       "options": {

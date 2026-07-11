@@ -29,7 +29,7 @@ from carcharoth.engine.engine import TradingEngine
 from carcharoth.engine.scheduler import Scheduler
 from carcharoth.engine.strategy_provider import RegimeStrategyProvider, SingleStrategyProvider
 from carcharoth.interfaces import StrategyProvider
-from carcharoth.logging_setup import setup_logging
+from carcharoth.logging_setup import setup_logging, write_backtest_summary
 from carcharoth.persistence.db import build_engine, build_session_factory
 from carcharoth.persistence.repositories import (
     RunRepository,
@@ -180,11 +180,12 @@ def _run_backtest(
     session_factory = build_session_factory(db_engine)
     try:
         runs_repo = SqlAlchemyRunRepository(session_factory)
+        started_at = datetime.now(UTC)
         run_id = runs_repo.create(
             run_type=RunType.BACKTEST,
             config=config.model_dump(mode="json"),
             symbols=watchlist,
-            started_at=datetime.now(UTC),
+            started_at=started_at,
             backtest_start=start,
             backtest_end=end_exclusive,
         )
@@ -244,10 +245,11 @@ def _run_backtest(
         runner.run()
         runs_repo.finish(run_id, datetime.now(UTC))
 
-        BacktestAnalyzer(
+        metrics = BacktestAnalyzer(
             reader=SqlAlchemyAnalysisReader(session_factory),
             metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
         ).analyze(run_id)
+        write_backtest_summary(LOG_DIR, run_id, started_at, config.regime, config.risk, metrics)
         logger.info("backtest run %s complete", run_id)
     finally:
         db_engine.dispose()
@@ -255,16 +257,20 @@ def _run_backtest(
 
 def _run_analyze(run_id: UUID) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
+    config = load_config(CONFIG_PATH)
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
     try:
         run = SqlAlchemyRunRepository(session_factory).get(run_id)
         if run is None:
             raise SystemExit(f"no run with id {run_id}")
-        BacktestAnalyzer(
+        metrics = BacktestAnalyzer(
             reader=SqlAlchemyAnalysisReader(session_factory),
             metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
         ).analyze(run_id)
+        write_backtest_summary(
+            LOG_DIR, run_id, datetime.now(UTC), config.regime, config.risk, metrics
+        )
     finally:
         db_engine.dispose()
 

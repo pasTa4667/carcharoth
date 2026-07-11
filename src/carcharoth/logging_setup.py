@@ -6,8 +6,16 @@ Loggers:
 - ``carcharoth.decisions``   -> decisions.log only (high volume, does not propagate)
 """
 
+import logging
 import logging.config
+from datetime import datetime
 from pathlib import Path
+from uuid import UUID
+
+import yaml
+
+from carcharoth.config.app_config import RegimeConfig, RiskConfig
+from carcharoth.domain.models import MetricValue
 
 TRADES_LOGGER = "carcharoth.trades"
 DECISIONS_LOGGER = "carcharoth.decisions"
@@ -62,3 +70,41 @@ def setup_logging(log_dir: Path) -> None:
             },
         }
     )
+
+
+def write_backtest_summary(
+    log_dir: Path,
+    run_id: UUID,
+    started_at: datetime,
+    regime_cfg: RegimeConfig | None,
+    risk_cfg: RiskConfig,
+    metrics: list[MetricValue],
+) -> None:
+    backtest_dir = log_dir / "backtests"
+    backtest_dir.mkdir(parents=True, exist_ok=True)
+
+    flat: dict[str, float] = {}
+    per_symbol: dict[str, float] = {}
+    for m in metrics:
+        if m.symbol is not None:
+            per_symbol[m.symbol] = m.value
+        else:
+            flat[m.name] = m.value
+    results: dict[str, object] = {**flat}
+    if per_symbol:
+        results["per_symbol"] = per_symbol
+
+    config_block: dict[str, object] = {}
+    if regime_cfg is not None:
+        config_block["regime"] = regime_cfg.model_dump()
+    config_block["risk"] = risk_cfg.model_dump()
+
+    summary: dict[str, object] = {
+        "run_id": str(run_id),
+        "date": started_at.isoformat(),
+        "config": config_block,
+        "results": results,
+    }
+
+    with open(backtest_dir / f"{run_id}.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
