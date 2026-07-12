@@ -8,9 +8,18 @@ The returned URL is self-contained: the same string works for
 optuna-dashboard.
 """
 
+import optuna
 from sqlalchemy import create_engine, text
 
 OPTUNA_SCHEMA = "optuna"
+
+
+def build_worker_storage(storage_url: str) -> optuna.storages.RDBStorage:
+    """Storage for one parallel optimize worker: a tiny connection pool, so
+    N workers stay well under Postgres's connection limit."""
+    return optuna.storages.RDBStorage(
+        storage_url, engine_kwargs={"pool_size": 1, "max_overflow": 2}
+    )
 
 
 def scoped_storage_url(url: str) -> str:

@@ -10,7 +10,7 @@ from carcharoth.config.app_config import (
     RiskConfig,
 )
 from carcharoth.domain.models import MetricValue, OptimizationResult
-from carcharoth.logging_setup import write_backtest_summary, write_optimize_summary
+from carcharoth.logging_setup import setup_logging, write_backtest_summary, write_optimize_summary
 
 
 def _run_id() -> uuid.UUID:
@@ -171,3 +171,11 @@ def test_optimize_summary_without_completed_trials_omits_best(tmp_path):
     write_optimize_summary(tmp_path, _started_at(), "default", result)
     doc = yaml.safe_load((tmp_path / "optimize" / "dry.yaml").read_text())
     assert "best" not in doc
+
+
+def test_setup_logging_suffix_gives_per_worker_log_files(tmp_path):
+    setup_logging(tmp_path, console_level="WARNING", filename_suffix=".w3")
+
+    for name in ("app", "errors", "trades", "decisions"):
+        assert (tmp_path / f"{name}.w3.log").exists()
+        assert not (tmp_path / f"{name}.log").exists()

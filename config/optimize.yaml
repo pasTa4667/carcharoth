@@ -8,11 +8,13 @@
 study:
   name: mr-sweep-2026h1
   n_trials: 10
-  sampler_seed: 42           # omit for nondeterministic sampling
+  workers: 4                 # parallel worker processes; trials are split across them
+  sampler_seed: 42           # omit for nondeterministic sampling; with workers > 1
+                             # each worker uses seed+index (not reproducible run-to-run)
 
 backtest:
-  start: 2026-06-01          # YYYY-MM-DD (UTC)
-  end: 2026-06-30            # inclusive, like `carcharoth backtest --end`
+  start: 2026-01-01          # YYYY-MM-DD (UTC)
+  end: 2026-03-30            # inclusive, like `carcharoth backtest --end`
   symbols: [AAPL, MSFT, TSLA, JPM]    # optional; defaults to the config.yaml watchlist
 
 # Which named objective (config.yaml `objectives:` section) the study
@@ -26,13 +28,15 @@ constraints:
   - {metric: max_drawdown, max: 0.30}
 
 search_space:
-  regime.regimes.mean_reverting.params.entry_z:
+  strategies.mean_reversion.params.entry_z:
     {type: float, low: -3.0, high: -0.5, step: 0.1}
-  regime.regimes.mean_reverting.params.lookback:
-    {type: int, low: 10, high: 60}
-  regime.regimes.mean_reverting.params.atr_stop_multiplier:
-    {type: float, low: 1.5, high: 5.0}
-  regime.regimes.mean_reverting.params.exit_z:
+  strategies.mean_reversion.params.exit_z:
     {type: float, low: -0.5, high: 0.5, step: 0.1}
+  strategies.mean_reversion.params.lookback:
+    {type: int, low: 10, high: 60}
+  strategies.mean_reversion.params.atr_stop_multiplier:
+    {type: float, low: 1.5, high: 5.0}
+  strategies.mean_reversion.params.rsi_entry_max:
+    {type: float, low: 25.0, high: 50.0, step: 5.0}
   risk.max_position_pct_equity:
     {type: float, low: 0.05, high: 0.25, log: true}

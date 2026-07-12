@@ -41,17 +41,17 @@ objective: growth
 constraints:
   - {metric: num_trades, min: 20}
 search_space:
-  regime.regimes.mean_reverting.params.entry_z: {type: float, low: -3.0, high: -0.5}
-  regime.regimes.mean_reverting.params.timeframe_minutes: {type: categorical, choices: [5, 15]}
+  strategies.mean_reversion.params.entry_z: {type: float, low: -3.0, high: -0.5}
+  strategies.mean_reversion.params.timeframe_minutes: {type: categorical, choices: [5, 15]}
 """
     )
     config = load_optimize_config(path)
     assert config.study.name == "sweep"
     assert config.objective == "growth"
     assert config.constraints[0].metric == "num_trades"
-    entry_z = config.search_space["regime.regimes.mean_reverting.params.entry_z"]
+    entry_z = config.search_space["strategies.mean_reversion.params.entry_z"]
     assert isinstance(entry_z, FloatParam)
-    timeframe = config.search_space["regime.regimes.mean_reverting.params.timeframe_minutes"]
+    timeframe = config.search_space["strategies.mean_reversion.params.timeframe_minutes"]
     assert isinstance(timeframe, CategoricalParam)
 
 
@@ -94,3 +94,13 @@ def test_categorical_needs_two_choices() -> None:
 def test_constraint_needs_a_bound() -> None:
     with pytest.raises(ValidationError):
         ConstraintConfig(metric="num_trades")
+
+
+def test_workers_defaults_to_one() -> None:
+    assert OptimizeConfig.model_validate(MINIMAL).study.workers == 1
+
+
+def test_zero_workers_rejected() -> None:
+    invalid = {**MINIMAL, "study": {**MINIMAL["study"], "workers": 0}}
+    with pytest.raises(ValidationError):
+        OptimizeConfig.model_validate(invalid)

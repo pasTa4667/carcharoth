@@ -34,7 +34,8 @@ data source, strategies) a localized change.
 1. Create a new module under `strategies/`
 2. Implement the `Strategy` ABC from `interfaces/strategy.py`
 3. Add one line to `strategies/registry.py`: `_STRATEGIES["your_name"] = YourStrategy`
-4. Select it in `config/config.yaml` under `strategy.name`
+4. Add it to `config/config.yaml` under `strategies:` (keyed by name) and set `active: true`
+   (single-strategy mode) or reference it from `regime.regimes` (regime-driven mode)
 
 ### 4. Layered Architecture
 - **Interfaces** (`interfaces/`) — contracts
@@ -61,7 +62,11 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
 - **Secrets** (`.env`, gitignored): API keys, database URL, Grafana credentials
 - **Everything else** (`config/config.yaml`): watchlist, tick interval, bar timeframe, strategy
   parameters, risk limits, named fitness objectives (`objectives:` — weighted metric
-  composites every backtest analysis scores itself against)
+  composites every backtest analysis scores itself against). Strategies are defined once under
+  `strategies:` (keyed by name, each with its `params` and an `active` flag); `regime.active`
+  toggles regime-driven mode. When `regime.active: false` the single `active` strategy trades
+  everything; when `true` the detector picks per symbol via `regime.regimes` (which reference
+  strategies by name — params still come from `strategies:`)
 - **Optimization studies** (`config/optimize.yaml`): search space (dot-paths into
   config.yaml), study budget, backtest window, constraints — see *Running an Optimization*
 - Config is validated with Pydantic at startup; invalid config fails fast
@@ -176,20 +181,30 @@ Every backtest's analysis also scores the run against each named objective in
 a `fitness_<name>` metric plus a `fitness:` block in the run's summary YAML
 (`logs/backtests/<run_id>.yaml`) — so runs are comparable no matter what launched them.
 
+High-volume append-only rows (decisions, equity/position snapshots, regime evaluations) are
+write-buffered during a backtest and bulk-inserted in batches (`persistence/buffered.py`,
+wired only in the backtest path) — live mode keeps one durable transaction per event.
+
 ### Running an Optimization
 `carcharoth optimize` runs an Optuna study: each trial suggests parameter values from the
 search space in `config/optimize.yaml` (dot-paths into config.yaml, e.g.
-`regime.regimes.mean_reverting.params.entry_z`), runs a **normal fully-persisted backtest**
+`strategies.mean_reversion.params.entry_z`), runs a **normal fully-persisted backtest**
 with the overridden config, and maximizes the run's `fitness_<objective>` metric. Which
 parameters are optimized is pure configuration — no code changes.
 
 ```bash
 uv run carcharoth optimize                                   # config/optimize.yaml
 uv run carcharoth optimize --n-trials 20 --study-name probe  # budget/identity overrides
+uv run carcharoth optimize --n-trials 20 --workers 4         # 4 parallel worker processes
 ```
 
 - Studies are **resumable**: re-running with the same study name continues it (Optuna's
   storage defaults to `DATABASE_URL`; override with `OPTUNA_DATABASE_URL` in `.env`)
+- `--workers N` (or `study.workers` in optimize.yaml) splits the trial budget across N
+  worker processes coordinating through the shared Optuna storage — near-linear speedup.
+  Each worker logs to its own files (`app.w<i>.log`, …) and fetches bars once (the bars
+  cache is per-process). With `workers > 1` a configured `sampler_seed` is derived per
+  worker (seed+index), so seeded studies are **not reproducible** run-to-run
 - Trial runs are indistinguishable from manual backtests; the trial → `run_id` linkage
   lives only in Optuna's trial user attributes
 - Hard `constraints` in optimize.yaml (e.g. `num_trades` ≥ 20) steer the sampler via a

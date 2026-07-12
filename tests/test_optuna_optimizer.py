@@ -11,7 +11,7 @@ from tests.fakes import FakeBacktestFunc
 
 RAW_CONFIG = {
     "watchlist": {"symbols": ["AAPL"]},
-    "strategy": {"name": "mean_reversion", "params": {"lookback": 20}},
+    "strategies": {"mean_reversion": {"active": True, "params": {"lookback": 20}}},
     "objectives": {"default": {"weights": {"sharpe": 1.0}}},
 }
 
@@ -25,7 +25,9 @@ def optimize_config(n_trials: int = 3, **kwargs: object) -> OptimizeConfig:
         {
             "study": {"name": "test-study", "n_trials": n_trials, "sampler_seed": 1},
             "backtest": {"start": "2026-06-01", "end": "2026-06-30"},
-            "search_space": {"strategy.params.lookback": {"type": "int", "low": 10, "high": 60}},
+            "search_space": {
+                "strategies.mean_reversion.params.lookback": {"type": "int", "low": 10, "high": 60}
+            },
             **kwargs,
         }
     )
@@ -56,7 +58,7 @@ def test_best_trial_matches_scripted_fitness() -> None:
     assert result.best_score == pytest.approx(3.0)
     assert result.best_trial_number == 1
     assert result.best_run_id == fake.run_ids[1]
-    assert set(result.best_params) == {"strategy.params.lookback"}
+    assert set(result.best_params) == {"strategies.mean_reversion.params.lookback"}
 
 
 def test_every_trial_links_its_run_id() -> None:
@@ -75,9 +77,9 @@ def test_suggested_value_lands_in_received_config() -> None:
     optimizer.optimize()
 
     assert optimizer.last_study is not None
+    path = "strategies.mean_reversion.params.lookback"
     for config, trial in zip(fake.calls, optimizer.last_study.trials, strict=True):
-        assert config.strategy is not None
-        assert config.strategy.params["lookback"] == trial.params["strategy.params.lookback"]
+        assert config.strategies["mean_reversion"].params["lookback"] == trial.params[path]
 
 
 def test_backtest_error_fails_trial_but_study_continues() -> None:
@@ -125,3 +127,26 @@ def test_invalid_search_space_path_fails_fast() -> None:
     with pytest.raises(ValueError, match="invalid override path"):
         make_optimizer(fake, config).optimize()
     assert fake.calls == []  # no trial ever ran
+
+
+def test_sampler_seed_override_beats_config_seed() -> None:
+    def suggested_lookbacks(config_seed: int) -> list[float]:
+        fake = FakeBacktestFunc([run_metrics(1.0)])
+        config = optimize_config(
+            n_trials=5,
+            study={"name": "test-study", "n_trials": 5, "sampler_seed": config_seed},
+        )
+        OptunaOptimizer(
+            run_backtest=fake,
+            raw_config=RAW_CONFIG,
+            optimize_config=config,
+            objective=OBJECTIVE,
+            symbols=["AAPL"],
+            sampler_seed=42,
+        ).optimize()
+        assert config.study.sampler_seed == config_seed
+        return [call.strategies["mean_reversion"].params["lookback"] for call in fake.calls]
+
+    # Different config seeds, same override: identical suggestions prove the
+    # override wins (parallel workers rely on this for per-worker seeds).
+    assert suggested_lookbacks(1) == suggested_lookbacks(2)

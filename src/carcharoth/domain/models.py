@@ -206,6 +206,28 @@ class TradeRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionRecord:
+    """A strategy decision row, as read back for round-trip enrichment."""
+
+    symbol: str
+    side: Side
+    timestamp: datetime
+    reason: str
+    indicators: dict[str, float]
+    strategy: str
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentRecord:
+    """A strategy assignment row, as read back for regime lookup."""
+
+    symbol: str
+    since: datetime
+    regime: str
+    strategy: str
+
+
+@dataclass(frozen=True, slots=True)
 class EquityPoint:
     """One point of a run's equity curve."""
 

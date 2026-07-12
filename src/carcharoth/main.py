@@ -12,7 +12,9 @@ CLI: `carcharoth` (or `carcharoth run`) starts live paper trading;
 
 import argparse
 import logging
+import multiprocessing
 import signal
+import time
 import types
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -25,10 +27,10 @@ import yaml
 
 from carcharoth.analysis.analyzer import BacktestAnalyzer
 from carcharoth.backtest.runner import BacktestRunner
-from carcharoth.config.app_config import AppConfig, load_config
-from carcharoth.config.optimize_config import load_optimize_config
+from carcharoth.config.app_config import AppConfig, RegimeConfig, StrategyConfig, load_config
+from carcharoth.config.optimize_config import OptimizeConfig, load_optimize_config
 from carcharoth.config.settings import Settings
-from carcharoth.domain.models import BacktestResult, RunType
+from carcharoth.domain.models import BacktestResult, OptimizationResult, RunType
 from carcharoth.engine.engine import TradingEngine
 from carcharoth.engine.scheduler import Scheduler
 from carcharoth.engine.strategy_provider import RegimeStrategyProvider, SingleStrategyProvider
@@ -39,8 +41,17 @@ from carcharoth.logging_setup import (
     write_optimize_summary,
 )
 from carcharoth.optimize.bars_cache import BarsCache
+from carcharoth.optimize.overrides import validate_override_paths
+from carcharoth.persistence.buffered import (
+    BufferedPositionSnapshotRepository,
+    BufferedRegimeEvaluationRepository,
+    BufferedStrategyDecisionRepository,
+    WriteBuffer,
+    sqlalchemy_flush,
+)
 from carcharoth.persistence.db import build_engine, build_session_factory
 from carcharoth.persistence.repositories import (
+    RegimeEvaluationRepository,
     RunRepository,
     SqlAlchemyAnalysisReader,
     SqlAlchemyBacktestMetricsRepository,
@@ -48,6 +59,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyOrderRepository,
     SqlAlchemyPositionSnapshotRepository,
     SqlAlchemyRegimeEvaluationRepository,
+    SqlAlchemyRoundTripRepository,
     SqlAlchemyRunRepository,
     SqlAlchemyStrategyAssignmentRepository,
     SqlAlchemyStrategyDecisionRepository,
@@ -68,7 +80,13 @@ from carcharoth.services.alpaca import (
 from carcharoth.services.alpaca.historical import fetch_historical_bars, warmup_window
 from carcharoth.services.backtest import HistoricalMarketDataService, SimulatedBroker
 from carcharoth.services.cache.noop import NoOpCache
-from carcharoth.services.optuna import OptunaOptimizer, prepare_storage_url
+from carcharoth.services.optuna import (
+    OptunaOptimizer,
+    build_worker_storage,
+    create_or_load_study,
+    prepare_storage_url,
+    summarize_study,
+)
 from carcharoth.strategies.registry import build_strategy
 
 if TYPE_CHECKING:
@@ -83,11 +101,14 @@ LOG_DIR = Path("logs")
 
 
 def build_strategy_provider(
-    config: AppConfig, session_factory: "sessionmaker[Session]", run_id: UUID
+    config: AppConfig,
+    session_factory: "sessionmaker[Session]",
+    run_id: UUID,
+    evaluations_repo: RegimeEvaluationRepository | None = None,
 ) -> StrategyProvider:
-    if config.regime is None:
-        assert config.strategy is not None  # guaranteed by AppConfig validation
-        return SingleStrategyProvider(build_strategy(config.strategy.name, config.strategy.params))
+    if config.regime is None or not config.regime.active:
+        name, sc = _active_strategy(config)  # exactly one, guaranteed by validation
+        return SingleStrategyProvider(build_strategy(name, sc.params))
     detector = RegimeDetector(
         features=[
             (build_feature(name, fc.params), fc.weight)
@@ -99,23 +120,36 @@ def build_strategy_provider(
     return RegimeStrategyProvider(
         detector=detector,
         strategies={
-            Regime(name): build_strategy(rc.strategy, rc.params)
+            Regime(name): build_strategy(rc.strategy, config.strategies[rc.strategy].params)
             for name, rc in config.regime.regimes.items()
         },
-        evaluations_repo=SqlAlchemyRegimeEvaluationRepository(session_factory, run_id),
+        evaluations_repo=evaluations_repo
+        or SqlAlchemyRegimeEvaluationRepository(session_factory, run_id),
+        # Assignments are read back (load_current) and low-volume: never buffered.
         assignments_repo=SqlAlchemyStrategyAssignmentRepository(session_factory, run_id),
         evaluate_every_ticks=config.regime.evaluate_every_ticks,
         default_regime=Regime(config.regime.default_regime),
     )
 
 
+def _active_strategy(config: AppConfig) -> tuple[str, StrategyConfig]:
+    """The single active strategy for single-strategy mode; validation
+    guarantees exactly one strategy has ``active: true``."""
+    return next((name, sc) for name, sc in config.strategies.items() if sc.active)
+
+
+def _summary_regime(config: AppConfig) -> RegimeConfig | None:
+    """The regime block to record in a backtest summary — only when it drove
+    the run, so the summary reflects the mode that actually executed."""
+    return config.regime if config.regime is not None and config.regime.active else None
+
+
 def _strategy_description(config: AppConfig) -> str:
-    if config.regime is not None:
+    if config.regime is not None and config.regime.active:
         return "regime-driven " + str(
             {name: rc.strategy for name, rc in config.regime.regimes.items()}
         )
-    assert config.strategy is not None  # guaranteed by AppConfig validation
-    return config.strategy.name
+    return _active_strategy(config)[0]
 
 
 def _run_live(config_path: Path) -> None:
@@ -208,9 +242,18 @@ def run_backtest_once(
         list(symbols),
     )
 
+    # High-volume append-only rows are buffered and bulk-inserted; orders
+    # and trades are read back every tick and stay on per-call repositories.
+    buffer = WriteBuffer(sqlalchemy_flush(session_factory))
+
     # The provider dictates the bar timeframe and how much warm-up history
     # the first tick needs; the backtest prefetches accordingly.
-    provider = build_strategy_provider(config, session_factory, run_id)
+    provider = build_strategy_provider(
+        config,
+        session_factory,
+        run_id,
+        evaluations_repo=BufferedRegimeEvaluationRepository(buffer, run_id),
+    )
     spec = provider.required_bars()
     bars = fetch_bars(symbols, spec.timeframe, start - warmup_window(spec), end_exclusive)
     total_bars = sum(len(symbol_bars) for symbol_bars in bars.values())
@@ -230,10 +273,10 @@ def run_backtest_once(
         strategies=provider,
         risk=BasicRiskManager(config.risk),
         executor=broker,
-        decisions_repo=SqlAlchemyStrategyDecisionRepository(session_factory, run_id),
+        decisions_repo=BufferedStrategyDecisionRepository(buffer, run_id),
         orders_repo=orders_repo,
         trades_repo=trades_repo,
-        snapshots_repo=SqlAlchemyPositionSnapshotRepository(session_factory, run_id),
+        snapshots_repo=BufferedPositionSnapshotRepository(buffer, run_id),
         symbols=list(symbols),
     )
     runner = BacktestRunner(
@@ -246,15 +289,23 @@ def run_backtest_once(
         start=start,
         end=end_exclusive,
     )
-    runner.run()
+    try:
+        runner.run()
+    finally:
+        # The analyzer below reads this run's rows: everything buffered must
+        # be on disk first.
+        buffer.flush()
     runs_repo.finish(run_id, datetime.now(UTC))
 
     metrics = BacktestAnalyzer(
         reader=SqlAlchemyAnalysisReader(session_factory),
         metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
         objectives=config.objectives,
+        round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
     ).analyze(run_id)
-    write_backtest_summary(LOG_DIR, run_id, started_at, config.regime, config.risk, metrics)
+    write_backtest_summary(
+        LOG_DIR, run_id, started_at, _summary_regime(config), config.risk, metrics
+    )
     logger.info("backtest run %s complete", run_id)
     return BacktestResult(run_id=run_id, metrics=metrics)
 
@@ -281,6 +332,7 @@ def _run_optimize(
     optimize_config_path: Path,
     n_trials: int | None,
     study_name: str | None,
+    workers: int | None,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     # The optimizer applies dot-path overrides to the raw dict, so the raw
@@ -301,6 +353,22 @@ def _run_optimize(
     # alembic_version table would otherwise collide with carcharoth's).
     storage_url = prepare_storage_url(settings.optuna_database_url or settings.database_url)
 
+    effective_workers = workers or optimize_config.study.workers
+    if effective_workers < 1:
+        raise SystemExit("--workers must be >= 1")
+    if effective_workers > 1:
+        _run_optimize_parallel(
+            config_path=config_path,
+            optimize_config_path=optimize_config_path,
+            raw_config=raw_config,
+            optimize_config=optimize_config,
+            storage_url=storage_url,
+            n_trials=n_trials or optimize_config.study.n_trials,
+            study_name=study_name or optimize_config.study.name,
+            workers=effective_workers,
+        )
+        return
+
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
     # One data client + in-process bars cache for the whole study: trials
@@ -318,7 +386,7 @@ def _run_optimize(
         optimize_config=optimize_config,
         objective=objective,
         symbols=symbols,
-        storage_url=storage_url,
+        storage=storage_url,
         n_trials=n_trials,
         study_name=study_name,
     )
@@ -328,6 +396,133 @@ def _run_optimize(
         db_engine.dispose()
 
     write_optimize_summary(LOG_DIR, datetime.now(UTC), optimize_config.objective, result)
+    _log_optimize_result(result, storage_url)
+
+
+def _split_trials(total: int, workers: int) -> list[int]:
+    """Split a trial budget across workers; earlier workers take the remainder."""
+    base, extra = divmod(total, workers)
+    return [base + (1 if index < extra else 0) for index in range(workers)]
+
+
+def _optimize_worker(
+    config_path: Path,
+    optimize_config_path: Path,
+    study_name: str,
+    n_trials: int,
+    worker_index: int,
+    sampler_seed: int | None,
+) -> None:
+    """One parallel optimize worker (multiprocessing spawn target).
+
+    Workers coordinate purely through Optuna's shared storage: each runs its
+    share of trials with its own DB engines, Alpaca client, bars cache and
+    log files. The parent pre-created the study and writes the summary.
+    """
+    setup_logging(LOG_DIR, console_level="WARNING", filename_suffix=f".w{worker_index}")
+    # Stagger startup so the workers' initial full-window bar fetches don't
+    # hit Alpaca in the same instant (the bars cache is per-process).
+    time.sleep(worker_index * 2.0)
+
+    settings = Settings()  # type: ignore[call-arg]  # values come from .env
+    with config_path.open() as f:
+        raw_config = yaml.safe_load(f)
+    config = AppConfig.model_validate(raw_config)
+    optimize_config = load_optimize_config(optimize_config_path)
+    objective = config.objectives[optimize_config.objective]  # parent validated
+    symbols = optimize_config.backtest.symbols or config.watchlist.symbols
+    storage_url = prepare_storage_url(settings.optuna_database_url or settings.database_url)
+
+    db_engine = build_engine(settings.database_url, pool_size=2, max_overflow=2)
+    session_factory = build_session_factory(db_engine)
+    fetch_bars: BarsFetcher = BarsCache(partial(fetch_historical_bars, build_data_client(settings)))
+
+    def run_trial_backtest(
+        config: AppConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
+    ) -> BacktestResult:
+        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars)
+
+    optimizer = OptunaOptimizer(
+        run_backtest=run_trial_backtest,
+        raw_config=raw_config,
+        optimize_config=optimize_config,
+        objective=objective,
+        symbols=symbols,
+        storage=build_worker_storage(storage_url),
+        n_trials=n_trials,
+        study_name=study_name,
+        sampler_seed=sampler_seed,
+    )
+    try:
+        optimizer.optimize()
+    finally:
+        db_engine.dispose()
+
+
+def _run_optimize_parallel(
+    config_path: Path,
+    optimize_config_path: Path,
+    raw_config: dict[str, object],
+    optimize_config: OptimizeConfig,
+    storage_url: str,
+    n_trials: int,
+    study_name: str,
+    workers: int,
+) -> None:
+    # Fail fast in the parent instead of in every worker at once.
+    validate_override_paths(raw_config, optimize_config.search_space)
+    create_or_load_study(study_name, storage_url)
+
+    base_seed = optimize_config.study.sampler_seed
+    if base_seed is not None:
+        logger.warning(
+            "sampler_seed with workers > 1: each worker samples with seed+index "
+            "and trials interleave nondeterministically — results are not "
+            "reproducible run-to-run"
+        )
+    shares = [share for share in _split_trials(n_trials, workers) if share > 0]
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(
+            target=_optimize_worker,
+            name=f"optimize-w{index}",
+            args=(
+                config_path,
+                optimize_config_path,
+                study_name,
+                share,
+                index,
+                base_seed + index if base_seed is not None else None,
+            ),
+        )
+        for index, share in enumerate(shares)
+    ]
+    logger.info(
+        "study %r: running %d trials across %d workers %s",
+        study_name,
+        n_trials,
+        len(processes),
+        shares,
+    )
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join()
+    failed = [process.name for process in processes if process.exitcode != 0]
+
+    # The study is the source of truth: summarize whatever completed, even
+    # when a worker crashed — the study is resumable by name.
+    result = summarize_study(study_name, storage_url)
+    write_optimize_summary(LOG_DIR, datetime.now(UTC), optimize_config.objective, result)
+    _log_optimize_result(result, storage_url)
+    if failed:
+        raise SystemExit(
+            f"worker(s) {', '.join(failed)} exited nonzero; the study is resumable — "
+            f"rerun with --study-name {study_name} to continue"
+        )
+
+
+def _log_optimize_result(result: OptimizationResult, storage_url: str) -> None:
     logger.info(
         "study %r finished: %d complete (%d infeasible), %d failed",
         result.study_name,
@@ -366,9 +561,10 @@ def _run_analyze(run_id: UUID) -> None:
             reader=SqlAlchemyAnalysisReader(session_factory),
             metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
             objectives=config.objectives,
+            round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
         ).analyze(run_id)
         write_backtest_summary(
-            LOG_DIR, run_id, datetime.now(UTC), config.regime, config.risk, metrics
+            LOG_DIR, run_id, datetime.now(UTC), _summary_regime(config), config.risk, metrics
         )
     finally:
         db_engine.dispose()
@@ -430,6 +626,12 @@ def _build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--config", type=Path, default=CONFIG_PATH, help="base config YAML path")
     optimize.add_argument("--n-trials", type=int, default=None, help="override study.n_trials")
     optimize.add_argument("--study-name", type=str, default=None, help="override study.name")
+    optimize.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="override study.workers (parallel worker processes; trials are split across them)",
+    )
     optimize.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
     analyze = subparsers.add_parser("analyze", help="recompute metrics for a run")
@@ -463,7 +665,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise SystemExit("--end must not be before --start")
         _run_backtest(args.config, args.start, args.end, args.symbols)
     elif args.command == "optimize":
-        _run_optimize(args.config, args.optimize_config, args.n_trials, args.study_name)
+        _run_optimize(
+            args.config, args.optimize_config, args.n_trials, args.study_name, args.workers
+        )
     elif args.command == "analyze":
         _run_analyze(args.run_id)
     elif args.command == "delete-run":

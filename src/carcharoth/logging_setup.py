@@ -24,13 +24,17 @@ DECISIONS_LOGGER = "carcharoth.decisions"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 
-def setup_logging(log_dir: Path, console_level: str = "INFO") -> None:
+def setup_logging(log_dir: Path, console_level: str = "INFO", filename_suffix: str = "") -> None:
+    """``filename_suffix`` (e.g. ``".w0"``) gives a process its own log files:
+    rotating the same file from several processes corrupts it, so parallel
+    optimize workers each log to ``app.w<i>.log`` etc."""
     log_dir.mkdir(parents=True, exist_ok=True)
 
     def file_handler(filename: str, level: str = "INFO") -> dict[str, object]:
+        stem, dot, ext = filename.partition(".")
         return {
             "class": "logging.handlers.RotatingFileHandler",
-            "filename": str(log_dir / filename),
+            "filename": str(log_dir / f"{stem}{filename_suffix}{dot}{ext}"),
             "maxBytes": 10 * 1024 * 1024,
             "backupCount": 5,
             "formatter": "standard",

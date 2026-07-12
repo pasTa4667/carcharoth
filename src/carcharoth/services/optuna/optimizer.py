@@ -35,21 +35,27 @@ class OptunaOptimizer(ParameterOptimizer):
         optimize_config: OptimizeConfig,
         objective: ObjectiveConfig,
         symbols: Sequence[str],
-        storage_url: str | None = None,
+        storage: str | optuna.storages.BaseStorage | None = None,
         n_trials: int | None = None,
         study_name: str | None = None,
+        sampler_seed: int | None = None,
     ) -> None:
         """``objective`` is the named ObjectiveConfig referenced by
         ``optimize_config.objective``, resolved by the caller from the base
-        config. ``storage_url=None`` keeps the study in memory (tests)."""
+        config. ``storage=None`` keeps the study in memory (tests).
+        ``sampler_seed`` overrides the study config's seed (parallel workers
+        pass derived per-worker seeds)."""
         self._run_backtest = run_backtest
         self._raw_config = raw_config
         self._config = optimize_config
         self._objective_cfg = objective
         self._symbols = list(symbols)
-        self._storage_url = storage_url
+        self._storage = storage
         self._n_trials = n_trials or optimize_config.study.n_trials
         self._study_name = study_name or optimize_config.study.name
+        self._sampler_seed = (
+            sampler_seed if sampler_seed is not None else optimize_config.study.sampler_seed
+        )
         #: the study of the last optimize() call, for introspection
         self.last_study: optuna.Study | None = None
 
@@ -57,10 +63,10 @@ class OptunaOptimizer(ParameterOptimizer):
         # Fail fast on typo'd search-space paths before any trial runs.
         validate_override_paths(self._raw_config, self._config.search_space)
 
-        seed = self._config.study.sampler_seed
+        seed = self._sampler_seed
         study = optuna.create_study(
             study_name=self._study_name,
-            storage=self._storage_url,
+            storage=self._storage,
             sampler=optuna.samplers.TPESampler(seed=seed) if seed is not None else None,
             direction="maximize",
             load_if_exists=True,
@@ -77,7 +83,7 @@ class OptunaOptimizer(ParameterOptimizer):
             n_trials=self._n_trials,
             catch=(ValidationError, ValueError),
         )
-        return _summarize(self._study_name, study)
+        return summarize(self._study_name, study)
 
     def _trial_objective(self, trial: optuna.Trial) -> float:
         overrides = suggest_overrides(trial, self._config.search_space)
@@ -107,7 +113,19 @@ class OptunaOptimizer(ParameterOptimizer):
         return fitness
 
 
-def _summarize(study_name: str, study: optuna.Study) -> OptimizationResult:
+def create_or_load_study(study_name: str, storage_url: str) -> None:
+    """Pre-create the study so parallel workers can't race on creation."""
+    optuna.create_study(
+        study_name=study_name, storage=storage_url, direction="maximize", load_if_exists=True
+    )
+
+
+def summarize_study(study_name: str, storage_url: str) -> OptimizationResult:
+    """Summary of a persisted study (the parent process after workers join)."""
+    return summarize(study_name, optuna.load_study(study_name=study_name, storage=storage_url))
+
+
+def summarize(study_name: str, study: optuna.Study) -> OptimizationResult:
     states = [trial.state for trial in study.trials]
     complete = states.count(optuna.trial.TrialState.COMPLETE)
     infeasible = sum(

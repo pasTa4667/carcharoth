@@ -7,14 +7,48 @@ watchlist:
 engine:
   tick_interval_seconds: 60
 
-# Regime-driven mode: a per-symbol market regime detector decides which of
-# the mapped strategies trades each symbol. Evidence-based: each feature
-# contributes a direction (trend vs mean reversion) and/or a stability
-# (regime-change) score; the weighted, stability-attenuated sum picks the
-# regime. Switches are hold-until-flat: an open position stays with the
-# strategy that entered it.
-# Exactly one of `regime` / `strategy` may be configured.
+# Strategies are defined once here, keyed by strategy name, each with its
+# params. `active` marks the one strategy that trades in single-strategy mode
+# (regime.active: false). Under regime-driven mode the `active` flags are
+# ignored — the regime block below decides which strategy trades each symbol.
+strategies:
+  mean_reversion:
+    active: true
+    params:
+      timeframe_minutes: 5      # bar resolution the strategy evaluates on
+      lookback: 14              # bars used for rolling mean/std
+      entry_z: -2.3             # buy when price is this many std devs below the mean
+      exit_z: 0.0               # sell (exit) once the z-score reverts to/above the mean
+      trend_ema_period: 50      # only buy when the rolling mean is above this EMA (trend filter)
+      rsi_period: 14
+      rsi_entry_max: 45.0       # only buy when RSI is below this (oversold confirmation)
+      atr_period: 14
+      atr_stop_multiplier: 3.9  # exit when price < avg_entry - this * ATR
+      entry_delay_minutes: 15   # no new entries within this many minutes of the open
+      entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
+      flatten_minutes: 15       # force-exit open positions within this window before close
+  ema_vwap:
+    active: false
+    params:
+      timeframe_minutes: 5            # bar resolution the strategy evaluates on
+      ema_fast: 9
+      ema_slow: 21
+      cross_within_bars: 2            # fast EMA must have crossed above slow within this many bars
+      atr_period: 14
+      atr_stop_multiplier: 1.0        # exit when price < avg_entry - this * ATR
+      atr_take_profit_multiplier: 2.0 # exit when price >= avg_entry + this * ATR
+      entry_delay_minutes: 15         # no new entries within this many minutes of the open
+      entry_cutoff_minutes: 30        # no new entries within this many minutes of the close
+      flatten_minutes: 15             # force-exit open positions within this window before close
+
+# Regime-driven mode: a per-symbol market regime detector decides which of the
+# mapped strategies trades each symbol. Evidence-based: each feature contributes
+# a direction (trend vs mean reversion) and/or a stability (regime-change) score;
+# the weighted, stability-attenuated sum picks the regime. Switches are
+# hold-until-flat: an open position stays with the strategy that entered it.
+# Set active: true to enable it (params are read from `strategies` above).
 regime:
+  active: false
   lookback: 400              # 5-min bars the detector analyzes (~5 sessions)
   evaluate_every_ticks: 5    # re-assess the regime every N engine ticks (~5 min)
   winsorize_sigma: 5.0       # clip log returns at this many std devs (overnight gaps)
@@ -32,52 +66,11 @@ regime:
     wasserstein:             # distribution shift between recent and reference returns
       weight: 1.0
       params: {recent_window: 60, reference_window: 180, calm_level: 0.2, alarm_level: 1.0}
-  regimes:
+  regimes:                   # regime -> which strategy trades it (params from `strategies`)
     trending:
       strategy: ema_vwap
-      params:
-        timeframe_minutes: 5           # bar resolution the strategy evaluates on
-        ema_fast: 9
-        ema_slow: 21
-        cross_within_bars: 2           # fast EMA must have crossed above slow within this many bars
-        atr_period: 14
-        atr_stop_multiplier: 1.0       # exit when price < avg_entry - this * ATR
-        atr_take_profit_multiplier: 2.0 # exit when price >= avg_entry + this * ATR
-        entry_delay_minutes: 15        # no new entries within this many minutes of the open
-        entry_cutoff_minutes: 30       # no new entries within this many minutes of the close
-        flatten_minutes: 15            # force-exit open positions within this window before close
     mean_reverting:
       strategy: mean_reversion
-      params:
-        timeframe_minutes: 5      # bar resolution the strategy evaluates on
-        lookback: 14              # bars used for rolling mean/std
-        entry_z: -2.3             # buy when price is this many std devs below the mean
-        exit_z: 0.0               # sell (exit) once the z-score reverts to/above the mean
-        trend_ema_period: 50      # only buy when the rolling mean is above this EMA (trend filter)
-        rsi_period: 14
-        rsi_entry_max: 45.0       # only buy when RSI is below this (oversold confirmation)
-        atr_period: 14
-        atr_stop_multiplier: 3.9  # exit when price < avg_entry - this * ATR
-        entry_delay_minutes: 15   # no new entries within this many minutes of the open
-        entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
-        flatten_minutes: 15       # force-exit open positions within this window before close
-
-# Alternative: single-strategy mode (replaces the regime block above).
-# strategy:
-#   name: mean_reversion
-#   params:
-#     timeframe_minutes: 5      # bar resolution the strategy evaluates on
-#     lookback: 20              # bars used for rolling mean/std
-#     entry_z: -1.5             # buy when price is this many std devs below the mean
-#     exit_z: 0.0               # sell (exit) once the z-score reverts to/above the mean
-#     trend_ema_period: 50      # only buy when the rolling mean is above this EMA (trend filter)
-#     rsi_period: 14
-#     rsi_entry_max: 45.0       # only buy when RSI is below this (oversold confirmation)
-#     atr_period: 14
-#     atr_stop_multiplier: 3.5  # exit when price < avg_entry - this * ATR
-#     entry_delay_minutes: 15   # no new entries within this many minutes of the open
-#     entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
-#     flatten_minutes: 15       # force-exit open positions within this window before close
 
 # Simulation parameters used by `carcharoth backtest` (ignored in live mode).
 backtest:
@@ -102,7 +95,7 @@ risk:
   max_position_notional: 1000.0   # hard cap per position, in account currency
   max_position_pct_equity: 0.10   # per-position cap as fraction of equity
   max_total_exposure_pct: 0.50    # cap on sum of all position values vs equity
-  max_open_positions: 5
+  max_open_positions: 8
   buying_power_buffer: 0.95       # only ever use this fraction of buying power
   slippage_buffer: 0.02           # assume fills up to this much worse than quote
   max_daily_loss_pct: 0.03        # stop opening positions after this daily drawdown

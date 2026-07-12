@@ -5,13 +5,16 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from carcharoth.analysis.metrics import RoundTrip
 from carcharoth.config.app_config import AppConfig
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
+    AssignmentRecord,
     BacktestResult,
     Bar,
     BarSpec,
+    DecisionRecord,
     EquityPoint,
     MarketSnapshot,
     MetricValue,
@@ -43,6 +46,7 @@ from carcharoth.persistence.repositories import (
     OrderRepository,
     PositionSnapshotRepository,
     RegimeEvaluationRepository,
+    RoundTripRepository,
     RunRepository,
     StrategyAssignmentRepository,
     StrategyDecisionRepository,
@@ -321,15 +325,33 @@ class InMemoryAnalysisReader(AnalysisReader):
         self,
         trades: dict[UUID, list[TradeRecord]] | None = None,
         equity: dict[UUID, list[EquityPoint]] | None = None,
+        decisions: dict[UUID, list[DecisionRecord]] | None = None,
+        assignments: dict[UUID, list[AssignmentRecord]] | None = None,
     ) -> None:
         self.trades = trades or {}
         self.equity = equity or {}
+        self.decisions = decisions or {}
+        self.assignments = assignments or {}
 
     def list_trades(self, run_id: UUID) -> list[TradeRecord]:
         return list(self.trades.get(run_id, []))
 
     def list_equity(self, run_id: UUID) -> list[EquityPoint]:
         return list(self.equity.get(run_id, []))
+
+    def list_decisions(self, run_id: UUID) -> list[DecisionRecord]:
+        return list(self.decisions.get(run_id, []))
+
+    def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]:
+        return list(self.assignments.get(run_id, []))
+
+
+class InMemoryRoundTripRepository(RoundTripRepository):
+    def __init__(self) -> None:
+        self.saved: dict[UUID, list[RoundTrip]] = {}
+
+    def save_all(self, run_id: UUID, round_trips: Sequence[RoundTrip]) -> None:
+        self.saved[run_id] = list(round_trips)
 
 
 class FakeBacktestFunc:

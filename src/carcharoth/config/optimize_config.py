@@ -2,7 +2,7 @@
 
 Which parameters are searched is fully config-driven: each search-space key
 is a dot-path into the app config (e.g.
-``regime.regimes.mean_reverting.params.entry_z``), so changing what gets
+``strategies.mean_reversion.params.entry_z``), so changing what gets
 optimized never requires a code change.
 """
 
@@ -18,7 +18,11 @@ class StudyConfig(BaseModel):
     #: studies are resumable: re-running with the same name continues it
     name: str = Field(min_length=1)
     n_trials: int = Field(gt=0)
-    #: seed for the sampler; omit for nondeterministic sampling
+    #: parallel worker processes; the trial budget is split across them
+    workers: int = Field(default=1, ge=1)
+    #: seed for the sampler; omit for nondeterministic sampling.
+    #: With workers > 1 each worker derives its own seed (seed + index),
+    #: so results are no longer reproducible run-to-run.
     sampler_seed: int | None = None
 
 

@@ -178,6 +178,29 @@ class BacktestMetricRow(Base):
     value: Mapped[Decimal]
 
 
+class RoundTripRow(Base):
+    """One closed long position (FIFO-matched), enriched with strategy context."""
+
+    __tablename__ = "round_trips"
+    __table_args__ = (Index("ix_round_trips_run_entry", "run_id", "entry_time"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[uuid.UUID] = _run_id_column()
+    symbol: Mapped[str]
+    qty: Mapped[Decimal]
+    entry_time: Mapped[datetime]
+    exit_time: Mapped[datetime]
+    entry_price: Mapped[Decimal]
+    exit_price: Mapped[Decimal]
+    pnl: Mapped[Decimal]
+    holding_seconds: Mapped[int]
+    strategy: Mapped[str]
+    exit_reason: Mapped[str] = mapped_column(Text)
+    regime: Mapped[str | None]
+    entry_indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    exit_indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
+
+
 class ConfigurationRow(Base):
     __tablename__ = "configurations"
 

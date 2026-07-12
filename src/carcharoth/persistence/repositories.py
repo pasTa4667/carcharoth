@@ -21,9 +21,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from carcharoth.analysis.metrics import RoundTrip
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
+    AssignmentRecord,
+    DecisionRecord,
     EquityPoint,
     MetricValue,
     OpenOrder,
@@ -43,6 +46,7 @@ from carcharoth.persistence.orm import (
     OrderRow,
     PositionSnapshotRow,
     RegimeEvaluationRow,
+    RoundTripRow,
     RunRow,
     StrategyAssignmentRow,
     StrategyDecisionRow,
@@ -137,6 +141,12 @@ class BacktestMetricsRepository(ABC):
         """Replace the run's metrics (re-analysis is idempotent)."""
 
 
+class RoundTripRepository(ABC):
+    @abstractmethod
+    def save_all(self, run_id: UUID, round_trips: Sequence[RoundTrip]) -> None:
+        """Replace round trips for the run (idempotent for re-analysis)."""
+
+
 class AnalysisReader(ABC):
     """Read-back of one run's persisted data for the analyzer."""
 
@@ -145,6 +155,12 @@ class AnalysisReader(ABC):
 
     @abstractmethod
     def list_equity(self, run_id: UUID) -> list[EquityPoint]: ...
+
+    @abstractmethod
+    def list_decisions(self, run_id: UUID) -> list[DecisionRecord]: ...
+
+    @abstractmethod
+    def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]: ...
 
 
 class SqlAlchemyStrategyDecisionRepository(StrategyDecisionRepository):
@@ -447,6 +463,35 @@ class SqlAlchemyBacktestMetricsRepository(BacktestMetricsRepository):
                 )
 
 
+class SqlAlchemyRoundTripRepository(RoundTripRepository):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save_all(self, run_id: UUID, round_trips: Sequence[RoundTrip]) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(delete(RoundTripRow).where(RoundTripRow.run_id == run_id))
+            for trip in round_trips:
+                holding = int((trip.closed_at - trip.opened_at).total_seconds())
+                session.add(
+                    RoundTripRow(
+                        run_id=run_id,
+                        symbol=trip.symbol,
+                        qty=Decimal(str(trip.qty)),
+                        entry_time=trip.opened_at,
+                        exit_time=trip.closed_at,
+                        entry_price=Decimal(str(trip.entry_price)),
+                        exit_price=Decimal(str(trip.exit_price)),
+                        pnl=Decimal(str(trip.pnl)),
+                        holding_seconds=holding,
+                        strategy=trip.strategy,
+                        exit_reason=trip.exit_reason,
+                        regime=trip.regime,
+                        entry_indicators=dict(trip.entry_indicators),
+                        exit_indicators=dict(trip.exit_indicators),
+                    )
+                )
+
+
 class SqlAlchemyAnalysisReader(AnalysisReader):
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
@@ -475,6 +520,45 @@ class SqlAlchemyAnalysisReader(AnalysisReader):
                 .order_by(EquitySnapshotRow.timestamp)
             )
             return [EquityPoint(timestamp=row.timestamp, equity=float(row.equity)) for row in rows]
+
+    def list_decisions(self, run_id: UUID) -> list[DecisionRecord]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(StrategyDecisionRow)
+                .where(
+                    StrategyDecisionRow.run_id == run_id,
+                    StrategyDecisionRow.signal.in_(["buy", "sell"]),
+                )
+                .order_by(StrategyDecisionRow.timestamp)
+            )
+            return [
+                DecisionRecord(
+                    symbol=row.symbol,
+                    side=Side(row.signal),
+                    timestamp=row.timestamp,
+                    reason=row.reason,
+                    indicators={k: float(v) for k, v in row.indicators.items()},
+                    strategy=row.strategy,
+                )
+                for row in rows
+            ]
+
+    def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(StrategyAssignmentRow)
+                .where(StrategyAssignmentRow.run_id == run_id)
+                .order_by(StrategyAssignmentRow.since)
+            )
+            return [
+                AssignmentRecord(
+                    symbol=row.symbol,
+                    since=row.since,
+                    regime=row.regime,
+                    strategy=row.strategy,
+                )
+                for row in rows
+            ]
 
 
 class SqlAlchemyConfigurationRepository(ConfigurationRepository):

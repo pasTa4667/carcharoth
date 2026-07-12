@@ -18,7 +18,9 @@ class EngineConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    name: str
+    #: only consulted in single-strategy mode (regime inactive): the one
+    #: active strategy trades every symbol. Ignored under regime-driven mode.
+    active: bool = False
     params: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -28,11 +30,14 @@ class RegimeFeatureConfig(BaseModel):
 
 
 class RegimeStrategyConfig(BaseModel):
+    #: names a key in the top-level `strategies` block; params come from there
     strategy: str
-    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class RegimeConfig(BaseModel):
+    #: master switch: true -> the detector picks a strategy per symbol/regime;
+    #: false -> the single active strategy in `strategies` trades everything
+    active: bool = False
     lookback: int = Field(default=400, gt=1)
     evaluate_every_ticks: int = Field(default=5, gt=0)
     winsorize_sigma: float = Field(default=5.0, gt=0)
@@ -92,18 +97,28 @@ class ObjectiveConfig(BaseModel):
 class AppConfig(BaseModel):
     watchlist: WatchlistConfig
     engine: EngineConfig = EngineConfig()
-    strategy: StrategyConfig | None = None
+    #: strategies keyed by strategy name; each carries its params once
+    strategies: dict[str, StrategyConfig] = Field(min_length=1)
     regime: RegimeConfig | None = None
     risk: RiskConfig = RiskConfig()
     backtest: BacktestConfig = BacktestConfig()
     objectives: dict[str, ObjectiveConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _exactly_one_strategy_source(self) -> "AppConfig":
-        if (self.strategy is None) == (self.regime is None):
+    def _validate_mode(self) -> "AppConfig":
+        if self.regime is not None and self.regime.active:
+            for regime_name, ref in self.regime.regimes.items():
+                if ref.strategy not in self.strategies:
+                    raise ValueError(
+                        f"regime {regime_name!r} maps to strategy {ref.strategy!r}, "
+                        f"which is not defined in 'strategies': {sorted(self.strategies)}"
+                    )
+            return self
+        active = [name for name, sc in self.strategies.items() if sc.active]
+        if len(active) != 1:
             raise ValueError(
-                "exactly one of 'strategy' (single-strategy mode) or 'regime' "
-                "(regime-driven mode) must be configured"
+                "single-strategy mode (regime inactive) needs exactly one strategy "
+                f"with active: true, got {active or 'none'}"
             )
         return self
 
