@@ -9,6 +9,8 @@ bars = 25 market minutes), not wall-clock ticks — intentional.
 import logging
 from datetime import datetime
 
+from tqdm import tqdm
+
 from carcharoth.domain.models import OrderStatus
 from carcharoth.engine.engine import TradingEngine
 from carcharoth.interfaces.execution import OrderExecutor
@@ -33,6 +35,7 @@ class BacktestRunner:
         executor: OrderExecutor,
         start: datetime,
         end: datetime,
+        show_progress: bool = False,
     ) -> None:
         self._engine = engine
         self._market_data = market_data
@@ -42,6 +45,7 @@ class BacktestRunner:
         self._executor = executor
         self._start = start
         self._end = end
+        self._show_progress = show_progress
 
     def run(self) -> None:
         # Alpaca minute bars include pre-/after-hours; the live scheduler only
@@ -55,11 +59,20 @@ class BacktestRunner:
             logger.warning("no historical bars between %s and %s", self._start, self._end)
             return
         logger.info("backtest: replaying %d bars from %s to %s", len(grid), grid[0], grid[-1])
-        for index, as_of in enumerate(grid, start=1):
+        # A live tqdm bar replaces the periodic log lines; when off (optimizer
+        # trials, --verbose) we keep the every-N-bars INFO progress instead.
+        iterable = (
+            tqdm(grid, total=len(grid), unit="bar", desc="backtest")
+            if self._show_progress
+            else grid
+        )
+        for index, as_of in enumerate(iterable, start=1):
             self._market_data.advance_to(as_of)
             self._broker.mark_to_market(as_of, self._market_data.latest_closes())
             self._engine.tick()
-            if index % _PROGRESS_EVERY_BARS == 0 or index == len(grid):
+            if not self._show_progress and (
+                index % _PROGRESS_EVERY_BARS == 0 or index == len(grid)
+            ):
                 logger.info("backtest: bar %d/%d (%s)", index, len(grid), as_of)
         self._reconcile_remaining()
 

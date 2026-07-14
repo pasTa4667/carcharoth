@@ -41,7 +41,8 @@ class RegimeConfig(BaseModel):
     lookback: int = Field(default=400, gt=1)
     evaluate_every_ticks: int = Field(default=5, gt=0)
     winsorize_sigma: float = Field(default=5.0, gt=0)
-    default_regime: str = Regime.MEAN_REVERTING.value
+    #: when None, warm-up ticks skip trading (same as an unmapped regime)
+    default_regime: str | None = None
     features: dict[str, RegimeFeatureConfig] = Field(min_length=1)
     regimes: dict[str, RegimeStrategyConfig]
 
@@ -51,10 +52,7 @@ class RegimeConfig(BaseModel):
         unknown = set(self.regimes) - valid
         if unknown:
             raise ValueError(f"unknown regimes {sorted(unknown)}; valid: {sorted(valid)}")
-        missing = valid - set(self.regimes)
-        if missing:
-            raise ValueError(f"regimes without a mapped strategy: {sorted(missing)}")
-        if self.default_regime not in valid:
+        if self.default_regime is not None and self.default_regime not in valid:
             raise ValueError(
                 f"unknown default_regime {self.default_regime!r}; valid: {sorted(valid)}"
             )

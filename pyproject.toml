@@ -20,6 +20,7 @@ dependencies = [
     "scipy>=1.16",
     "sqlalchemy>=2.0",
     "ta-lib>=0.6",
+    "tqdm>=4.67",
 ]
 
 [project.scripts]
@@ -37,6 +38,7 @@ dev = [
     "ruff>=0.15.20",
     "scipy-stubs>=1.18.0.0",
     "types-pyyaml>=6.0.12.20260518",
+    "types-tqdm>=4.67",
 ]
 
 [tool.ruff]

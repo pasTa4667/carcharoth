@@ -6,7 +6,7 @@
 # its own study data in separate tables in the same Postgres.
 
 study:
-  name: mr-sweep-2026h1
+  name: opt-tune-nova-26
   n_trials: 10
   workers: 4                 # parallel worker processes; trials are split across them
   sampler_seed: 42           # omit for nondeterministic sampling; with workers > 1
@@ -14,8 +14,59 @@ study:
 
 backtest:
   start: 2026-01-01          # YYYY-MM-DD (UTC)
-  end: 2026-03-30            # inclusive, like `carcharoth backtest --end`
-  symbols: [AAPL, MSFT, TSLA, JPM]    # optional; defaults to the config.yaml watchlist
+  end: 2026-06-30            # inclusive, like `carcharoth backtest --end`
+  symbols: [
+    "QQQ",
+    "SPY",
+    "ABNB",
+    "ADBE",
+    "ADI",
+    "AFRM",
+    "AKAM",
+    "AMKR",
+    "APP",
+    "ASTS",
+    "BBIO",
+    "BKNG",
+    "CART",
+    "COIN",
+    "CRWD",
+    "DASH",
+    "DDOG",
+    "DXCM",
+    "ENTG",
+    "FAST",
+    "FTNT",
+    "GEHC",
+    "GILD",
+    "HOOD",
+    "IBKR",
+    "INSM",
+    "INTU",
+    "KDP",
+    "LITE",
+    "MCHP",
+    "MDLZ",
+    "MNST",
+    "MRNA",
+    "MRVL",
+    "NDAQ",
+    "NTAP",
+    "OKTA",
+    "ON",
+    "ORLY",
+    "PEP",
+    "AMD",
+    "AMZN",
+    "AAPL",
+    "GOOGL",
+    "META",
+    "MSFT",
+    "NVDA",
+    "AVGO",
+    "TSLA",
+    "COST"
+  ]
 
 # Which named objective (config.yaml `objectives:` section) the study
 # maximizes. The optimizer reads the run's persisted `fitness_<name>` metric.
@@ -32,6 +83,12 @@ search_space:
     {type: float, low: -3.0, high: -0.5, step: 0.1}
   strategies.mean_reversion.params.exit_z:
     {type: float, low: -0.5, high: 0.5, step: 0.1}
+  strategies.mean_reversion.params.trend_ema_period:
+    {type: int, low: 20, high: 200, choices: [20, 50, 100, 200]}
+  strategies.mean_reversion.params.rsi_period:
+    {type: int, low: 7, high: 21, choices: [7, 10, 14, 21]}
+  strategies.mean_reversion.params.atr_period:
+    {type: int, low: 10, high: 20, choices: [10, 14, 21]}
   strategies.mean_reversion.params.lookback:
     {type: int, low: 10, high: 60}
   strategies.mean_reversion.params.atr_stop_multiplier:

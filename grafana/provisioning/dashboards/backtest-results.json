@@ -84,7 +84,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'total_return'",
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'total_return'",
           "refId": "A"
         }
       ]
@@ -149,7 +149,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'max_drawdown'",
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'max_drawdown'",
           "refId": "A"
         }
       ]
@@ -218,7 +218,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'sharpe'",
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'sharpe'",
           "refId": "A"
         }
       ]
@@ -283,7 +283,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'win_rate'",
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'win_rate'",
           "refId": "A"
         }
       ]
@@ -348,7 +348,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'profit_factor'",
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'profit_factor'",
           "refId": "A"
         }
       ]
@@ -413,7 +413,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'num_trades'",
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'num_trades'",
           "refId": "A"
         }
       ]
@@ -482,7 +482,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp AS time, equity, cash FROM equity_snapshots WHERE run_id::text = '$run' ORDER BY 1",
+          "rawSql": "SELECT timestamp AS time, equity, cash FROM equity_snapshots WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY 1",
           "refId": "A"
         }
       ]
@@ -551,7 +551,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp AS time, equity / MAX(equity) OVER (ORDER BY timestamp) - 1 AS drawdown FROM equity_snapshots WHERE run_id::text = '$run' ORDER BY 1",
+          "rawSql": "SELECT timestamp AS time, equity / MAX(equity) OVER (ORDER BY timestamp) - 1 AS drawdown FROM equity_snapshots WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY 1",
           "refId": "A"
         }
       ]
@@ -620,7 +620,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT symbol, value AS pnl FROM backtest_metrics WHERE run_id::text = '$run' AND name = 'symbol_pnl' ORDER BY value DESC",
+          "rawSql": "SELECT symbol, value AS pnl FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'symbol_pnl' ORDER BY value DESC",
           "refId": "A"
         }
       ]
@@ -687,7 +687,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT name, ROUND(value, 4) AS value FROM backtest_metrics WHERE run_id::text = '$run' AND symbol IS NULL ORDER BY name",
+          "rawSql": "SELECT name, ROUND(value, 4) AS value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND symbol IS NULL ORDER BY name",
           "refId": "A"
         }
       ]
@@ -794,7 +794,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp, symbol, side, qty, price FROM trades WHERE run_id::text = '$run' ORDER BY timestamp DESC LIMIT 200",
+          "rawSql": "SELECT timestamp, symbol, side, qty, price FROM trades WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY timestamp DESC LIMIT 200",
           "refId": "A"
         }
       ]
@@ -908,7 +908,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp, symbol, strategy, signal, risk_approved, risk_reason FROM strategy_decisions WHERE run_id::text = '$run' AND signal != 'hold' ORDER BY timestamp DESC LIMIT 200",
+          "rawSql": "SELECT timestamp, symbol, strategy, signal, risk_approved, risk_reason FROM strategy_decisions WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND signal != 'hold' ORDER BY timestamp DESC LIMIT 200",
           "refId": "A"
         }
       ]
@@ -977,7 +977,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp AS time, symbol, score FROM regime_evaluations WHERE run_id::text = '$run' ORDER BY 1",
+          "rawSql": "SELECT timestamp AS time, symbol, score FROM regime_evaluations WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY 1",
           "refId": "A"
         }
       ]
@@ -1050,7 +1050,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT since, symbol, strategy, regime FROM strategy_assignments WHERE run_id::text = '$run' ORDER BY since DESC LIMIT 100",
+          "rawSql": "SELECT since, symbol, strategy, regime FROM strategy_assignments WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY since DESC LIMIT 100",
           "refId": "A"
         }
       ]
@@ -1115,7 +1115,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE\n    WHEN exit_reason ILIKE 'stop%'        THEN 'Stop Loss'\n    WHEN exit_reason ILIKE 'take profit%' THEN 'Take Profit'\n    WHEN exit_reason ILIKE '%end of day%'\n      OR exit_reason ILIKE '%eod%'        THEN 'End of Day'\n    ELSE 'Mean Reversion'\n  END AS reason,\n  COUNT(*) AS count\nFROM round_trips\nWHERE run_id::text = '$run'\nGROUP BY 1\nORDER BY count DESC",
+          "rawSql": "SELECT\n  CASE\n    WHEN exit_reason ILIKE 'stop%'        THEN 'Stop Loss'\n    WHEN exit_reason ILIKE 'take profit%' THEN 'Take Profit'\n    WHEN exit_reason ILIKE '%end of day%'\n      OR exit_reason ILIKE '%eod%'        THEN 'End of Day'\n    ELSE 'Mean Reversion'\n  END AS reason,\n  COUNT(*) AS count\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY count DESC",
           "refId": "A"
         }
       ],
@@ -1240,7 +1240,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = '$run'\nORDER BY entry_time DESC",
+          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
           "refId": "A"
         }
       ]
@@ -1255,18 +1255,38 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "hide": 0,
+        "label": "Run ID",
+        "name": "run_input",
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
         "current": {},
         "datasource": {
           "type": "postgres",
           "uid": "carcharoth-pg"
         },
-        "definition": "SELECT run_id::text AS __value, to_char(started_at, 'YYYY-MM-DD HH24:MI') || ' (' || to_char(backtest_start, 'YYYY-MM-DD') || ' to ' || to_char(backtest_end - interval '1 day', 'YYYY-MM-DD') || ')' AS __text FROM runs WHERE run_type = 'BACKTEST' ORDER BY started_at DESC",
+        "definition": "SELECT run_id::text AS __value, run_id::text || ' | ' || to_char(started_at, 'YYYY-MM-DD HH24:MI') || ' (' || to_char(backtest_start, 'YYYY-MM-DD') || ' to ' || to_char(backtest_end - interval '1 day', 'YYYY-MM-DD') || ')' AS __text FROM runs WHERE run_type = 'BACKTEST' ORDER BY started_at DESC",
         "includeAll": false,
         "label": "Backtest Run",
         "multi": false,
         "name": "run",
         "options": [],
-        "query": "SELECT run_id::text AS __value, to_char(started_at, 'YYYY-MM-DD HH24:MI') || ' (' || to_char(backtest_start, 'YYYY-MM-DD') || ' to ' || to_char(backtest_end - interval '1 day', 'YYYY-MM-DD') || ')' AS __text FROM runs WHERE run_type = 'BACKTEST' ORDER BY started_at DESC",
+        "query": "SELECT run_id::text AS __value, run_id::text || ' | ' || to_char(started_at, 'YYYY-MM-DD HH24:MI') || ' (' || to_char(backtest_start, 'YYYY-MM-DD') || ' to ' || to_char(backtest_end - interval '1 day', 'YYYY-MM-DD') || ')' AS __text FROM runs WHERE run_type = 'BACKTEST' ORDER BY started_at DESC",
         "refresh": 2,
         "regex": "",
         "sort": 0,

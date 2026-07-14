@@ -90,7 +90,7 @@ def test_regime_config_defaults() -> None:
     assert config.regime is not None
     assert config.regime.lookback == 400
     assert config.regime.evaluate_every_ticks == 5
-    assert config.regime.default_regime == "mean_reverting"
+    assert config.regime.default_regime is None
     assert config.regime.features["hurst"].weight == 1.0
 
 
@@ -124,13 +124,14 @@ def test_unknown_regime_key_rejected() -> None:
         AppConfig.model_validate(make_raw_config(regime=section))
 
 
-def test_unmapped_regime_rejected() -> None:
+def test_partial_regime_mapping_allowed() -> None:
     section = make_regime_section()
     regimes = section["regimes"]
     assert isinstance(regimes, dict)
     del regimes["trending"]
-    with pytest.raises(ValidationError, match="without a mapped strategy"):
-        AppConfig.model_validate(make_raw_config(regime=section))
+    config = AppConfig.model_validate(make_raw_config(regime=section))
+    assert config.regime is not None
+    assert set(config.regime.regimes) == {"mean_reverting"}
 
 
 def test_unknown_default_regime_rejected() -> None:

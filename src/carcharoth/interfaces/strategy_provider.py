@@ -24,5 +24,5 @@ class StrategyProvider(ABC):
         bars: list[Bar],
         position: Position | None,
         as_of: datetime,
-    ) -> Strategy:
-        """Return the strategy that trades `symbol` this tick."""
+    ) -> Strategy | None:
+        """Return the strategy that trades `symbol` this tick, or None to skip."""

@@ -35,7 +35,7 @@ class SingleStrategyProvider(StrategyProvider):
 
     def resolve(
         self, symbol: str, bars: list[Bar], position: Position | None, as_of: datetime
-    ) -> Strategy:
+    ) -> Strategy | None:
         return self._strategy
 
 
@@ -47,11 +47,11 @@ class RegimeStrategyProvider(StrategyProvider):
         evaluations_repo: RegimeEvaluationRepository,
         assignments_repo: StrategyAssignmentRepository,
         evaluate_every_ticks: int = 5,
-        default_regime: Regime = Regime.MEAN_REVERTING,
+        default_regime: Regime | None = None,
     ) -> None:
         if not strategies:
             raise ValueError("at least one regime -> strategy mapping is required")
-        if default_regime not in strategies:
+        if default_regime is not None and default_regime not in strategies:
             raise ValueError(f"default regime {default_regime!r} has no mapped strategy")
         if evaluate_every_ticks < 1:
             raise ValueError("evaluate_every_ticks must be >= 1")
@@ -97,15 +97,25 @@ class RegimeStrategyProvider(StrategyProvider):
 
     def resolve(
         self, symbol: str, bars: list[Bar], position: Position | None, as_of: datetime
-    ) -> Strategy:
+    ) -> Strategy | None:
         tick = self._ticks.get(symbol, 0)
         self._ticks[symbol] = tick + 1
         if tick % self._evaluate_every_ticks == 0:
             self._assess(symbol, bars, as_of)
 
-        desired_regime = self._latest_regime.get(symbol, self._default_regime)
-        desired = self._strategies[desired_regime]
+        detected = self._latest_regime.get(symbol)
+        desired_regime = detected if detected is not None else self._default_regime
         current = self._assignments.get(symbol)
+
+        # No regime detected yet (warm-up) or regime has no mapped strategy
+        if desired_regime is None or desired_regime not in self._strategies:
+            if current is not None:
+                # hold-until-flat: keep the entering strategy managing the open position
+                return self._by_name[current.strategy]
+            logger.debug("%s: no regime strategy available, skipping tick", symbol)
+            return None
+
+        desired = self._strategies[desired_regime]
         if current is None:
             current = self._assign(symbol, desired_regime, as_of)
         elif current.strategy != desired.name and position is None:

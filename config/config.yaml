@@ -2,7 +2,59 @@
 # Secrets (API keys, database URL) live in .env, not here.
 
 watchlist:
-  symbols: [AAPL, MSFT, GOOG, AMZN, NVDA, JPM, KO, AMD, T, AAL, INTC, SMCI, PFE, SPCX, TSLA]
+  symbols: [
+    "QQQ",
+    "JPM",
+    "SPY",
+    "ABNB",
+    "ADBE",
+    "ADI",
+    "AFRM",
+    "AKAM",
+    "AMKR",
+    "APP",
+    "ASTS",
+    "BBIO",
+    "BKNG",
+    "CART",
+    "COIN",
+    "CRWD",
+    "DASH",
+    "DDOG",
+    "DXCM",
+    "ENTG",
+    "FAST",
+    "FTNT",
+    "GEHC",
+    "GILD",
+    "HOOD",
+    "IBKR",
+    "INSM",
+    "INTU",
+    "KDP",
+    "LITE",
+    "MCHP",
+    "MDLZ",
+    "MNST",
+    "MRNA",
+    "MRVL",
+    "NDAQ",
+    "NTAP",
+    "OKTA",
+    "ON",
+    "ORLY",
+    "PEP",
+    "AMD",
+    "AMZN",
+    "AAPL",
+    "GOOGL",
+    "META",
+    "MSFT",
+    "NVDA",
+    "AVGO",
+    "TSLA",
+    "COST"
+  ]
 
 engine:
   tick_interval_seconds: 60
@@ -16,19 +68,19 @@ strategies:
     active: true
     params:
       timeframe_minutes: 5      # bar resolution the strategy evaluates on
-      lookback: 14              # bars used for rolling mean/std
-      entry_z: -2.3             # buy when price is this many std devs below the mean
-      exit_z: 0.0               # sell (exit) once the z-score reverts to/above the mean
-      trend_ema_period: 50      # only buy when the rolling mean is above this EMA (trend filter)
-      rsi_period: 14
-      rsi_entry_max: 45.0       # only buy when RSI is below this (oversold confirmation)
-      atr_period: 14
-      atr_stop_multiplier: 3.9  # exit when price < avg_entry - this * ATR
+      lookback: 19              # bars used for rolling mean/std
+      entry_z: -1.2             # buy when price is this many std devs below the mean
+      exit_z: -0.5              # sell (exit) once the z-score reverts to/above the mean
+      trend_ema_period: 195     # only buy when the rolling mean is above this EMA (trend filter)
+      rsi_period: 19
+      rsi_entry_max: 30.0       # only buy when RSI is below this (oversold confirmation)
+      atr_period: 12
+      atr_stop_multiplier: 2.1419157844870185  # exit when price < avg_entry - this * ATR
       entry_delay_minutes: 15   # no new entries within this many minutes of the open
       entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
       flatten_minutes: 15       # force-exit open positions within this window before close
   ema_vwap:
-    active: false
+    active: true
     params:
       timeframe_minutes: 5            # bar resolution the strategy evaluates on
       ema_fast: 9
@@ -48,7 +100,7 @@ strategies:
 # hold-until-flat: an open position stays with the strategy that entered it.
 # Set active: true to enable it (params are read from `strategies` above).
 regime:
-  active: false
+  active: true
   lookback: 400              # 5-min bars the detector analyzes (~5 sessions)
   evaluate_every_ticks: 5    # re-assess the regime every N engine ticks (~5 min)
   winsorize_sigma: 5.0       # clip log returns at this many std devs (overnight gaps)
@@ -93,7 +145,7 @@ objectives:
 
 risk:
   max_position_notional: 1000.0   # hard cap per position, in account currency
-  max_position_pct_equity: 0.10   # per-position cap as fraction of equity
+  max_position_pct_equity: 0.11634802340974812   # per-position cap as fraction of equity
   max_total_exposure_pct: 0.50    # cap on sum of all position values vs equity
   max_open_positions: 8
   buying_power_buffer: 0.95       # only ever use this fraction of buying power

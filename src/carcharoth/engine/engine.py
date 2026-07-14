@@ -89,6 +89,9 @@ class TradingEngine:
         bars = snapshot.bars.get(symbol, [])
         position = state.positions.get(symbol)
         strategy = self._strategies.resolve(symbol, bars, position, snapshot.as_of)
+        if strategy is None:
+            logger.debug("%s: no regime strategy available, skipping tick", symbol)
+            return
         signal = strategy.evaluate(symbol, bars, quote, position)
         decisions_log.info(
             "%s signal=%s reason=%r indicators=%s",

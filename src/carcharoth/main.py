@@ -128,7 +128,9 @@ def build_strategy_provider(
         # Assignments are read back (load_current) and low-volume: never buffered.
         assignments_repo=SqlAlchemyStrategyAssignmentRepository(session_factory, run_id),
         evaluate_every_ticks=config.regime.evaluate_every_ticks,
-        default_regime=Regime(config.regime.default_regime),
+        default_regime=Regime(config.regime.default_regime)
+        if config.regime.default_regime
+        else None,
     )
 
 
@@ -219,6 +221,7 @@ def run_backtest_once(
     symbols: Sequence[str],
     session_factory: "sessionmaker[Session]",
     fetch_bars: BarsFetcher,
+    show_progress: bool = False,
 ) -> BacktestResult:
     """One fully-persisted backtest run: creates the run row, replays the
     window, analyzes. Knows nothing about its caller — manual CLI runs and
@@ -288,6 +291,7 @@ def run_backtest_once(
         executor=broker,
         start=start,
         end=end_exclusive,
+        show_progress=show_progress,
     )
     try:
         runner.run()
@@ -311,7 +315,11 @@ def run_backtest_once(
 
 
 def _run_backtest(
-    config_path: Path, start: datetime, end: datetime, symbols: list[str] | None
+    config_path: Path,
+    start: datetime,
+    end: datetime,
+    symbols: list[str] | None,
+    verbose: bool = False,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = load_config(config_path)
@@ -322,9 +330,25 @@ def _run_backtest(
     session_factory = build_session_factory(db_engine)
     fetch_bars = partial(fetch_historical_bars, build_data_client(settings))
     try:
-        run_backtest_once(config, start, end_exclusive, watchlist, session_factory, fetch_bars)
+        # Only the interactive CLI run gets the tqdm bar; with --verbose we fall
+        # back to the periodic progress logs to avoid clobbering the bar.
+        result = run_backtest_once(
+            config,
+            start,
+            end_exclusive,
+            watchlist,
+            session_factory,
+            fetch_bars,
+            show_progress=not verbose,
+        )
     finally:
         db_engine.dispose()
+
+    # Printed (not logged) so the essential result is always visible, even
+    # without --verbose (which lowers the console log level to WARNING).
+    print("backtest complete")
+    print(f"  run_id:  {result.run_id}")
+    print(f"  summary: {LOG_DIR / 'backtests' / f'{result.run_id}.yaml'}")
 
 
 def _run_optimize(
@@ -545,6 +569,20 @@ def _log_optimize_result(result: OptimizationResult, storage_url: str) -> None:
             storage_url,
         )
 
+    # Printed (not logged) so the essential result is always visible, even
+    # without --verbose (which lowers the console log level to WARNING).
+    print(f"study {result.study_name!r} finished")
+    print(
+        f"  trials:  {result.n_complete} complete "
+        f"({result.n_infeasible} infeasible), {result.n_failed} failed"
+    )
+    if result.best_trial_number is not None:
+        print(f"  best:    trial {result.best_trial_number}, score={result.best_score:.4f}")
+        print(f"  run_id:  {result.best_run_id}")
+        print(f"  summary: {LOG_DIR / 'optimize' / f'{result.study_name}.yaml'}")
+        print("  inspect the winning run in the 'Backtest Results' Grafana dashboard")
+        print(f"  browse the study: uvx --with 'psycopg[binary]' optuna-dashboard '{storage_url}'")
+
 
 def _run_analyze(run_id: UUID) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
@@ -606,12 +644,28 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, default=CONFIG_PATH, help="config YAML path")
 
     backtest = subparsers.add_parser("backtest", help="replay historical data through the engine")
-    backtest.add_argument("--start", type=_parse_date, required=True, help="YYYY-MM-DD (UTC)")
-    backtest.add_argument("--end", type=_parse_date, required=True, help="YYYY-MM-DD, inclusive")
+    backtest.add_argument(
+        "--start",
+        type=_parse_date,
+        default=None,
+        help="YYYY-MM-DD (UTC); defaults to optimize.yaml backtest.start",
+    )
+    backtest.add_argument(
+        "--end",
+        type=_parse_date,
+        default=None,
+        help="YYYY-MM-DD, inclusive; defaults to optimize.yaml backtest.end",
+    )
     backtest.add_argument(
         "--symbols", type=lambda s: s.split(","), default=None, help="comma-separated override"
     )
     backtest.add_argument("--config", type=Path, default=CONFIG_PATH, help="config YAML path")
+    backtest.add_argument(
+        "--optimize-config",
+        type=Path,
+        default=Path("config/optimize.yaml"),
+        help="optimize YAML path (supplies default start/end/symbols)",
+    )
     backtest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
     optimize = subparsers.add_parser(
@@ -661,9 +715,32 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "run":
         _run_live(args.config)
     elif args.command == "backtest":
-        if args.end < args.start:
+        start: datetime | None = args.start
+        end: datetime | None = args.end
+        symbols: list[str] | None = args.symbols
+        if start is None or end is None or symbols is None:
+            opt = load_optimize_config(args.optimize_config)
+            if start is None:
+                start = datetime(
+                    opt.backtest.start.year,
+                    opt.backtest.start.month,
+                    opt.backtest.start.day,
+                    tzinfo=UTC,
+                )
+            if end is None:
+                end = datetime(
+                    opt.backtest.end.year,
+                    opt.backtest.end.month,
+                    opt.backtest.end.day,
+                    tzinfo=UTC,
+                )
+            if symbols is None and opt.backtest.symbols:
+                symbols = opt.backtest.symbols
+        if start is None or end is None:
+            raise SystemExit("--start and --end are required (or configure them in optimize.yaml)")
+        if end < start:
             raise SystemExit("--end must not be before --start")
-        _run_backtest(args.config, args.start, args.end, args.symbols)
+        _run_backtest(args.config, start, end, symbols, verbose=args.verbose)
     elif args.command == "optimize":
         _run_optimize(
             args.config, args.optimize_config, args.n_trials, args.study_name, args.workers
