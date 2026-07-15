@@ -14,9 +14,22 @@ def test_load_shipped_config() -> None:
     assert set(config.strategies) == {"mean_reversion", "ema_vwap"}
     assert config.strategies["mean_reversion"].active
     assert config.regime is not None
-    assert config.regime.active is False
-    assert set(config.regime.regimes) == {"trending", "mean_reverting"}
-    assert set(config.regime.features) == {"hurst", "vol_clustering", "cusum", "wasserstein"}
+    assert config.regime.active is True
+    assert config.regime.detector == "hmm"
+    assert config.regime.score is not None
+    assert config.regime.hmm is not None
+    assert set(config.regime.regimes) == {
+        "trending_up",
+        "range_bound",
+        "trending",
+        "mean_reverting",
+    }
+    assert set(config.regime.score.features) == {
+        "hurst",
+        "vol_clustering",
+        "cusum",
+        "wasserstein",
+    }
     assert config.engine.tick_interval_seconds == 60
     assert 0 < config.risk.max_position_pct_equity <= 1
 
@@ -65,10 +78,12 @@ def make_strategies() -> dict[str, object]:
     }
 
 
-def make_regime_section(*, active: bool = True) -> dict[str, object]:
+def make_regime_section(*, active: bool = True, detector: str = "score") -> dict[str, object]:
     return {
         "active": active,
-        "features": {"hurst": {"weight": 1.0}},
+        "detector": detector,
+        "score": {"features": {"hurst": {"weight": 1.0}}},
+        "hmm": {},
         "regimes": {
             "trending": {"strategy": "ema_vwap"},
             "mean_reverting": {"strategy": "mean_reversion"},
@@ -88,10 +103,69 @@ def make_raw_config(**overrides: object) -> dict[str, object]:
 def test_regime_config_defaults() -> None:
     config = AppConfig.model_validate(make_raw_config(regime=make_regime_section()))
     assert config.regime is not None
-    assert config.regime.lookback == 400
-    assert config.regime.evaluate_every_ticks == 5
+    assert config.regime.detector == "score"
     assert config.regime.default_regime is None
-    assert config.regime.features["hurst"].weight == 1.0
+    assert config.regime.score is not None
+    assert config.regime.score.lookback == 400
+    assert config.regime.score.evaluate_interval_minutes == 5
+    assert config.regime.score.features["hurst"].weight == 1.0
+    assert config.regime.evaluate_interval_minutes == 5
+
+
+def test_cache_config_defaults_to_fully_enabled() -> None:
+    config = AppConfig.model_validate(make_raw_config())
+    assert config.cache.enabled is True
+    assert config.cache.bars is True
+    assert config.cache.hmm is True
+
+
+def test_cache_section_is_parsed() -> None:
+    raw = make_raw_config()
+    raw["cache"] = {"enabled": True, "bars": False, "hmm": False}
+    config = AppConfig.model_validate(raw)
+    assert config.cache.bars is False
+    assert config.cache.hmm is False
+
+
+def test_hmm_config_defaults() -> None:
+    config = AppConfig.model_validate(make_raw_config(regime=make_regime_section(detector="hmm")))
+    assert config.regime is not None
+    assert config.regime.hmm is not None
+    assert config.regime.hmm.n_states == 4
+    assert config.regime.hmm.training_window == 1560
+    assert config.regime.hmm.refit_interval_bars == 78
+    assert config.regime.hmm.min_confidence == 0.5
+    assert config.regime.hmm.covariance_type == "diag"
+    assert config.regime.evaluate_interval_minutes == 30
+
+
+def test_selected_detector_section_must_exist() -> None:
+    section = make_regime_section(detector="hmm")
+    del section["hmm"]
+    with pytest.raises(ValidationError, match="'hmm' section is missing"):
+        AppConfig.model_validate(make_raw_config(regime=section))
+
+    section = make_regime_section(detector="score")
+    del section["score"]
+    with pytest.raises(ValidationError, match="'score' section is missing"):
+        AppConfig.model_validate(make_raw_config(regime=section))
+
+
+def test_unknown_detector_rejected() -> None:
+    section = make_regime_section(detector="oracle")
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(make_raw_config(regime=section))
+
+
+def test_hmm_regime_names_accepted() -> None:
+    section = make_regime_section(detector="hmm")
+    section["regimes"] = {
+        "trending_up": {"strategy": "ema_vwap"},
+        "range_bound": {"strategy": "mean_reversion"},
+    }
+    config = AppConfig.model_validate(make_raw_config(regime=section))
+    assert config.regime is not None
+    assert set(config.regime.regimes) == {"trending_up", "range_bound"}
 
 
 def test_no_active_strategy_rejected() -> None:
@@ -143,6 +217,6 @@ def test_unknown_default_regime_rejected() -> None:
 
 def test_regime_requires_at_least_one_feature() -> None:
     section = make_regime_section()
-    section["features"] = {}
+    section["score"] = {"features": {}}
     with pytest.raises(ValidationError):
         AppConfig.model_validate(make_raw_config(regime=section))

@@ -6,13 +6,18 @@ the fitness metric each run's analysis already produced. It never touches
 the broker, the database, or strategy code.
 """
 
-from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from datetime import datetime
-from typing import Protocol
+from __future__ import annotations
 
-from carcharoth.config.app_config import AppConfig
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Protocol
+
 from carcharoth.domain.models import BacktestResult, Bar, OptimizationResult, Timeframe
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import datetime
+
+    from carcharoth.config.app_config import AppConfig
 
 
 class BarsFetcher(Protocol):

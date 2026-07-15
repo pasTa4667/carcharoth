@@ -9,16 +9,16 @@ regime's strategy takes over once the symbol is flat.
 
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from carcharoth.domain.models import Bar, BarSpec, Position
+from carcharoth.interfaces.regime_detector import RegimeDetector
 from carcharoth.interfaces.strategy import Strategy
 from carcharoth.interfaces.strategy_provider import StrategyProvider
 from carcharoth.persistence.repositories import (
     RegimeEvaluationRepository,
     StrategyAssignmentRepository,
 )
-from carcharoth.regime.detector import RegimeDetector
 from carcharoth.regime.models import Regime, StrategyAssignment
 
 logger = logging.getLogger(__name__)
@@ -46,15 +46,18 @@ class RegimeStrategyProvider(StrategyProvider):
         strategies: Mapping[Regime, Strategy],
         evaluations_repo: RegimeEvaluationRepository,
         assignments_repo: StrategyAssignmentRepository,
-        evaluate_every_ticks: int = 5,
+        evaluate_interval_minutes: int = 5,
         default_regime: Regime | None = None,
+        min_confidence: float | None = None,
     ) -> None:
         if not strategies:
             raise ValueError("at least one regime -> strategy mapping is required")
         if default_regime is not None and default_regime not in strategies:
             raise ValueError(f"default regime {default_regime!r} has no mapped strategy")
-        if evaluate_every_ticks < 1:
-            raise ValueError("evaluate_every_ticks must be >= 1")
+        if evaluate_interval_minutes < 1:
+            raise ValueError("evaluate_interval_minutes must be >= 1")
+        if min_confidence is not None and not 0.0 <= min_confidence <= 1.0:
+            raise ValueError("min_confidence must be within [0, 1]")
 
         timeframes = {s.required_bars().timeframe for s in strategies.values()}
         if len(timeframes) > 1:
@@ -68,8 +71,9 @@ class RegimeStrategyProvider(StrategyProvider):
         self._by_name = {s.name: s for s in strategies.values()}
         self._evaluations_repo = evaluations_repo
         self._assignments_repo = assignments_repo
-        self._evaluate_every_ticks = evaluate_every_ticks
+        self._evaluate_interval = timedelta(minutes=evaluate_interval_minutes)
         self._default_regime = default_regime
+        self._min_confidence = min_confidence
         self._spec = BarSpec(
             timeframes.pop(),
             max(
@@ -90,7 +94,9 @@ class RegimeStrategyProvider(StrategyProvider):
                 continue
             self._assignments[symbol] = assignment
             self._latest_regime[symbol] = assignment.regime
-        self._ticks: dict[str, int] = {}
+        #: last time the detector was *attempted* per symbol (including warm-up
+        #: misses, so an expensive detector isn't retried every tick)
+        self._last_attempt: dict[str, datetime] = {}
 
     def required_bars(self) -> BarSpec:
         return self._spec
@@ -98,9 +104,9 @@ class RegimeStrategyProvider(StrategyProvider):
     def resolve(
         self, symbol: str, bars: list[Bar], position: Position | None, as_of: datetime
     ) -> Strategy | None:
-        tick = self._ticks.get(symbol, 0)
-        self._ticks[symbol] = tick + 1
-        if tick % self._evaluate_every_ticks == 0:
+        last = self._last_attempt.get(symbol)
+        if last is None or as_of - last >= self._evaluate_interval:
+            self._last_attempt[symbol] = as_of
             self._assess(symbol, bars, as_of)
 
         detected = self._latest_regime.get(symbol)
@@ -137,12 +143,22 @@ class RegimeStrategyProvider(StrategyProvider):
         if assessment is None:
             logger.debug("%s: regime detector warming up (%d bars)", symbol, len(bars))
             return
-        weights = {
-            e.feature: weight
-            for e in assessment.evidence
-            if (weight := self._detector.weight_of(e.feature)) is not None
-        }
-        self._evaluations_repo.save(assessment, weights, as_of)
+        self._evaluations_repo.save(assessment, as_of)
+        if (
+            assessment.probabilities is not None
+            and self._min_confidence is not None
+            and assessment.score < self._min_confidence
+        ):
+            # too uncertain to act on: keep the previous regime (the full
+            # posterior is persisted above either way)
+            logger.debug(
+                "%s: regime %s below min confidence (%.2f < %.2f), holding previous",
+                symbol,
+                assessment.regime.value,
+                assessment.score,
+                self._min_confidence,
+            )
+            return
         self._latest_regime[symbol] = assessment.regime
 
     def _assign(self, symbol: str, regime: Regime, as_of: datetime) -> StrategyAssignment:

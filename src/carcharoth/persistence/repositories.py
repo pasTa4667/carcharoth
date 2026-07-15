@@ -12,7 +12,7 @@ start fresh each run.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -55,6 +55,26 @@ from carcharoth.persistence.orm import (
 from carcharoth.regime.models import Regime, RegimeAssessment, StrategyAssignment
 
 
+def evidence_payload(assessment: RegimeAssessment) -> dict[str, Any]:
+    """The JSONB `features` payload of a regime evaluation row."""
+    return {
+        e.feature: {
+            "value": e.value,
+            "direction": e.direction,
+            "stability": e.stability,
+            "weight": e.weight,
+        }
+        for e in assessment.evidence
+    }
+
+
+def probabilities_payload(assessment: RegimeAssessment) -> dict[str, float] | None:
+    """The JSONB `probabilities` payload; None for non-probabilistic detectors."""
+    if assessment.probabilities is None:
+        return None
+    return {regime.value: prob for regime, prob in assessment.probabilities.items()}
+
+
 class StrategyDecisionRepository(ABC):
     @abstractmethod
     def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None: ...
@@ -95,9 +115,7 @@ class ConfigurationRepository(ABC):
 
 class RegimeEvaluationRepository(ABC):
     @abstractmethod
-    def save(
-        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
-    ) -> None: ...
+    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None: ...
 
 
 class StrategyAssignmentRepository(ABC):
@@ -316,18 +334,7 @@ class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
         self._session_factory = session_factory
         self._run_id = run_id
 
-    def save(
-        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
-    ) -> None:
-        features = {
-            e.feature: {
-                "value": e.value,
-                "direction": e.direction,
-                "stability": e.stability,
-                "weight": weights.get(e.feature),
-            }
-            for e in assessment.evidence
-        }
+    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
         with self._session_factory.begin() as session:
             session.add(
                 RegimeEvaluationRow(
@@ -338,7 +345,8 @@ class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
                     score=assessment.score,
                     directional_score=assessment.directional_score,
                     stability=assessment.stability,
-                    features=features,
+                    features=evidence_payload(assessment),
+                    probabilities=probabilities_payload(assessment),
                 )
             )
 

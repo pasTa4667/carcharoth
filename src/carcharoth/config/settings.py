@@ -12,3 +12,5 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://carcharoth:carcharoth@localhost:5432/carcharoth"
     #: where Optuna keeps its study tables; defaults to database_url
     optuna_database_url: str | None = None
+    #: persistent bars/HMM cache; runs degrade to no caching if unreachable
+    redis_url: str = "redis://localhost:6379/0"

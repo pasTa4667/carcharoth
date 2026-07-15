@@ -3,6 +3,8 @@
 Carcharoth is a **composable, interface-first** trading system. Every component is swappable;
 new implementations never require changes to existing code.
 
+For design principles and day-to-day workflows, see [CLAUDE.md](CLAUDE.md) and its linked docs.
+
 ## High-Level Flow
 
 ```
@@ -27,7 +29,9 @@ The same `TradingEngine` replays historical data — no engine changes, only dif
 ```
 carcharoth backtest --start ... --end ...
    │
-   ├─ fetch_historical_bars()          — one-shot Alpaca fetch incl. warm-up window
+   ├─ fetch_historical_bars()          — one-shot Alpaca fetch incl. warm-up window,
+   │    behind PersistentBarsCache (Redis, services/cache/bars.py): per-symbol coverage
+   │    windows are gap-filled, so repeat runs over the same window fetch nothing
    └──> BacktestRunner (no scheduler; one tick per historical bar, as fast as possible)
         ├─ market_data.advance_to(ts)          — move the simulated "now"
         ├─ broker.mark_to_market(ts, closes)   — reprice positions, roll last_equity per session
@@ -42,6 +46,8 @@ Backtest-specific components (wired in `main.py` instead of the Alpaca services)
   from a configurable initial capital; market orders fill instantly at close ± spread/slippage.
   **Fill contract:** `submit()` returns ACCEPTED (while filling internally); `get_order()`
   reports FILLED — so the engine's normal reconcile step records the trade, exactly as live.
+
+CLI commands, fitness scoring, write buffering, and cache behaviour: [backtest.md](backtest.md).
 
 ### Optimization Flow
 
@@ -72,12 +78,17 @@ Key properties:
   `fitness_<name>` to `backtest_metrics`. The optimizer just reads it.
 - **Config-driven search space**: `config/optimize.yaml` maps dot-paths to distributions
   (int/float/categorical); changing what gets optimized requires no code change.
-- **Optuna storage**: its own `optuna` schema in the same Postgres (`OPTUNA_DATABASE_URL`
-  overrides; `services/optuna/storage.py` creates the schema and scopes the URL — Optuna's
-  internal `alembic_version` would otherwise collide with carcharoth's). Studies are
-  resumable by name. `alembic/env.py` also filters autogenerate to carcharoth tables.
 - **Bars cache**: one in-process union-window cache (`optimize/bars_cache.py`) serves all
   trials; the warm-up prefix varies per trial, so the cache widens instead of re-fetching.
+  It sits on top of the persistent Redis bars cache (`services/cache/bars.py`), which
+  carries bars across studies, runs and `--workers N` processes.
+- **HMM fit cache**: fitted HMM models are cached in Redis keyed by (config hash, symbol,
+  exact training input) — trials with unchanged HMM config skip every refit. Disable with
+  `cache.hmm: false` or `--no-hmm-cache` when the study searches HMM params (each trial
+  would get a fresh config hash and never hit).
+
+CLI commands, resumable studies, parallel workers, and constraints: [optimize.md](optimize.md).
+Optuna storage and database tables: [development practices](principles/development.md#database--migrations).
 
 ### Run Tracking
 
@@ -110,8 +121,12 @@ Each module defines one abstract class that a concrete implementation must exten
 - `clock.py` → `MarketClock` — check if market is open
 - `strategy.py` → `Strategy` — evaluate signal for a symbol
 - `strategy_provider.py` → `StrategyProvider` — provide strategy (single or regime-based)
+- `regime_detector.py` → `RegimeDetector` — classify a symbol's market regime from bars
+  (implementations may keep per-symbol state, e.g. fitted models; one detector per run)
 - `risk.py` → `RiskManager` — approve/reject orders and size positions
-- `cache.py` → `Cache` — optional caching layer
+- `cache.py` → `Cache` — optional read-through cache slot (live services) — and
+  `ByteStore` — persistent bytes key/value store backing the cross-run caches
+  (Redis in production, an in-memory dict in tests)
 - `optimization.py` → `BarsFetcher` / `BacktestFunc` (Protocols) + `ParameterOptimizer` (ABC)
   — the optimizer consumes a backtest as a callable; swapping the optimization library
   touches only `services/optuna/`
@@ -145,7 +160,14 @@ interfaces in order.
   - `market_data.py` → `HistoricalMarketDataService` (implements `MarketDataService`)
   - `broker.py` → `SimulatedBroker` (implements `AccountService` + `OrderExecutor`)
 - `cache/` — caching implementations
-  - `noop.py` → `NoOpCache` — no-op cache (current default)
+  - `noop.py` → `NoOpCache` — no-op cache (the live path's default)
+  - `redis_store.py` → `RedisByteStore` + `build_redis_store()` — the only module that
+    imports `redis`; unreachable Redis degrades to no caching with one warning
+  - `resilient.py` → `ResilientByteStore` — wraps the store so a Redis that dies mid-run
+    short-circuits permanently instead of timing out on every call
+  - `bars.py` → `PersistentBarsCache` (implements `BarsFetcher`) — per-(timeframe, symbol)
+    coverage windows in Redis, gap-filled; coverage never extends into the current UTC day,
+    so partial intraday data is never durably cached. Keys: `carch:bars:v1:{tf}:{symbol}`
 - `optuna/` — Optuna adapter (the only package that imports optuna)
   - `optimizer.py` → `OptunaOptimizer` (implements `ParameterOptimizer`)
   - `search_space.py` — config-driven search space → `trial.suggest_*` mapping
@@ -157,7 +179,8 @@ All Alpaca SDK types stay inside `alpaca/`; external code works with domain mode
 
 - `runner.py` — `BacktestRunner` — iterates the historical bar grid (regular session bars
   only, mirroring the live scheduler) and calls `engine.tick()` per bar; one tick == one bar,
-  so tick-counted settings like `regime.evaluate_every_ticks` count bars in a backtest
+  and time-based settings (the regime detectors' `evaluate_interval_minutes`) follow the bar
+  timestamps, so they mean the same market time as in live trading
 
 ### `src/carcharoth/analysis/`
 **Post-Run Analysis**
@@ -194,16 +217,43 @@ New strategies register here and are selected in `config/config.yaml`.
 ### `src/carcharoth/regime/`
 **Market Regime Detection**
 
-Dynamically switches between strategies based on market conditions.
+Dynamically switches between strategies based on market conditions. Two detector
+implementations exist behind the `RegimeDetector` ABC (`interfaces/regime_detector.py`),
+selected via `regime.detector` in `config/config.yaml`:
 
-- `detector.py` — `RegimeDetector` — evaluates feature scores, classifies regime
-- `models.py` — `Regime` enum (BULL, BEAR, etc.)
-- `features/` — regime feature implementations (volatility, trend, etc.)
-  - Each feature is a class that computes a signal (e.g., "volatility high?")
-- `registry.py` — feature registry: `{"volatility": VolatilityFeature, ...}`
+- `score_detector.py` — `ScoreRegimeDetector` — evidence-based: weighted feature scores on a
+  trend ↔ mean-reversion axis, attenuated by stability (change-detection) evidence.
+  Emits `trending` / `mean_reverting`.
+- `hmm/` — `HmmRegimeDetector` — a per-symbol Gaussian hidden Markov model (hmmlearn) over
+  `[log return, rolling log-volatility, EMA-distance, ADX]`, lazily fitted on
+  `training_window` bars and refit after `refit_interval_bars` new bars. Hidden states are
+  labeled from their emission means (`hmm/labeling.py`); the assessment is the posterior of
+  the newest bar and carries the full probability distribution. Emits `trending_up` /
+  `trending_down` / `range_bound` / `high_volatility`.
+  - `features.py` — observation-matrix builder (TA-Lib/numpy, NaN warm-up rows dropped)
+  - `labeling.py` — deterministic state → regime labeling from emission means
+  - `detector.py` — fit/refit/inference, seeded per symbol for reproducible backtests
+  - `fit_cache.py` — `HmmFitCache` — optional persistent cache of fitted models (injected
+    via `build_detector(..., hmm_fit_store=...)`); fitting is seed-deterministic, so a
+    cached fit is bit-identical to a fresh one. Keys:
+    `carch:hmm:v1:{config_hash}:{symbol}:{obs_hash}` — the config hash covers every
+    fit-relevant field plus the hmmlearn version; the observation hash covers the exact
+    training matrix
+- `models.py` — `Regime` enum (all six values above), `Evidence`, `RegimeAssessment`
+  (incl. optional `probabilities`), `StrategyAssignment`
+- `features/` — score-detector feature implementations (hurst, cusum, ...)
+- `registry.py` — feature registry for the score detector
+- `detectors.py` — `build_detector(RegimeConfig)` — config → concrete detector (the
+  detector counterpart to `strategies/registry.py`)
 
-When enabled in config, `RegimeStrategyProvider` switches strategy based on detected regime
-(e.g., "if BULL → run growth strategy, if BEAR → run defensive strategy").
+When enabled in config, `RegimeStrategyProvider` re-assesses each symbol's regime on the
+selected detector's `evaluate_interval_minutes` (market time — identical live and in
+backtests), persists the evaluation, and switches the symbol's strategy hold-until-flat.
+Regimes without a mapped strategy don't trade; probabilistic assessments below
+`min_confidence` keep the previous regime (the distribution is persisted either way).
+
+Config reference for detectors and regime mappings:
+[development practices](principles/development.md#configuration).
 
 ### `src/carcharoth/domain/`
 **Pure Domain Models**
@@ -230,9 +280,11 @@ Override this to add custom risk logic (volatility-based sizing, drawdown limits
 - `repositories.py` — Repository ABCs + SQLAlchemy implementations (`SqlAlchemy*Repository`);
   data repositories are run-scoped (constructed with a `run_id`)
 - `db.py` — session factory and connection setup
+- `buffered.py` — bulk-insert buffering for high-volume backtest rows (wired only on the
+  backtest path)
 
 All reads/writes to Postgres go through repositories; this layer translates between domain
-models and ORM models.
+models and ORM models. Table descriptions: [development practices](principles/development.md#database--migrations).
 
 ### `src/carcharoth/config/`
 **Configuration & Validation**
@@ -300,10 +352,20 @@ This enables post-trade analysis, regime/strategy evaluation and comparison betw
 2. Register in `strategies/registry.py`
 3. Select in `config/config.yaml`
 
-### Add a Regime Feature
+See also [design principles](principles/design.md#3-registry-pattern-for-extensibility).
+
+### Add a Regime Feature (score detector)
 1. Create `regime/features/my_feature.py` → implement `RegimeFeature`
 2. Register in `regime/registry.py`
-3. Add to `config.regime.features` in `config/config.yaml`
+3. Add to `regime.score.features` in `config/config.yaml`
+
+### Add a Regime Detector
+1. Create `regime/my_detector.py` (or a package) → implement `RegimeDetector`
+   from `interfaces/regime_detector.py`
+2. Add a config section for it in `config/app_config.py` (hang it off `RegimeConfig`)
+3. Add a builder entry in `regime/detectors.py` (and its emitted regimes to
+   `EMITTED_REGIMES`)
+4. Select it via `regime.detector` in `config/config.yaml`
 
 ### Swap the Broker
 1. Create `services/newbroker/`
@@ -327,60 +389,11 @@ New objective? Add it under `objectives:` in `config.yaml` and reference it by n
 
 ## Testing Philosophy
 
-Tests live in `tests/` with a 1-to-1 correspondence to `src/carcharoth/`:
-- `test_engine.py` — engine orchestration
-- `test_config.py` — config loading + validation
-- `test_strategy.py` — strategy logic
-- etc.
+Tests live in `tests/` with a 1-to-1 correspondence to `src/carcharoth/`. All tests use
+**in-memory fakes** (`tests/fakes.py`) — no network, no database, deterministic and fast.
+Integration tests (broker SDK, live DB) are spot-checked manually.
 
-All tests use **in-memory fakes** (`tests/fakes.py`):
-- `FakeMarketDataService` — returns fixed bars
-- `FakeAccountService` — tracks account state
-- `FakeOrderExecutor` — queues orders in memory
-- etc.
-
-This means:
-- **No network calls** — tests run in milliseconds
-- **No database** — pure in-memory state
-- **Deterministic** — no flakiness
-- **Fast feedback** — run all tests during development
-
-Integration tests (broker SDK, live DB) are spot-checked manually; fakes cover logic.
-
----
-
-## Deployment
-
-### Local Development
-```bash
-docker compose up -d                    # Postgres + Grafana
-uv run alembic upgrade head             # migrations
-uv run python -m carcharoth             # run bot
-```
-
-### Docker
-```bash
-docker build -t carcharoth .
-docker run --env-file .env carcharoth
-```
-
-The bot ticks every minute during market hours and shuts down cleanly on SIGTERM.
-
-### Backtesting
-```bash
-uv run carcharoth backtest --start 2026-06-01 --end 2026-06-30 [--symbols AAPL,MSFT]
-uv run carcharoth analyze --run-id <uuid>       # recompute metrics
-uv run carcharoth delete-run --run-id <uuid>    # or --all-backtests
-```
-
-### Monitoring
-- **Grafana Dashboards**: `http://localhost:3333`
-  - *Trading Overview* — live positions, PnL, signals, trades (PAPER runs only)
-  - *Live Analysis (Paper Trading)* — equity curve, drawdown, trades per paper run
-  - *Backtest Results* — metrics, equity curve, per-symbol PnL per backtest run (empty
-    until a backtest has been run; pick the run in the dashboard variable)
-- **Logs**: `logs/` — app, errors, trades, decisions
-- **Database**: query `trades`, `strategy_decisions`, etc. for analysis
+Details: [development practices — Testing](principles/development.md#testing).
 
 ---
 
@@ -393,8 +406,10 @@ uv run carcharoth delete-run --run-id <uuid>    # or --all-backtests
 | `alembic` | Database migrations |
 | `pydantic` | Config validation |
 | `optuna` | Parameter optimization (`carcharoth optimize`) |
+| `redis` | Persistent bars/HMM-fit cache for backtests and optimize runs |
 | `pandas` | Data analysis |
 | `ta-lib` | Technical indicators (RSI, MACD, etc.) |
+| `hmmlearn` | Gaussian HMM (regime detection, `regime/hmm/`) |
 | `numpy`, `scipy` | Numerical computation |
 
 For development: `pytest`, `mypy`, `ruff`.
@@ -403,6 +418,9 @@ For development: `pytest`, `mypy`, `ruff`.
 
 ## See Also
 
-- [CLAUDE.md](CLAUDE.md) — developer guidelines and common tasks
-- [README.md](README.md) — setup, configuration, deployment
-- [config/config.yaml](config/config.yaml) — example configuration
+- [CLAUDE.md](CLAUDE.md) — developer guide index
+- [operations.md](operations.md) — run the app, monitoring, troubleshooting
+- [backtest.md](backtest.md) — backtest CLI and behaviour
+- [optimize.md](optimize.md) — optimization CLI and behaviour
+- [README.md](../README.md) — setup and getting started
+- [config/config.yaml](../config/config.yaml) — example configuration

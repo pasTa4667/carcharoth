@@ -4,6 +4,7 @@ Shares the fetch-window heuristics with the live market data service so the
 warm-up a backtest prefetches matches what strategies see in live trading.
 """
 
+import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
@@ -15,9 +16,12 @@ from carcharoth.domain.errors import MarketDataError
 from carcharoth.domain.models import Bar, BarSpec, Timeframe, TimeframeUnit
 from carcharoth.services.alpaca.mappers import to_bar
 
-# Fetch a generous window so weekends/closed hours still yield enough bars;
-# 8x a 205-bar 5-minute lookback spans ~5.7 days, covering a 3-day weekend.
-_MINUTE_WINDOW_MULTIPLIER = 8
+# Regular US session: 9:30-16:00. Minute bars only accrue during sessions,
+# so the fetch window is sized in trading days and converted to calendar
+# days (~5 trading days per 7 calendar days) plus padding for holidays and
+# long weekends.
+_REGULAR_SESSION_MINUTES = 390
+_CALENDAR_PADDING_DAYS = 5
 
 _UNIT_MAP = {
     TimeframeUnit.MINUTE: TimeFrameUnit.Minute,
@@ -32,8 +36,9 @@ def to_alpaca_timeframe(timeframe: Timeframe) -> TimeFrame:
 def warmup_window(spec: BarSpec) -> timedelta:
     """Calendar time to fetch before a point so `spec.lookback` bars exist."""
     if spec.timeframe.unit is TimeframeUnit.MINUTE:
-        minutes = spec.timeframe.amount * spec.lookback * _MINUTE_WINDOW_MULTIPLIER
-        return timedelta(minutes=minutes)
+        trading_days = math.ceil(spec.timeframe.amount * spec.lookback / _REGULAR_SESSION_MINUTES)
+        calendar_days = math.ceil(trading_days * 7 / 5) + _CALENDAR_PADDING_DAYS
+        return timedelta(days=calendar_days)
     # Trading days -> calendar days: ~5 trading days per 7 calendar days;
     # 2x plus padding is generous and daily bars are cheap to over-fetch.
     return timedelta(days=spec.lookback * 2 + 5)

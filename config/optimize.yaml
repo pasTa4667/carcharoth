@@ -6,9 +6,9 @@
 # its own study data in separate tables in the same Postgres.
 
 study:
-  name: opt-tune-nova-26
-  n_trials: 10
-  workers: 4                 # parallel worker processes; trials are split across them
+  name: hydra-quant-spta-26
+  n_trials: 20
+  workers: 2                 # parallel worker processes; trials are split across them
   sampler_seed: 42           # omit for nondeterministic sampling; with workers > 1
                              # each worker uses seed+index (not reproducible run-to-run)
 
@@ -75,7 +75,7 @@ objective: default
 # Hard constraints: a violating trial is reported to the sampler as heavily
 # penalized (search guidance); the run's stored fitness stays untouched.
 constraints:
-  - {metric: num_trades, min: 20}
+  - {metric: num_trades, min: 110}
   - {metric: max_drawdown, max: 0.30}
 
 search_space:
@@ -84,11 +84,11 @@ search_space:
   strategies.mean_reversion.params.exit_z:
     {type: float, low: -0.5, high: 0.5, step: 0.1}
   strategies.mean_reversion.params.trend_ema_period:
-    {type: int, low: 20, high: 200, choices: [20, 50, 100, 200]}
+    {type: categorical, choices: [20, 50, 100, 200]}
   strategies.mean_reversion.params.rsi_period:
-    {type: int, low: 7, high: 21, choices: [7, 10, 14, 21]}
+    {type: categorical, choices: [7, 10, 14, 21]}
   strategies.mean_reversion.params.atr_period:
-    {type: int, low: 10, high: 20, choices: [10, 14, 21]}
+    {type: categorical, choices: [10, 14, 21]}
   strategies.mean_reversion.params.lookback:
     {type: int, low: 10, high: 60}
   strategies.mean_reversion.params.atr_stop_multiplier:

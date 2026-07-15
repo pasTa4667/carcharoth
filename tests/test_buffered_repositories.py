@@ -183,10 +183,12 @@ def test_regime_repository_buffers_features_with_weights() -> None:
         score=0.42,
         directional_score=0.6,
         stability=0.7,
-        evidence=(Evidence(feature="hurst", value=0.61, direction=0.8, stability=None),),
+        evidence=(
+            Evidence(feature="hurst", value=0.61, direction=0.8, stability=None, weight=1.0),
+        ),
     )
 
-    repo.save(assessment, {"hurst": 1.0}, AS_OF)
+    repo.save(assessment, AS_OF)
     buffer.flush()
 
     assert flush.flushes == [
@@ -208,7 +210,41 @@ def test_regime_repository_buffers_features_with_weights() -> None:
                             "weight": 1.0,
                         }
                     },
+                    "probabilities": None,
                 }
             ]
         }
     ]
+
+
+def test_regime_repository_buffers_probabilities() -> None:
+    flush = RecordingFlush()
+    buffer = WriteBuffer(flush)
+    repo = BufferedRegimeEvaluationRepository(buffer, RUN_ID)
+    assessment = RegimeAssessment(
+        symbol="AAPL",
+        regime=Regime.TRENDING_UP,
+        score=0.7,
+        directional_score=0.6,
+        stability=0.95,
+        evidence=(),
+        probabilities={
+            Regime.TRENDING_UP: 0.7,
+            Regime.TRENDING_DOWN: 0.1,
+            Regime.RANGE_BOUND: 0.15,
+            Regime.HIGH_VOLATILITY: 0.05,
+        },
+    )
+
+    repo.save(assessment, AS_OF)
+    buffer.flush()
+
+    (batch,) = flush.flushes
+    (row,) = batch[RegimeEvaluationRow]
+    assert row["regime"] == "trending_up"
+    assert row["probabilities"] == {
+        "trending_up": 0.7,
+        "trending_down": 0.1,
+        "range_bound": 0.15,
+        "high_volatility": 0.05,
+    }

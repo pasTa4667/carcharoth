@@ -1,9 +1,9 @@
 """Replays historical data through the unchanged TradingEngine.
 
 No scheduler: the runner iterates the historical bar grid as fast as the
-app can process it. One tick == one bar, so tick-counted settings such as
-`regime.evaluate_every_ticks` count bars here (e.g. every 5 x 5-minute
-bars = 25 market minutes), not wall-clock ticks — intentional.
+app can process it. One tick == one bar; time-based settings such as the
+regime detectors' `evaluate_interval_minutes` follow the bar timestamps,
+so they mean the same market time here as in live trading.
 """
 
 import logging

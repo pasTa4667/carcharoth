@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 from carcharoth.analysis.metrics import RoundTrip
@@ -40,6 +40,7 @@ from carcharoth.interfaces import (
     RiskManager,
     Strategy,
 )
+from carcharoth.interfaces.regime_detector import RegimeDetector
 from carcharoth.persistence.repositories import (
     AnalysisReader,
     BacktestMetricsRepository,
@@ -52,7 +53,6 @@ from carcharoth.persistence.repositories import (
     StrategyDecisionRepository,
     TradeRepository,
 )
-from carcharoth.regime.detector import RegimeDetector
 from carcharoth.regime.models import RegimeAssessment, StrategyAssignment
 
 
@@ -237,12 +237,10 @@ class InMemoryPositionSnapshotRepository(PositionSnapshotRepository):
 
 class InMemoryRegimeEvaluationRepository(RegimeEvaluationRepository):
     def __init__(self) -> None:
-        self.saved: list[tuple[RegimeAssessment, dict[str, float], datetime]] = []
+        self.saved: list[tuple[RegimeAssessment, datetime]] = []
 
-    def save(
-        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
-    ) -> None:
-        self.saved.append((assessment, dict(weights), timestamp))
+    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
+        self.saved.append((assessment, timestamp))
 
 
 class InMemoryStrategyAssignmentRepository(StrategyAssignmentRepository):
@@ -404,5 +402,69 @@ class FakeDetector(RegimeDetector):
             self._sticky[symbol] = script.pop(0)
         return self._sticky.get(symbol)
 
-    def weight_of(self, feature_name: str) -> float | None:
-        return 1.0
+
+class InMemoryByteStore:
+    """Dict-backed ByteStore; counts round trips for cache-behavior asserts."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, bytes] = {}
+        self.mget_calls = 0
+        self.mset_calls = 0
+
+    def get(self, key: str) -> bytes | None:
+        return self.data.get(key)
+
+    def mget(self, keys: Sequence[str]) -> list[bytes | None]:
+        self.mget_calls += 1
+        return [self.data.get(key) for key in keys]
+
+    def set(self, key: str, value: bytes) -> None:
+        self.data[key] = value
+
+    def mset(self, items: Mapping[str, bytes]) -> None:
+        self.mset_calls += 1
+        self.data.update(items)
+
+    def count_prefix(self, prefix: str) -> int:
+        return sum(1 for key in self.data if key.startswith(prefix))
+
+    def delete_prefix(self, prefix: str) -> int:
+        matches = [key for key in self.data if key.startswith(prefix)]
+        for key in matches:
+            del self.data[key]
+        return len(matches)
+
+    def used_memory_bytes(self) -> int | None:
+        return sum(len(value) for value in self.data.values())
+
+
+class RaisingByteStore:
+    """Every call raises, counting attempts — for ResilientByteStore tests."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def _boom(self) -> NoReturn:
+        self.calls += 1
+        raise ConnectionError("store down")
+
+    def get(self, key: str) -> bytes | None:
+        self._boom()
+
+    def mget(self, keys: Sequence[str]) -> list[bytes | None]:
+        self._boom()
+
+    def set(self, key: str, value: bytes) -> None:
+        self._boom()
+
+    def mset(self, items: Mapping[str, bytes]) -> None:
+        self._boom()
+
+    def count_prefix(self, prefix: str) -> int:
+        self._boom()
+
+    def delete_prefix(self, prefix: str) -> int:
+        self._boom()
+
+    def used_memory_bytes(self) -> int | None:
+        self._boom()

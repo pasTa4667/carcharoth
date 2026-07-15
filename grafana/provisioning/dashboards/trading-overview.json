@@ -1255,7 +1255,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "trending"
+              "options": "Trending"
             },
             "properties": [
               {
@@ -1270,7 +1270,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "mean_reverting"
+              "options": "Mean Reverting"
             },
             "properties": [
               {
@@ -1321,6 +1321,23 @@
           "rawQuery": true,
           "rawSql": "WITH latest_assignments AS (\n  SELECT DISTINCT ON (symbol) symbol, regime\n  FROM strategy_assignments\n  WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  ORDER BY symbol, since DESC\n)\nSELECT\n  CASE\n    WHEN regime = 'trending' THEN 'Trending'\n    WHEN regime = 'mean_reverting' THEN 'Mean Reverting'\n    ELSE regime\n  END AS regime,\n  COUNT(*) AS value\nFROM latest_assignments\nGROUP BY regime",
           "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {
+                "fieldName": "regime",
+                "handlerKey": "field.name"
+              },
+              {
+                "fieldName": "value",
+                "handlerKey": "field.value"
+              }
+            ]
+          }
         }
       ],
       "title": "Regime Distribution (Current)",

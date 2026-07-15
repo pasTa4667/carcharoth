@@ -35,6 +35,8 @@ from carcharoth.persistence.repositories import (
     PositionSnapshotRepository,
     RegimeEvaluationRepository,
     StrategyDecisionRepository,
+    evidence_payload,
+    probabilities_payload,
 )
 from carcharoth.regime.models import RegimeAssessment
 
@@ -141,18 +143,7 @@ class BufferedRegimeEvaluationRepository(RegimeEvaluationRepository):
         self._buffer = buffer
         self._run_id = run_id
 
-    def save(
-        self, assessment: RegimeAssessment, weights: Mapping[str, float], timestamp: datetime
-    ) -> None:
-        features = {
-            e.feature: {
-                "value": e.value,
-                "direction": e.direction,
-                "stability": e.stability,
-                "weight": weights.get(e.feature),
-            }
-            for e in assessment.evidence
-        }
+    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
         self._buffer.add(
             RegimeEvaluationRow,
             {
@@ -163,6 +154,7 @@ class BufferedRegimeEvaluationRepository(RegimeEvaluationRepository):
                 "score": assessment.score,
                 "directional_score": assessment.directional_score,
                 "stability": assessment.stability,
-                "features": features,
+                "features": evidence_payload(assessment),
+                "probabilities": probabilities_payload(assessment),
             },
         )

@@ -34,7 +34,7 @@ from carcharoth.domain.models import BacktestResult, OptimizationResult, RunType
 from carcharoth.engine.engine import TradingEngine
 from carcharoth.engine.scheduler import Scheduler
 from carcharoth.engine.strategy_provider import RegimeStrategyProvider, SingleStrategyProvider
-from carcharoth.interfaces import BarsFetcher, StrategyProvider
+from carcharoth.interfaces import BarsFetcher, ByteStore, StrategyProvider
 from carcharoth.logging_setup import (
     setup_logging,
     write_backtest_summary,
@@ -65,9 +65,9 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyStrategyDecisionRepository,
     SqlAlchemyTradeRepository,
 )
-from carcharoth.regime.detector import RegimeDetector
+from carcharoth.regime.detectors import build_detector
+from carcharoth.regime.hmm.fit_cache import HMM_PREFIX
 from carcharoth.regime.models import Regime
-from carcharoth.regime.registry import build_feature
 from carcharoth.risk.basic import BasicRiskManager
 from carcharoth.services.alpaca import (
     AlpacaAccountService,
@@ -79,7 +79,9 @@ from carcharoth.services.alpaca import (
 )
 from carcharoth.services.alpaca.historical import fetch_historical_bars, warmup_window
 from carcharoth.services.backtest import HistoricalMarketDataService, SimulatedBroker
+from carcharoth.services.cache.bars import BARS_PREFIX, PersistentBarsCache
 from carcharoth.services.cache.noop import NoOpCache
+from carcharoth.services.cache.redis_store import build_redis_store
 from carcharoth.services.optuna import (
     OptunaOptimizer,
     build_worker_storage,
@@ -105,20 +107,13 @@ def build_strategy_provider(
     session_factory: "sessionmaker[Session]",
     run_id: UUID,
     evaluations_repo: RegimeEvaluationRepository | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> StrategyProvider:
     if config.regime is None or not config.regime.active:
         name, sc = _active_strategy(config)  # exactly one, guaranteed by validation
         return SingleStrategyProvider(build_strategy(name, sc.params))
-    detector = RegimeDetector(
-        features=[
-            (build_feature(name, fc.params), fc.weight)
-            for name, fc in config.regime.features.items()
-        ],
-        lookback=config.regime.lookback,
-        winsorize_sigma=config.regime.winsorize_sigma,
-    )
     return RegimeStrategyProvider(
-        detector=detector,
+        detector=build_detector(config.regime, hmm_fit_store=hmm_store),
         strategies={
             Regime(name): build_strategy(rc.strategy, config.strategies[rc.strategy].params)
             for name, rc in config.regime.regimes.items()
@@ -127,9 +122,12 @@ def build_strategy_provider(
         or SqlAlchemyRegimeEvaluationRepository(session_factory, run_id),
         # Assignments are read back (load_current) and low-volume: never buffered.
         assignments_repo=SqlAlchemyStrategyAssignmentRepository(session_factory, run_id),
-        evaluate_every_ticks=config.regime.evaluate_every_ticks,
+        evaluate_interval_minutes=config.regime.evaluate_interval_minutes,
         default_regime=Regime(config.regime.default_regime)
         if config.regime.default_regime
+        else None,
+        min_confidence=config.regime.hmm.min_confidence
+        if config.regime.detector == "hmm" and config.regime.hmm is not None
         else None,
     )
 
@@ -138,6 +136,24 @@ def _active_strategy(config: AppConfig) -> tuple[str, StrategyConfig]:
     """The single active strategy for single-strategy mode; validation
     guarantees exactly one strategy has ``active: true``."""
     return next((name, sc) for name, sc in config.strategies.items() if sc.active)
+
+
+def _build_cache_stores(
+    settings: Settings, config: AppConfig, no_hmm_cache: bool = False
+) -> tuple[ByteStore | None, ByteStore | None]:
+    """(bars_store, hmm_store) per the cache config; None disables that cache.
+
+    One Redis connection backs both; unreachable Redis (already warned about
+    by build_redis_store) disables both and the run proceeds uncached.
+    """
+    want_bars = config.cache.enabled and config.cache.bars
+    want_hmm = config.cache.enabled and config.cache.hmm and not no_hmm_cache
+    if not (want_bars or want_hmm):
+        return None, None
+    store = build_redis_store(settings.redis_url)
+    if store is None:
+        return None, None
+    return (store if want_bars else None), (store if want_hmm else None)
 
 
 def _summary_regime(config: AppConfig) -> RegimeConfig | None:
@@ -222,6 +238,7 @@ def run_backtest_once(
     session_factory: "sessionmaker[Session]",
     fetch_bars: BarsFetcher,
     show_progress: bool = False,
+    hmm_store: ByteStore | None = None,
 ) -> BacktestResult:
     """One fully-persisted backtest run: creates the run row, replays the
     window, analyzes. Knows nothing about its caller — manual CLI runs and
@@ -256,6 +273,7 @@ def run_backtest_once(
         session_factory,
         run_id,
         evaluations_repo=BufferedRegimeEvaluationRepository(buffer, run_id),
+        hmm_store=hmm_store,
     )
     spec = provider.required_bars()
     bars = fetch_bars(symbols, spec.timeframe, start - warmup_window(spec), end_exclusive)
@@ -320,6 +338,7 @@ def _run_backtest(
     end: datetime,
     symbols: list[str] | None,
     verbose: bool = False,
+    no_hmm_cache: bool = False,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = load_config(config_path)
@@ -328,7 +347,10 @@ def _run_backtest(
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
-    fetch_bars = partial(fetch_historical_bars, build_data_client(settings))
+    bars_store, hmm_store = _build_cache_stores(settings, config, no_hmm_cache)
+    fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
+    if bars_store is not None:
+        fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
     try:
         # Only the interactive CLI run gets the tqdm bar; with --verbose we fall
         # back to the periodic progress logs to avoid clobbering the bar.
@@ -340,6 +362,7 @@ def _run_backtest(
             session_factory,
             fetch_bars,
             show_progress=not verbose,
+            hmm_store=hmm_store,
         )
     finally:
         db_engine.dispose()
@@ -357,6 +380,7 @@ def _run_optimize(
     n_trials: int | None,
     study_name: str | None,
     workers: int | None,
+    no_hmm_cache: bool = False,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     # The optimizer applies dot-path overrides to the raw dict, so the raw
@@ -390,19 +414,27 @@ def _run_optimize(
             n_trials=n_trials or optimize_config.study.n_trials,
             study_name=study_name or optimize_config.study.name,
             workers=effective_workers,
+            no_hmm_cache=no_hmm_cache,
         )
         return
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
     # One data client + in-process bars cache for the whole study: trials
-    # re-fetch nothing unless their warm-up window grows.
-    fetch_bars: BarsFetcher = BarsCache(partial(fetch_historical_bars, build_data_client(settings)))
+    # re-fetch nothing unless their warm-up window grows. The persistent
+    # layer underneath carries bars (and HMM fits) across studies and runs.
+    bars_store, hmm_store = _build_cache_stores(settings, config, no_hmm_cache)
+    upstream: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
+    if bars_store is not None:
+        upstream = PersistentBarsCache(bars_store, upstream)
+    fetch_bars: BarsFetcher = BarsCache(upstream)
 
     def run_trial_backtest(
         config: AppConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
     ) -> BacktestResult:
-        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars)
+        return run_backtest_once(
+            config, start, end_exclusive, symbols, session_factory, fetch_bars, hmm_store=hmm_store
+        )
 
     optimizer = OptunaOptimizer(
         run_backtest=run_trial_backtest,
@@ -436,6 +468,7 @@ def _optimize_worker(
     n_trials: int,
     worker_index: int,
     sampler_seed: int | None,
+    no_hmm_cache: bool,
 ) -> None:
     """One parallel optimize worker (multiprocessing spawn target).
 
@@ -459,12 +492,20 @@ def _optimize_worker(
 
     db_engine = build_engine(settings.database_url, pool_size=2, max_overflow=2)
     session_factory = build_session_factory(db_engine)
-    fetch_bars: BarsFetcher = BarsCache(partial(fetch_historical_bars, build_data_client(settings)))
+    # Each worker connects to Redis itself (spawn context); the persistent
+    # layer is what shares bars and HMM fits across the worker processes.
+    bars_store, hmm_store = _build_cache_stores(settings, config, no_hmm_cache)
+    upstream: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
+    if bars_store is not None:
+        upstream = PersistentBarsCache(bars_store, upstream)
+    fetch_bars: BarsFetcher = BarsCache(upstream)
 
     def run_trial_backtest(
         config: AppConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
     ) -> BacktestResult:
-        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars)
+        return run_backtest_once(
+            config, start, end_exclusive, symbols, session_factory, fetch_bars, hmm_store=hmm_store
+        )
 
     optimizer = OptunaOptimizer(
         run_backtest=run_trial_backtest,
@@ -492,6 +533,7 @@ def _run_optimize_parallel(
     n_trials: int,
     study_name: str,
     workers: int,
+    no_hmm_cache: bool = False,
 ) -> None:
     # Fail fast in the parent instead of in every worker at once.
     validate_override_paths(raw_config, optimize_config.search_space)
@@ -517,6 +559,7 @@ def _run_optimize_parallel(
                 share,
                 index,
                 base_seed + index if base_seed is not None else None,
+                no_hmm_cache,
             ),
         )
         for index, share in enumerate(shares)
@@ -608,6 +651,34 @@ def _run_analyze(run_id: UUID) -> None:
         db_engine.dispose()
 
 
+def _cache_store_or_exit() -> ByteStore:
+    settings = Settings()  # type: ignore[call-arg]  # values come from .env
+    store = build_redis_store(settings.redis_url, resilient=False)
+    if store is None:
+        raise SystemExit(
+            f"redis unreachable at {settings.redis_url} — try `docker compose up -d redis`"
+        )
+    return store
+
+
+def _run_cache_stats() -> None:
+    store = _cache_store_or_exit()
+    print(f"  bars entries:     {store.count_prefix(BARS_PREFIX)}")
+    print(f"  hmm fit entries:  {store.count_prefix(HMM_PREFIX)}")
+    used = store.used_memory_bytes()
+    if used is not None:
+        print(f"  redis memory:     {used / 1_048_576:.1f} MiB")
+
+
+def _run_cache_clear(bars: bool, hmm: bool) -> None:
+    store = _cache_store_or_exit()
+    both = not bars and not hmm
+    if bars or both:
+        print(f"  deleted {store.delete_prefix(BARS_PREFIX)} bars entries")
+    if hmm or both:
+        print(f"  deleted {store.delete_prefix(HMM_PREFIX)} hmm fit entries")
+
+
 def _run_delete(run_id: UUID | None, all_backtests: bool) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     db_engine = build_engine(settings.database_url)
@@ -667,6 +738,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optimize YAML path (supplies default start/end/symbols)",
     )
     backtest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
+    backtest.add_argument(
+        "--no-hmm-cache",
+        action="store_true",
+        help="disable the persistent HMM fit cache for this run",
+    )
 
     optimize = subparsers.add_parser(
         "optimize", help="optimize config parameters over backtests (Optuna)"
@@ -687,6 +763,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="override study.workers (parallel worker processes; trials are split across them)",
     )
     optimize.add_argument("--verbose", action="store_true", help="enable INFO console logging")
+    optimize.add_argument(
+        "--no-hmm-cache",
+        action="store_true",
+        help="disable the persistent HMM fit cache (use when the study searches HMM params)",
+    )
+
+    cache = subparsers.add_parser("cache", help="inspect or clear the persistent Redis cache")
+    cache_sub = cache.add_subparsers(dest="cache_command", required=True)
+    cache_sub.add_parser("stats", help="entry counts per cache + redis memory usage")
+    clear = cache_sub.add_parser("clear", help="delete cached entries (both caches by default)")
+    clear.add_argument("--bars", action="store_true", help="clear only the bars cache")
+    clear.add_argument("--hmm", action="store_true", help="clear only the HMM fit cache")
 
     analyze = subparsers.add_parser("analyze", help="recompute metrics for a run")
     analyze.add_argument("--run-id", type=UUID, required=True)
@@ -740,11 +828,23 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise SystemExit("--start and --end are required (or configure them in optimize.yaml)")
         if end < start:
             raise SystemExit("--end must not be before --start")
-        _run_backtest(args.config, start, end, symbols, verbose=args.verbose)
+        _run_backtest(
+            args.config, start, end, symbols, verbose=args.verbose, no_hmm_cache=args.no_hmm_cache
+        )
     elif args.command == "optimize":
         _run_optimize(
-            args.config, args.optimize_config, args.n_trials, args.study_name, args.workers
+            args.config,
+            args.optimize_config,
+            args.n_trials,
+            args.study_name,
+            args.workers,
+            no_hmm_cache=args.no_hmm_cache,
         )
+    elif args.command == "cache":
+        if args.cache_command == "stats":
+            _run_cache_stats()
+        else:
+            _run_cache_clear(args.bars, args.hmm)
     elif args.command == "analyze":
         _run_analyze(args.run_id)
     elif args.command == "delete-run":

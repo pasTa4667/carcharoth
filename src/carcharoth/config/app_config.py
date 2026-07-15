@@ -34,20 +34,59 @@ class RegimeStrategyConfig(BaseModel):
     strategy: str
 
 
+class ScoreDetectorConfig(BaseModel):
+    """The evidence-based score detector (trending <-> mean_reverting)."""
+
+    evaluate_interval_minutes: int = Field(default=5, gt=0)
+    lookback: int = Field(default=400, gt=1)
+    winsorize_sigma: float = Field(default=5.0, gt=0)
+    features: dict[str, RegimeFeatureConfig] = Field(min_length=1)
+
+
+class HmmDetectorConfig(BaseModel):
+    """The Gaussian-HMM detector (trending_up / trending_down / range_bound /
+    high_volatility), emitting posterior probabilities per regime."""
+
+    evaluate_interval_minutes: int = Field(default=30, gt=0)
+    #: >= 4 so every regime can be represented; extra states become RANGE_BOUND
+    n_states: int = Field(default=4, ge=4)
+    #: bars the model is trained on (~20 sessions of 78 five-minute bars)
+    training_window: int = Field(default=1560, gt=1)
+    #: refit once this many new bars have arrived since the last fit (~1 session)
+    refit_interval_bars: int = Field(default=78, gt=0)
+    #: below this top-regime probability the previous regime is kept
+    min_confidence: float = Field(default=0.5, ge=0, le=1)
+    seed: int = 42
+    n_restarts: int = Field(default=2, gt=0)
+    covariance_type: Literal["diag", "full"] = "diag"
+    n_iter: int = Field(default=100, gt=0)
+    tol: float = Field(default=1.0e-3, gt=0)
+    min_covar: float = Field(default=1.0e-3, gt=0)
+    winsorize_sigma: float = Field(default=5.0, gt=0)
+    vol_window: int = Field(default=20, gt=1)
+    ema_period: int = Field(default=50, gt=1)
+    adx_period: int = Field(default=14, gt=1)
+
+
 class RegimeConfig(BaseModel):
     #: master switch: true -> the detector picks a strategy per symbol/regime;
     #: false -> the single active strategy in `strategies` trades everything
     active: bool = False
-    lookback: int = Field(default=400, gt=1)
-    evaluate_every_ticks: int = Field(default=5, gt=0)
-    winsorize_sigma: float = Field(default=5.0, gt=0)
+    #: which detector implementation classifies regimes
+    detector: Literal["score", "hmm"] = "score"
     #: when None, warm-up ticks skip trading (same as an unmapped regime)
     default_regime: str | None = None
-    features: dict[str, RegimeFeatureConfig] = Field(min_length=1)
+    score: ScoreDetectorConfig | None = None
+    hmm: HmmDetectorConfig | None = None
     regimes: dict[str, RegimeStrategyConfig]
 
     @model_validator(mode="after")
     def _validate_regime_names(self) -> "RegimeConfig":
+        selected = self.score if self.detector == "score" else self.hmm
+        if selected is None:
+            raise ValueError(
+                f"regime.detector is {self.detector!r} but the '{self.detector}' section is missing"
+            )
         valid = {regime.value for regime in Regime}
         unknown = set(self.regimes) - valid
         if unknown:
@@ -57,6 +96,13 @@ class RegimeConfig(BaseModel):
                 f"unknown default_regime {self.default_regime!r}; valid: {sorted(valid)}"
             )
         return self
+
+    @property
+    def evaluate_interval_minutes(self) -> int:
+        """Re-assessment cadence of the selected detector."""
+        selected = self.score if self.detector == "score" else self.hmm
+        assert selected is not None  # enforced by the validator
+        return selected.evaluate_interval_minutes
 
 
 class RiskConfig(BaseModel):
@@ -75,6 +121,20 @@ class BacktestConfig(BaseModel):
     spread_pct: float = Field(default=0.0005, ge=0)
     #: fills execute this fraction worse than the quoted side
     slippage_pct: float = Field(default=0.0005, ge=0)
+
+
+class CacheConfig(BaseModel):
+    """Persistent Redis cache for backtest/optimize runs (the live PAPER
+    path never uses it). Runs degrade to no caching, with a warning, when
+    Redis is unreachable."""
+
+    #: master switch; false behaves exactly as before the cache existed
+    enabled: bool = True
+    #: historical Alpaca bars, gap-filled per (timeframe, symbol)
+    bars: bool = True
+    #: fitted HMM models; disable when an Optuna study searches HMM params
+    #: (every trial would get a fresh config hash and never hit)
+    hmm: bool = True
 
 
 class ObjectiveConfig(BaseModel):
@@ -100,6 +160,7 @@ class AppConfig(BaseModel):
     regime: RegimeConfig | None = None
     risk: RiskConfig = RiskConfig()
     backtest: BacktestConfig = BacktestConfig()
+    cache: CacheConfig = CacheConfig()
     objectives: dict[str, ObjectiveConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")

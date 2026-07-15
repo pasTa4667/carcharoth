@@ -80,7 +80,7 @@ strategies:
       entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
       flatten_minutes: 15       # force-exit open positions within this window before close
   ema_vwap:
-    active: true
+    active: false
     params:
       timeframe_minutes: 5            # bar resolution the strategy evaluates on
       ema_fast: 9
@@ -94,33 +94,69 @@ strategies:
       flatten_minutes: 15             # force-exit open positions within this window before close
 
 # Regime-driven mode: a per-symbol market regime detector decides which of the
-# mapped strategies trades each symbol. Evidence-based: each feature contributes
-# a direction (trend vs mean reversion) and/or a stability (regime-change) score;
-# the weighted, stability-attenuated sum picks the regime. Switches are
+# mapped strategies trades each symbol. Two detector implementations exist,
+# selected via `detector`; each keeps its parameters in its own section.
+# Trading still happens every tick — only the regime *re-assessment* runs on
+# the selected detector's evaluate_interval_minutes. Switches are
 # hold-until-flat: an open position stays with the strategy that entered it.
-# Set active: true to enable it (params are read from `strategies` above).
+# Regimes without a mapped strategy don't trade (open positions are managed
+# until flat by the strategy that entered them).
 regime:
   active: true
-  lookback: 400              # 5-min bars the detector analyzes (~5 sessions)
-  evaluate_every_ticks: 5    # re-assess the regime every N engine ticks (~5 min)
-  winsorize_sigma: 5.0       # clip log returns at this many std devs (overnight gaps)
-  default_regime: mean_reverting  # used until the detector has enough history
-  features:
-    hurst:                   # trend persistence: H>0.5 trending, H<0.5 mean-reverting
-      weight: 1.0
-      params: {min_window: 8, scale: 0.2}
-    vol_clustering:          # bursty volatility -> weak mean-reversion evidence
-      weight: 0.5
-      params: {max_lag: 5, window: 150, scale: 0.3}
-    cusum:                   # change detection on standardized returns
-      weight: 1.0
-      params: {drift: 0.5, calm_level: 4.0, alarm_level: 10.0, window: 150}
-    wasserstein:             # distribution shift between recent and reference returns
-      weight: 1.0
-      params: {recent_window: 60, reference_window: 180, calm_level: 0.2, alarm_level: 1.0}
+  detector: hmm              # score | hmm
+  default_regime: null       # regime assumed until the detector has enough history
+
+  # Evidence-based score detector: each feature contributes a direction
+  # (trending <-> mean_reverting) and/or a stability score; the weighted,
+  # stability-attenuated sum picks the regime.
+  score:
+    evaluate_interval_minutes: 5
+    lookback: 400            # 5-min bars the detector analyzes (~5 sessions)
+    winsorize_sigma: 5.0     # clip log returns at this many std devs (overnight gaps)
+    features:
+      hurst:                 # trend persistence: H>0.5 trending, H<0.5 mean-reverting
+        weight: 1.0
+        params: {min_window: 8, scale: 0.2}
+      vol_clustering:        # bursty volatility -> weak mean-reversion evidence
+        weight: 0.5
+        params: {max_lag: 5, window: 150, scale: 0.3}
+      cusum:                 # change detection on standardized returns
+        weight: 1.0
+        params: {drift: 0.5, calm_level: 4.0, alarm_level: 10.0, window: 150}
+      wasserstein:           # distribution shift between recent and reference returns
+        weight: 1.0
+        params: {recent_window: 60, reference_window: 180, calm_level: 0.2, alarm_level: 1.0}
+
+  # Gaussian-HMM detector: a 4-state hidden Markov model per symbol over
+  # [log return, rolling log-volatility, EMA-distance, ADX], states labeled
+  # trending_up / trending_down / range_bound / high_volatility from the
+  # fitted emission means. Decisions use the posterior probabilities.
+  hmm:
+    evaluate_interval_minutes: 30  # re-assess the regime every ~30 market minutes
+    n_states: 4
+    training_window: 1560    # bars the model trains on (~20 sessions of 5-min bars)
+    refit_interval_bars: 78  # refit after this many new bars (~1 session)
+    min_confidence: 0.5      # below this top-regime probability, keep previous regime
+    seed: 42                 # base seed; per-symbol seeds are derived deterministically
+    n_restarts: 2            # EM restarts per fit, best log-likelihood wins
+    covariance_type: diag    # diag | full
+    n_iter: 100
+    tol: 1.0e-3
+    min_covar: 1.0e-3
+    winsorize_sigma: 5.0     # clip log returns at this many std devs (overnight gaps)
+    vol_window: 20           # rolling-std window of the volatility feature (bars)
+    ema_period: 50           # EMA-distance feature period
+    adx_period: 14           # ADX feature period
+
   regimes:                   # regime -> which strategy trades it (params from `strategies`)
-    trending:
-      strategy: ema_vwap
+    # hmm regimes; trending_down / high_volatility are intentionally unmapped -> no trading
+    # trending_up:
+    #   strategy: ema_vwap
+    range_bound:
+      strategy: mean_reversion
+    # score-detector regimes (used when detector: score)
+    # trending:
+    #   strategy: ema_vwap
     mean_reverting:
       strategy: mean_reversion
 
@@ -129,6 +165,15 @@ backtest:
   initial_capital: 100000.0  # starting cash of the simulated account
   spread_pct: 0.0005         # synthetic quote spread around the bar close
   slippage_pct: 0.0005       # fills execute this fraction worse than the quote
+
+# Persistent Redis cache for backtest/optimize runs (REDIS_URL in .env;
+# live paper trading never uses it). Runs degrade to no caching, with a
+# warning, when Redis is unreachable.
+cache:
+  enabled: true  # master switch; false behaves exactly as without the cache
+  bars: true     # historical Alpaca bars, gap-filled per (timeframe, symbol)
+  hmm: true      # fitted HMM models; disable (or use --no-hmm-cache) when an
+                 # Optuna study searches HMM params — trials would never hit
 
 # Named fitness definitions: every backtest's analysis computes one score
 # per objective (persisted as metric `fitness_<name>`), making runs

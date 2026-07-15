@@ -7,14 +7,21 @@ to decide which strategy trades a symbol.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
 
 class Regime(StrEnum):
+    # score detector: single trend <-> mean-reversion axis
     TRENDING = "trending"
     MEAN_REVERTING = "mean_reverting"
+    # hmm detector: four hidden states
+    TRENDING_UP = "trending_up"
+    TRENDING_DOWN = "trending_down"
+    RANGE_BOUND = "range_bound"
+    HIGH_VOLATILITY = "high_volatility"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,12 +31,14 @@ class Evidence:
     `direction` places the market on the trend (+1) <-> mean-reversion (-1)
     axis; `stability` says how settled the current regime looks (1 = stable,
     0 = regime break in progress). A feature emits whichever fields apply.
+    `weight` is assigned by the detector (not the feature) for audit.
     """
 
     feature: str
     value: float
     direction: float | None = None
     stability: float | None = None
+    weight: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +56,8 @@ class RegimeAssessment:
     directional_score: float
     stability: float
     evidence: tuple[Evidence, ...]
+    #: full posterior over regimes, for detectors that produce one (HMM)
+    probabilities: Mapping[Regime, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

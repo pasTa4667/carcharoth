@@ -1,7 +1,7 @@
 """Strategy provider dispatch: regime evaluation cadence, persistence and
 hold-until-flat switching."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -46,12 +46,28 @@ def make_assessment(regime: Regime, symbol: str = "AAPL", score: float = 0.5) ->
     )
 
 
+def make_prob_assessment(
+    regime: Regime, confidence: float, symbol: str = "AAPL"
+) -> RegimeAssessment:
+    """A probabilistic (HMM-style) assessment: score == top probability."""
+    return RegimeAssessment(
+        symbol=symbol,
+        regime=regime,
+        score=confidence,
+        directional_score=0.0,
+        stability=1.0,
+        evidence=(),
+        probabilities={regime: confidence},
+    )
+
+
 def make_provider(
     detector: FakeDetector | None = None,
     assignments_repo: InMemoryStrategyAssignmentRepository | None = None,
     evaluations_repo: InMemoryRegimeEvaluationRepository | None = None,
-    evaluate_every_ticks: int = 1,
+    evaluate_interval_minutes: int = 1,
     trend_lookback: int = 20,
+    min_confidence: float | None = None,
 ) -> tuple[
     RegimeStrategyProvider,
     FakeDetector,
@@ -71,8 +87,9 @@ def make_provider(
         strategies=strategies,
         evaluations_repo=evaluations_repo,
         assignments_repo=assignments_repo,
-        evaluate_every_ticks=evaluate_every_ticks,
+        evaluate_interval_minutes=evaluate_interval_minutes,
         default_regime=Regime.MEAN_REVERTING,
+        min_confidence=min_confidence,
     )
     return provider, detector, evaluations_repo, assignments_repo, strategies
 
@@ -109,7 +126,8 @@ def test_regime_flip_switches_immediately_when_flat() -> None:
     provider, _, _, assignments, strategies = make_provider(detector)
 
     assert provider.resolve("AAPL", BARS, None, AS_OF) is strategies[Regime.MEAN_REVERTING]
-    assert provider.resolve("AAPL", BARS, None, AS_OF) is strategies[Regime.TRENDING]
+    as_of = AS_OF + timedelta(minutes=1)
+    assert provider.resolve("AAPL", BARS, None, as_of) is strategies[Regime.TRENDING]
     assert [a.strategy for a in assignments.saved] == ["reversion_fake", "trend_fake"]
 
 
@@ -122,10 +140,12 @@ def test_regime_flip_holds_until_flat_with_open_position() -> None:
 
     assert provider.resolve("AAPL", BARS, position, AS_OF) is strategies[Regime.MEAN_REVERTING]
     # regime flips to trending, but the position is still open
-    assert provider.resolve("AAPL", BARS, position, AS_OF) is strategies[Regime.MEAN_REVERTING]
+    as_of = AS_OF + timedelta(minutes=1)
+    assert provider.resolve("AAPL", BARS, position, as_of) is strategies[Regime.MEAN_REVERTING]
     assert len(assignments.saved) == 1
     # once flat, the pending regime takes over
-    assert provider.resolve("AAPL", BARS, None, AS_OF) is strategies[Regime.TRENDING]
+    as_of = AS_OF + timedelta(minutes=2)
+    assert provider.resolve("AAPL", BARS, None, as_of) is strategies[Regime.TRENDING]
     assert [a.strategy for a in assignments.saved] == ["reversion_fake", "trend_fake"]
 
 
@@ -160,21 +180,34 @@ def test_restart_drops_assignment_to_unmapped_strategy() -> None:
 
 def test_detector_runs_on_configured_cadence() -> None:
     detector = FakeDetector({"AAPL": [make_assessment(Regime.TRENDING)]})
-    provider, detector, evaluations, _, _ = make_provider(detector, evaluate_every_ticks=3)
+    provider, detector, evaluations, _, _ = make_provider(detector, evaluate_interval_minutes=3)
 
-    for _ in range(7):
-        provider.resolve("AAPL", BARS, None, AS_OF)
-    assert len(detector.calls) == 3  # resolves 1, 4 and 7
+    for minute in range(7):  # one resolve per market minute
+        provider.resolve("AAPL", BARS, None, AS_OF + timedelta(minutes=minute))
+    assert len(detector.calls) == 3  # minutes 0, 3 and 6
     assert len(evaluations.saved) == 3  # sticky assessment persisted each run
 
 
 def test_cadence_is_tracked_per_symbol() -> None:
-    provider, detector, _, _, _ = make_provider(evaluate_every_ticks=2)
+    provider, detector, _, _, _ = make_provider(evaluate_interval_minutes=2)
 
     provider.resolve("AAPL", BARS, None, AS_OF)
     provider.resolve("MSFT", BARS, None, AS_OF)
-    provider.resolve("AAPL", BARS, None, AS_OF)
+    provider.resolve("AAPL", BARS, None, AS_OF + timedelta(minutes=1))
     assert detector.calls == ["AAPL", "MSFT"]
+
+
+def test_warmup_miss_still_advances_the_attempt_clock() -> None:
+    """A warming-up detector is not retried before the interval elapses —
+    expensive detectors must not refit on every tick."""
+    provider, detector, _, _, _ = make_provider(evaluate_interval_minutes=5)
+
+    provider.resolve("AAPL", BARS, None, AS_OF)  # assess -> None (no script)
+    provider.resolve("AAPL", BARS, None, AS_OF + timedelta(minutes=1))
+    provider.resolve("AAPL", BARS, None, AS_OF + timedelta(minutes=4))
+    assert detector.calls == ["AAPL"]
+    provider.resolve("AAPL", BARS, None, AS_OF + timedelta(minutes=5))
+    assert detector.calls == ["AAPL", "AAPL"]
 
 
 def test_required_bars_covers_detector_and_strategies() -> None:
@@ -212,7 +245,39 @@ def test_rejects_default_regime_without_mapping() -> None:
 def test_strategies_still_resolve_between_detector_runs() -> None:
     """The cadence gates the detector, not strategy evaluation."""
     detector = FakeDetector({"AAPL": [make_assessment(Regime.TRENDING)]})
-    provider, _, _, _, strategies = make_provider(detector, evaluate_every_ticks=10)
+    provider, _, _, _, strategies = make_provider(detector, evaluate_interval_minutes=10)
 
-    for _ in range(5):
-        assert provider.resolve("AAPL", BARS, None, AS_OF) is strategies[Regime.TRENDING]
+    for minute in range(5):
+        as_of = AS_OF + timedelta(minutes=minute)
+        assert provider.resolve("AAPL", BARS, None, as_of) is strategies[Regime.TRENDING]
+    assert len(detector.calls) == 1
+
+
+def test_low_confidence_assessment_holds_previous_regime() -> None:
+    detector = FakeDetector(
+        {
+            "AAPL": [
+                make_prob_assessment(Regime.MEAN_REVERTING, confidence=0.9),
+                make_prob_assessment(Regime.TRENDING, confidence=0.3),
+                make_prob_assessment(Regime.TRENDING, confidence=0.8),
+            ]
+        }
+    )
+    provider, _, evaluations, _, strategies = make_provider(detector, min_confidence=0.5)
+
+    assert provider.resolve("AAPL", BARS, None, AS_OF) is strategies[Regime.MEAN_REVERTING]
+    # 0.3 < 0.5: the uncertain trending verdict is persisted but not acted on
+    as_of = AS_OF + timedelta(minutes=1)
+    assert provider.resolve("AAPL", BARS, None, as_of) is strategies[Regime.MEAN_REVERTING]
+    assert [a.regime for a, _ in evaluations.saved] == [Regime.MEAN_REVERTING, Regime.TRENDING]
+    # 0.8 >= 0.5: now the switch happens
+    as_of = AS_OF + timedelta(minutes=2)
+    assert provider.resolve("AAPL", BARS, None, as_of) is strategies[Regime.TRENDING]
+
+
+def test_min_confidence_ignores_non_probabilistic_assessments() -> None:
+    """Score-detector assessments (no probabilities) are never gated."""
+    detector = FakeDetector({"AAPL": [make_assessment(Regime.TRENDING, score=0.1)]})
+    provider, _, _, _, strategies = make_provider(detector, min_confidence=0.9)
+
+    assert provider.resolve("AAPL", BARS, None, AS_OF) is strategies[Regime.TRENDING]

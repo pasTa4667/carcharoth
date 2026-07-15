@@ -129,6 +129,11 @@ class RegimeEvaluationRow(Base):
     directional_score: Mapped[float]
     stability: Mapped[float]
     features: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    #: full regime posterior for probabilistic detectors (HMM); NULL otherwise
+    #: (none_as_null: Python None -> SQL NULL, not JSON 'null')
+    probabilities: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
 
 class StrategyAssignmentRow(Base):

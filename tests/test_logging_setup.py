@@ -8,6 +8,7 @@ from carcharoth.config.app_config import (
     RegimeFeatureConfig,
     RegimeStrategyConfig,
     RiskConfig,
+    ScoreDetectorConfig,
 )
 from carcharoth.domain.models import MetricValue, OptimizationResult
 from carcharoth.logging_setup import setup_logging, write_backtest_summary, write_optimize_summary
@@ -23,7 +24,11 @@ def _risk() -> RiskConfig:
 
 def _regime() -> RegimeConfig:
     return RegimeConfig(
-        features={"hurst": RegimeFeatureConfig(weight=1.0, params={"min_window": 8, "scale": 0.2})},
+        score=ScoreDetectorConfig(
+            features={
+                "hurst": RegimeFeatureConfig(weight=1.0, params={"min_window": 8, "scale": 0.2})
+            }
+        ),
         regimes={
             "trending": RegimeStrategyConfig(strategy="ema_vwap"),
             "mean_reverting": RegimeStrategyConfig(strategy="mean_reversion"),
@@ -72,7 +77,7 @@ def test_yaml_contains_regime_config(tmp_path):
     write_backtest_summary(tmp_path, run_id, _started_at(), _regime(), _risk(), [])
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert "regime" in doc["config"]
-    assert doc["config"]["regime"]["lookback"] == 400
+    assert doc["config"]["regime"]["score"]["lookback"] == 400
 
 
 def test_no_regime_omits_key(tmp_path):

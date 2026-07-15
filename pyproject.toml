@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.18.5",
     "alpaca-py>=0.43.5",
+    "hmmlearn>=0.3.3",
     "numpy>=2.5.0",
     "optuna>=4.2",
     "pandas>=3.0.3",
@@ -17,6 +18,7 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",
+    "redis>=8.0.1",
     "scipy>=1.16",
     "sqlalchemy>=2.0",
     "ta-lib>=0.6",
@@ -57,5 +59,13 @@ files = ["src"]
 module = ["alpaca.*"]
 follow_untyped_imports = true
 
+[[tool.mypy.overrides]]
+module = ["hmmlearn.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # hmmlearn-internal; harmless until hmmlearn catches up with numpy 2.5
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning:hmmlearn.utils",
+]

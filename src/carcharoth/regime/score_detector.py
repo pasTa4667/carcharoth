@@ -7,17 +7,19 @@ break are unreliable. The regime is whichever side of the axis the final
 score lands on ("always pick best").
 """
 
+import dataclasses
 from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
 
 from carcharoth.domain.models import Bar
+from carcharoth.interfaces.regime_detector import RegimeDetector
 from carcharoth.regime.features.base import RegimeFeature
 from carcharoth.regime.models import Evidence, Regime, RegimeAssessment
 
 
-class RegimeDetector:
+class ScoreRegimeDetector(RegimeDetector):
     def __init__(
         self,
         features: Sequence[tuple[RegimeFeature, float]],
@@ -46,20 +48,22 @@ class RegimeDetector:
             return None
 
         evidence: list[Evidence] = []
-        weights: dict[str, float] = {}
         for feature, weight in self._features:
             result = feature.compute(returns)
             if result is None:
                 continue
-            evidence.append(result)
-            weights[result.feature] = weight
+            evidence.append(dataclasses.replace(result, weight=weight))
 
-        directional = [e for e in evidence if e.direction is not None]
+        directional = [e for e in evidence if e.direction is not None and e.weight is not None]
         if not directional:
             return None
-        total_weight = sum(weights[e.feature] for e in directional)
+        total_weight = sum(e.weight for e in directional if e.weight is not None)
         directional_score = (
-            sum(weights[e.feature] * e.direction for e in directional if e.direction is not None)
+            sum(
+                e.weight * e.direction
+                for e in directional
+                if e.weight is not None and e.direction is not None
+            )
             / total_weight
         )
 
@@ -76,10 +80,6 @@ class RegimeDetector:
             stability=stability,
             evidence=tuple(evidence),
         )
-
-    def weight_of(self, feature_name: str) -> float | None:
-        """The configured weight for a feature, for persistence/audit."""
-        return next((w for f, w in self._features if f.name == feature_name), None)
 
     def _log_returns(self, bars: Sequence[Bar]) -> npt.NDArray[np.float64] | None:
         """Winsorized log returns of closes; None when fewer than two usable

@@ -9,6 +9,7 @@ services:
       APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY}
       APCA_API_BASE_URL: ${APCA_API_BASE_URL:-https://paper-api.alpaca.markets/v2}
       DATABASE_URL: postgresql+psycopg://carcharoth:carcharoth@db:5432/carcharoth
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config
@@ -31,6 +32,26 @@ services:
       timeout: 3s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--appendonly", "yes",
+        "--maxmemory", "2gb",
+        "--maxmemory-policy", "allkeys-lru",
+      ]
+    ports:
+      - "6379:6379"
+    volumes:
+      - carcharoth_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.4.0
     ports:
@@ -52,4 +73,5 @@ services:
 
 volumes:
   carcharoth_pgdata:
+  carcharoth_redisdata:
   grafana_data:
