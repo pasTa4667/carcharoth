@@ -236,6 +236,16 @@ class EquityPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class PositionSnapshot:
+    """Unrealized P&L for one open position at one bar close — used to compute
+    per-trade MAE/MFE during post-run analysis."""
+
+    symbol: str
+    timestamp: datetime
+    unrealized_pnl: float
+
+
+@dataclass(frozen=True, slots=True)
 class MetricValue:
     """One analyzer result; symbol is set for per-symbol metrics only."""
 

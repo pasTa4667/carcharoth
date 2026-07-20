@@ -4,9 +4,17 @@ from datetime import timedelta
 
 import pytest
 
-from carcharoth.analysis.metrics import compute_metrics, match_round_trips
-from carcharoth.domain.models import EquityPoint, MetricValue, Side, TradeRecord
+from carcharoth.analysis.metrics import compute_metrics, enrich_with_excursions, match_round_trips
+from carcharoth.domain.models import EquityPoint, MetricValue, PositionSnapshot, Side, TradeRecord
 from tests.factories import BASE_TIME
+
+
+def snapshot(symbol: str, minute: int, unrealized_pnl: float) -> PositionSnapshot:
+    return PositionSnapshot(
+        symbol=symbol,
+        timestamp=BASE_TIME + timedelta(minutes=minute),
+        unrealized_pnl=unrealized_pnl,
+    )
 
 
 def trade(side: Side, qty: float, price: float, minute: int, symbol: str = "AAPL") -> TradeRecord:
@@ -125,3 +133,68 @@ def test_all_winning_trades_omit_loss_metrics() -> None:
     assert metrics["win_rate"] == 1.0
     assert "avg_loss" not in metrics
     assert "profit_factor" not in metrics
+
+
+# --- enrich_with_excursions tests ---
+
+
+def test_excursions_computed_from_snapshots() -> None:
+    # Buy 10 shares at $100 at minute 0, sell at minute 10
+    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 120.0, minute=10)])
+    assert len(trips) == 1
+    snaps = [
+        snapshot("AAPL", minute=1, unrealized_pnl=50.0),   # +$50
+        snapshot("AAPL", minute=5, unrealized_pnl=-30.0),  # -$30  ← worst (MAE)
+        snapshot("AAPL", minute=8, unrealized_pnl=80.0),   # +$80  ← best (MFE)
+    ]
+    enriched = enrich_with_excursions(trips, snaps)
+    assert len(enriched) == 1
+    trip = enriched[0]
+    # entry_value = 100 * 10 = 1000
+    assert trip.mae_pct == pytest.approx(-30.0 / 1000.0)
+    assert trip.mfe_pct == pytest.approx(80.0 / 1000.0)
+
+
+def test_excursions_all_positive_mae_is_zero() -> None:
+    # Trade never went negative unrealized
+    trips = match_round_trips([trade(Side.BUY, 5, 200.0, minute=0), trade(Side.SELL, 5, 210.0, minute=5)])
+    snaps = [
+        snapshot("AAPL", minute=1, unrealized_pnl=10.0),
+        snapshot("AAPL", minute=3, unrealized_pnl=25.0),
+    ]
+    enriched = enrich_with_excursions(trips, snaps)
+    assert enriched[0].mae_pct == pytest.approx(0.0)
+    assert enriched[0].mfe_pct == pytest.approx(25.0 / (200.0 * 5))
+
+
+def test_excursions_no_snapshots_yields_none() -> None:
+    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 110.0, minute=5)])
+    enriched = enrich_with_excursions(trips, [])
+    assert enriched[0].mae_pct is None
+    assert enriched[0].mfe_pct is None
+
+
+def test_excursions_snapshots_outside_window_are_ignored() -> None:
+    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=5), trade(Side.SELL, 10, 110.0, minute=10)])
+    snaps = [
+        snapshot("AAPL", minute=2, unrealized_pnl=-999.0),   # before trade
+        snapshot("AAPL", minute=7, unrealized_pnl=-20.0),    # during trade
+        snapshot("AAPL", minute=15, unrealized_pnl=-999.0),  # after trade
+    ]
+    enriched = enrich_with_excursions(trips, snaps)
+    assert enriched[0].mae_pct == pytest.approx(-20.0 / (100.0 * 10))
+
+
+def test_excursions_avg_mae_mfe_in_compute_metrics() -> None:
+    trades_list = [
+        trade(Side.BUY, 10, 100.0, minute=0),
+        trade(Side.SELL, 10, 110.0, minute=10),
+    ]
+    trips = match_round_trips(trades_list)
+    snaps = [snapshot("AAPL", minute=5, unrealized_pnl=-50.0)]
+    enriched = enrich_with_excursions(trips, snaps)
+    metrics = by_name(compute_metrics([], trades_list, round_trips=enriched))
+    assert "avg_mae" in metrics
+    assert "avg_mfe" in metrics
+    assert metrics["avg_mae"] == pytest.approx(-50.0 / 1000.0)
+    assert metrics["avg_mfe"] == pytest.approx(0.0)

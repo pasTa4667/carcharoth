@@ -158,3 +158,39 @@ class BufferedRegimeEvaluationRepository(RegimeEvaluationRepository):
                 "probabilities": probabilities_payload(assessment),
             },
         )
+
+
+# Slim-mode repositories: used when --verbose-db is not set on the backtest
+# command. They drop the three high-volume audit tables (strategy_decisions,
+# positions_snapshot, regime_evaluations) while keeping the equity curve,
+# round trips, and computed metrics needed for Grafana and post-run analysis.
+
+
+class BufferedEquityOnlyRepository(PositionSnapshotRepository):
+    """Buffers only equity-curve points; skips per-symbol position rows."""
+
+    def __init__(self, buffer: WriteBuffer, run_id: UUID) -> None:
+        self._buffer = buffer
+        self._run_id = run_id
+
+    def save_snapshot(self, timestamp: datetime, state: AccountState) -> None:
+        self._buffer.add(
+            EquitySnapshotRow,
+            {
+                "run_id": self._run_id,
+                "timestamp": timestamp,
+                "equity": Decimal(str(state.equity)),
+                "cash": Decimal(str(state.cash)),
+                "buying_power": Decimal(str(state.buying_power)),
+            },
+        )
+
+
+class NoOpStrategyDecisionRepository(StrategyDecisionRepository):
+    def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None:
+        pass
+
+
+class NoOpRegimeEvaluationRepository(RegimeEvaluationRepository):
+    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
+        pass

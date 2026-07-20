@@ -204,6 +204,8 @@ class RoundTripRow(Base):
     regime: Mapped[str | None]
     entry_indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
     exit_indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    mae_pct: Mapped[Decimal | None]
+    mfe_pct: Mapped[Decimal | None]
 
 
 class ConfigurationRow(Base):

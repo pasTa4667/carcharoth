@@ -43,9 +43,12 @@ from carcharoth.logging_setup import (
 from carcharoth.optimize.bars_cache import BarsCache
 from carcharoth.optimize.overrides import validate_override_paths
 from carcharoth.persistence.buffered import (
+    BufferedEquityOnlyRepository,
     BufferedPositionSnapshotRepository,
     BufferedRegimeEvaluationRepository,
     BufferedStrategyDecisionRepository,
+    NoOpRegimeEvaluationRepository,
+    NoOpStrategyDecisionRepository,
     WriteBuffer,
     sqlalchemy_flush,
 )
@@ -239,6 +242,7 @@ def run_backtest_once(
     fetch_bars: BarsFetcher,
     show_progress: bool = False,
     hmm_store: ByteStore | None = None,
+    verbose_db: bool = False,
 ) -> BacktestResult:
     """One fully-persisted backtest run: creates the run row, replays the
     window, analyzes. Knows nothing about its caller — manual CLI runs and
@@ -266,13 +270,25 @@ def run_backtest_once(
     # and trades are read back every tick and stay on per-call repositories.
     buffer = WriteBuffer(sqlalchemy_flush(session_factory))
 
+    # Slim mode (default) skips the three high-volume audit tables that grow
+    # to GBs over long backtests or many optimization trials, while keeping
+    # the equity curve, round trips, and metrics needed for analysis.
+    if verbose_db:
+        evaluations_repo = BufferedRegimeEvaluationRepository(buffer, run_id)
+        decisions_repo = BufferedStrategyDecisionRepository(buffer, run_id)
+        snapshots_repo = BufferedPositionSnapshotRepository(buffer, run_id)
+    else:
+        evaluations_repo = NoOpRegimeEvaluationRepository()
+        decisions_repo = NoOpStrategyDecisionRepository()
+        snapshots_repo = BufferedEquityOnlyRepository(buffer, run_id)
+
     # The provider dictates the bar timeframe and how much warm-up history
     # the first tick needs; the backtest prefetches accordingly.
     provider = build_strategy_provider(
         config,
         session_factory,
         run_id,
-        evaluations_repo=BufferedRegimeEvaluationRepository(buffer, run_id),
+        evaluations_repo=evaluations_repo,
         hmm_store=hmm_store,
     )
     spec = provider.required_bars()
@@ -294,10 +310,10 @@ def run_backtest_once(
         strategies=provider,
         risk=BasicRiskManager(config.risk),
         executor=broker,
-        decisions_repo=BufferedStrategyDecisionRepository(buffer, run_id),
+        decisions_repo=decisions_repo,
         orders_repo=orders_repo,
         trades_repo=trades_repo,
-        snapshots_repo=BufferedPositionSnapshotRepository(buffer, run_id),
+        snapshots_repo=snapshots_repo,
         symbols=list(symbols),
     )
     runner = BacktestRunner(
@@ -339,6 +355,7 @@ def _run_backtest(
     symbols: list[str] | None,
     verbose: bool = False,
     no_hmm_cache: bool = False,
+    verbose_db: bool = False,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = load_config(config_path)
@@ -363,6 +380,7 @@ def _run_backtest(
             fetch_bars,
             show_progress=not verbose,
             hmm_store=hmm_store,
+            verbose_db=verbose_db,
         )
     finally:
         db_engine.dispose()
@@ -743,6 +761,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable the persistent HMM fit cache for this run",
     )
+    backtest.add_argument(
+        "--verbose-db",
+        action="store_true",
+        help=(
+            "persist strategy decisions, position snapshots, and regime evaluations; "
+            "default skips these high-volume tables to keep DB size small"
+        ),
+    )
 
     optimize = subparsers.add_parser(
         "optimize", help="optimize config parameters over backtests (Optuna)"
@@ -829,7 +855,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         if end < start:
             raise SystemExit("--end must not be before --start")
         _run_backtest(
-            args.config, start, end, symbols, verbose=args.verbose, no_hmm_cache=args.no_hmm_cache
+            args.config,
+            start,
+            end,
+            symbols,
+            verbose=args.verbose,
+            no_hmm_cache=args.no_hmm_cache,
+            verbose_db=args.verbose_db,
         )
     elif args.command == "optimize":
         _run_optimize(

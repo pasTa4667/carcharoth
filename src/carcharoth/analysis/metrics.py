@@ -19,6 +19,7 @@ from carcharoth.domain.models import (
     DecisionRecord,
     EquityPoint,
     MetricValue,
+    PositionSnapshot,
     Side,
     TradeRecord,
 )
@@ -45,6 +46,10 @@ class RoundTrip:
     regime: str | None = None
     entry_indicators: dict[str, float] = field(default_factory=dict)
     exit_indicators: dict[str, float] = field(default_factory=dict)
+    #: worst unrealized loss as a fraction of entry value (negative or zero)
+    mae_pct: float | None = None
+    #: best unrealized gain as a fraction of entry value (positive or zero)
+    mfe_pct: float | None = None
 
 
 @dataclass(slots=True)
@@ -129,6 +134,61 @@ def match_round_trips(
     return round_trips
 
 
+def enrich_with_excursions(
+    round_trips: list[RoundTrip],
+    snapshots: Sequence[PositionSnapshot],
+) -> list[RoundTrip]:
+    """Return copies of round_trips enriched with mae_pct and mfe_pct.
+
+    Snapshots are bar-close unrealized P&L readings. For each round trip we
+    find all snapshots within [opened_at, closed_at] for the same symbol, then
+    express the worst (MAE) and best (MFE) reading as a fraction of entry value.
+    Trips with no matching snapshots keep mae_pct/mfe_pct = None.
+    """
+    by_symbol: dict[str, list[PositionSnapshot]] = defaultdict(list)
+    for snap in sorted(snapshots, key=lambda s: (s.symbol, s.timestamp)):
+        by_symbol[snap.symbol].append(snap)
+    sym_ts: dict[str, list[datetime]] = {
+        sym: [s.timestamp for s in snaps] for sym, snaps in by_symbol.items()
+    }
+
+    result: list[RoundTrip] = []
+    for trip in round_trips:
+        snaps = by_symbol.get(trip.symbol, [])
+        timestamps = sym_ts.get(trip.symbol, [])
+        lo = bisect.bisect_left(timestamps, trip.opened_at)
+        hi = bisect.bisect_right(timestamps, trip.closed_at)
+        window = [snaps[i].unrealized_pnl for i in range(lo, hi)]
+        if not window:
+            result.append(trip)
+            continue
+        entry_value = trip.entry_price * trip.qty
+        if entry_value == 0:
+            result.append(trip)
+            continue
+        mae_pct = min(min(window), 0.0) / entry_value
+        mfe_pct = max(max(window), 0.0) / entry_value
+        result.append(
+            RoundTrip(
+                symbol=trip.symbol,
+                qty=trip.qty,
+                entry_price=trip.entry_price,
+                exit_price=trip.exit_price,
+                pnl=trip.pnl,
+                opened_at=trip.opened_at,
+                closed_at=trip.closed_at,
+                exit_reason=trip.exit_reason,
+                strategy=trip.strategy,
+                regime=trip.regime,
+                entry_indicators=trip.entry_indicators,
+                exit_indicators=trip.exit_indicators,
+                mae_pct=mae_pct,
+                mfe_pct=mfe_pct,
+            )
+        )
+    return result
+
+
 def compute_metrics(
     equity: Sequence[EquityPoint],
     trades: Sequence[TradeRecord],
@@ -207,6 +267,12 @@ def _trade_metrics(round_trips: Sequence[RoundTrip]) -> list[MetricValue]:
     if losses:
         metrics.append(MetricValue("avg_loss", fmean(losses)))
         metrics.append(MetricValue("profit_factor", sum(wins) / -sum(losses)))
+    maes = [trip.mae_pct for trip in round_trips if trip.mae_pct is not None]
+    mfes = [trip.mfe_pct for trip in round_trips if trip.mfe_pct is not None]
+    if maes:
+        metrics.append(MetricValue("avg_mae", fmean(maes)))
+    if mfes:
+        metrics.append(MetricValue("avg_mfe", fmean(mfes)))
     return metrics
 
 

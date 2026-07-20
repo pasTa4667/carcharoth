@@ -4,7 +4,7 @@ import logging
 from collections.abc import Mapping
 from uuid import UUID
 
-from carcharoth.analysis.metrics import compute_metrics, match_round_trips
+from carcharoth.analysis.metrics import compute_metrics, enrich_with_excursions, match_round_trips
 from carcharoth.analysis.objective import MissingMetricError, fitness_metric_name, score_metrics
 from carcharoth.config.app_config import ObjectiveConfig
 from carcharoth.domain.models import MetricValue
@@ -37,6 +37,8 @@ class BacktestAnalyzer:
         assignments = self._reader.list_assignments(run_id)
 
         round_trips = match_round_trips(trades, decisions, assignments)
+        snapshots = self._reader.list_position_snapshots(run_id)
+        round_trips = enrich_with_excursions(round_trips, snapshots)
         metrics = compute_metrics(equity, trades, round_trips=round_trips)
         metrics.extend(self._fitness_metrics(metrics))
         self._metrics_repo.save_metrics(run_id, metrics)

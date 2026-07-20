@@ -243,6 +243,26 @@ class MeanReversionStrategy(Strategy):
                 now,
             )
 
+        # Require the z-score to be improving (turning back toward the mean)
+        # before entry. Computes the previous bar's z-score against its own
+        # rolling window so the comparison accounts for shifts in mean/std.
+        if len(bars) >= self._lookback + 1:
+            prev_closes = pd.Series([bar.close for bar in bars[-self._lookback - 1 : -1]])
+            prev_std = float(prev_closes.std())
+            if prev_std >= _MIN_STD:
+                prev_mean = float(prev_closes.mean())
+                prev_zscore = (bars[-2].close - prev_mean) / prev_std
+                indicator_values["prev_zscore"] = prev_zscore
+                if zscore <= prev_zscore:
+                    return self._signal(
+                        symbol,
+                        SignalAction.HOLD,
+                        f"entry blocked: z-score not improving"
+                        f" (z={zscore:.2f} <= prev_z={prev_zscore:.2f})",
+                        indicator_values,
+                        now,
+                    )
+
         return self._signal(
             symbol,
             SignalAction.BUY,

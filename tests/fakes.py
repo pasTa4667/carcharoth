@@ -23,6 +23,7 @@ from carcharoth.domain.models import (
     OrderResult,
     OrderStatus,
     Position,
+    PositionSnapshot,
     Quote,
     RiskDecision,
     RunInfo,
@@ -325,11 +326,13 @@ class InMemoryAnalysisReader(AnalysisReader):
         equity: dict[UUID, list[EquityPoint]] | None = None,
         decisions: dict[UUID, list[DecisionRecord]] | None = None,
         assignments: dict[UUID, list[AssignmentRecord]] | None = None,
+        position_snapshots: dict[UUID, list[PositionSnapshot]] | None = None,
     ) -> None:
         self.trades = trades or {}
         self.equity = equity or {}
         self.decisions = decisions or {}
         self.assignments = assignments or {}
+        self.position_snapshots = position_snapshots or {}
 
     def list_trades(self, run_id: UUID) -> list[TradeRecord]:
         return list(self.trades.get(run_id, []))
@@ -342,6 +345,9 @@ class InMemoryAnalysisReader(AnalysisReader):
 
     def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]:
         return list(self.assignments.get(run_id, []))
+
+    def list_position_snapshots(self, run_id: UUID) -> list[PositionSnapshot]:
+        return list(self.position_snapshots.get(run_id, []))
 
 
 class InMemoryRoundTripRepository(RoundTripRepository):

@@ -430,7 +430,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 8
       },
       "fieldConfig": {
         "defaults": {
@@ -499,7 +499,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 8
       },
       "fieldConfig": {
         "defaults": {
@@ -568,7 +568,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -637,7 +637,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -704,7 +704,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 24
       },
       "fieldConfig": {
         "defaults": {
@@ -811,7 +811,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 24
       },
       "fieldConfig": {
         "defaults": {
@@ -925,7 +925,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -994,7 +994,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -1067,7 +1067,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 40
       },
       "fieldConfig": {
         "defaults": {
@@ -1149,7 +1149,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 40
       },
       "fieldConfig": {
         "defaults": {
@@ -1218,7 +1218,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1350,7 +1350,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 51
+        "y": 55
       },
       "fieldConfig": {
         "defaults": {
@@ -1414,6 +1414,154 @@
         "type": "postgres",
         "uid": "carcharoth-pg"
       },
+      "id": 24,
+      "title": "MAE / MFE by Trade Outcome",
+      "type": "table",
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trade_type"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Trade Type"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_mae"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Average MAE"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_mfe"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Average MFE"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  trade_type,\n  avg_mae,\n  avg_mfe\nFROM (\n  SELECT\n    'Winning trades' AS trade_type,\n    AVG(mae_pct) AS avg_mae,\n    AVG(mfe_pct) AS avg_mfe,\n    0 AS sort_key\n  FROM round_trips\n  WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\n    AND pnl > 0\n  UNION ALL\n  SELECT\n    'Losing trades',\n    AVG(mae_pct),\n    AVG(mfe_pct),\n    1\n  FROM round_trips\n  WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\n    AND pnl < 0\n) t\nORDER BY sort_key",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
       "id": 16,
       "title": "Round Trips",
       "type": "table",
@@ -1421,7 +1569,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 68
       },
       "fieldConfig": {
         "defaults": {
@@ -1481,6 +1629,74 @@
                 "value": "currencyUSD"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mae_pct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "MAE %"
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mfe_pct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "MFE %"
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
           }
         ]
       },
@@ -1512,7 +1728,267 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
+          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  ROUND(mae_pct * 100, 2) AS mae_pct,\n  ROUND(mfe_pct * 100, 2) AS mfe_pct,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "id": 20,
+      "title": "Avg Winner",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'avg_win'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "id": 21,
+      "title": "Avg Loser",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'avg_loss'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "id": 22,
+      "title": "Avg MAE",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'avg_mae'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "carcharoth-pg"
+      },
+      "id": 23,
+      "title": "Avg MFE",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "carcharoth-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT value FROM backtest_metrics WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND name = 'avg_mfe'",
           "refId": "A"
         }
       ]

@@ -15,6 +15,11 @@ STABLE = [100.0, 101.0, 99.0, 100.0, 101.0, 99.0, 100.0, 101.0, 99.0, 100.0] * 2
 # in the shape it takes live — the dip itself pierces the trend line.
 DIP_IN_UPTREND = [85.0] * 10 + [*STABLE[:-1], 90.0]
 
+# A dip in an uptrend where the last bar closed at the bottom (85) and the
+# current quote is recovering (90). The z-score is improving (less negative
+# than the previous bar's), so all entry filters should pass → BUY.
+DIP_REVERTING = [85.0] * 10 + [*STABLE[:-1], 85.0]
+
 # Long-ago expensive bars keep the trend EMA above the recent rolling mean, so
 # the final dip reads as a continuation of a downtrend.
 DIP_IN_DOWNTREND = [200.0] * 10 + [*STABLE[:-1], 90.0]
@@ -35,7 +40,7 @@ def make_strategy(**overrides: Any) -> MeanReversionStrategy:
 
 def test_deep_dip_without_position_buys() -> None:
     strategy = make_strategy()
-    bars = make_bars(DIP_IN_UPTREND)
+    bars = make_bars(DIP_REVERTING)
     signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
     assert signal.action is SignalAction.BUY
     assert signal.indicators["zscore"] <= -2.0
@@ -80,10 +85,9 @@ def test_flat_series_holds() -> None:
 
 def test_missing_quote_falls_back_to_last_close() -> None:
     strategy = make_strategy()
-    bars = make_bars(DIP_IN_UPTREND)
+    bars = make_bars(DIP_REVERTING)
     signal = strategy.evaluate("AAPL", bars, quote=None, position=None)
-    assert signal.action is SignalAction.BUY
-    assert signal.indicators["price"] == 90.0
+    assert signal.indicators["price"] == bars[-1].close
 
 
 def test_signal_carries_indicators() -> None:
@@ -158,7 +162,7 @@ def test_trend_filter_judges_mean_not_dipped_price() -> None:
     # The dipped price sits below the trend EMA (that is what a dip is), but
     # the pre-dip mean is above it, so the entry must not be blocked.
     strategy = make_strategy()
-    bars = make_bars(DIP_IN_UPTREND)
+    bars = make_bars(DIP_REVERTING)
     signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
     assert signal.indicators["price"] < signal.indicators["trend_ema"]
     assert signal.indicators["mean"] > signal.indicators["trend_ema"]
@@ -175,7 +179,7 @@ def test_rsi_filter_blocks_entry() -> None:
 
 def test_all_filters_pass_buys() -> None:
     strategy = make_strategy(rsi_entry_max=35.0)
-    bars = make_bars(DIP_IN_UPTREND)
+    bars = make_bars(DIP_REVERTING)
     signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
     assert signal.action is SignalAction.BUY
     assert "uptrend" in signal.reason
@@ -188,6 +192,29 @@ def test_insufficient_bars_for_trend_ema_blocks_entry() -> None:
     signal = strategy.evaluate("AAPL", bars, make_quote(80.0), position=None)
     assert signal.action is SignalAction.HOLD
     assert "insufficient history for trend" in signal.reason
+
+
+def test_worsening_zscore_blocks_entry() -> None:
+    # DIP_IN_UPTREND ends with a 90.0 bar while the previous window still
+    # contains one 85.0 bar. The 85 bar rolling out inflates the current z-score
+    # relative to the previous one, so the filter correctly blocks entry.
+    strategy = make_strategy()
+    bars = make_bars(DIP_IN_UPTREND)
+    signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
+    assert signal.action is SignalAction.HOLD
+    assert "z-score not improving" in signal.reason
+    assert "prev_zscore" in signal.indicators
+
+
+def test_improving_zscore_allows_entry() -> None:
+    # DIP_REVERTING bottomed at 85 (bars[-1]) and is now recovering (quote=90).
+    # The previous z-score (bars[-1].close=85 vs its window) is more negative
+    # than the current z-score (quote=90 vs current window), so entry is allowed.
+    strategy = make_strategy()
+    bars = make_bars(DIP_REVERTING)
+    signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
+    assert signal.action is SignalAction.BUY
+    assert signal.indicators["prev_zscore"] < signal.indicators["zscore"]
 
 
 def test_required_bars_covers_all_periods() -> None:

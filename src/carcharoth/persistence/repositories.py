@@ -32,6 +32,7 @@ from carcharoth.domain.models import (
     OpenOrder,
     OrderRequest,
     OrderResult,
+    PositionSnapshot,
     RiskDecision,
     RunInfo,
     RunType,
@@ -179,6 +180,9 @@ class AnalysisReader(ABC):
 
     @abstractmethod
     def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]: ...
+
+    @abstractmethod
+    def list_position_snapshots(self, run_id: UUID) -> list[PositionSnapshot]: ...
 
 
 class SqlAlchemyStrategyDecisionRepository(StrategyDecisionRepository):
@@ -496,6 +500,8 @@ class SqlAlchemyRoundTripRepository(RoundTripRepository):
                         regime=trip.regime,
                         entry_indicators=dict(trip.entry_indicators),
                         exit_indicators=dict(trip.exit_indicators),
+                        mae_pct=Decimal(str(trip.mae_pct)) if trip.mae_pct is not None else None,
+                        mfe_pct=Decimal(str(trip.mfe_pct)) if trip.mfe_pct is not None else None,
                     )
                 )
 
@@ -564,6 +570,22 @@ class SqlAlchemyAnalysisReader(AnalysisReader):
                     since=row.since,
                     regime=row.regime,
                     strategy=row.strategy,
+                )
+                for row in rows
+            ]
+
+    def list_position_snapshots(self, run_id: UUID) -> list[PositionSnapshot]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(PositionSnapshotRow)
+                .where(PositionSnapshotRow.run_id == run_id)
+                .order_by(PositionSnapshotRow.symbol, PositionSnapshotRow.timestamp)
+            )
+            return [
+                PositionSnapshot(
+                    symbol=row.symbol,
+                    timestamp=row.timestamp,
+                    unrealized_pnl=float(row.unrealized_pnl),
                 )
                 for row in rows
             ]
