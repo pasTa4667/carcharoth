@@ -22,8 +22,8 @@ RUN_ID=$(echo "$BACKTEST_OUTPUT" | grep -oP 'run_id:\s+\K[a-f0-9\-]+' | head -1)
 
 if [ -z "$RUN_ID" ]; then
     echo "ERROR: Could not extract run_id from backtest output" >&2
-    echo "Output:" >&2
-    echo "$BACKTEST_OUTPUT" | tail -50 >&2
+    echo "Output tail:" >&2
+    echo "$BACKTEST_OUTPUT" | tail -30 >&2
     exit 1
 fi
 
@@ -55,26 +55,39 @@ if summary is None:
 
 # Extract metrics from the summary
 results = summary.get('results', {})
+fitness_dict = summary.get('fitness', {})
+
+# Collect metrics
 metrics = {}
 
-# Direct metrics from results
-for key in ['sharpe', 'total_return', 'profit_factor', 'win_rate', 'max_drawdown']:
-    if key in results:
+# Direct metrics from results (exclude per_symbol)
+for key in ['sharpe', 'total_return', 'profit_factor', 'win_rate', 'max_drawdown', 'num_trades', 'avg_win', 'avg_loss']:
+    if key in results and key != 'per_symbol':
         metrics[key] = results[key]
 
-# Fitness metrics
-fitness_prefix = 'fitness_'
-for key in results:
-    if key.startswith(fitness_prefix):
-        metrics[key] = results[key]
+# Fitness metrics (these are the most important)
+for objective_name, fitness_value in fitness_dict.items():
+    metrics[f'fitness_{objective_name}'] = fitness_value
 
 # Output metrics in METRIC format
 if not metrics:
     print("WARNING: No metrics found in summary file", file=sys.stderr)
-    print(f"Summary keys: {list(results.keys())}", file=sys.stderr)
+    print(f"Results keys: {list(results.keys())}", file=sys.stderr)
+    print(f"Fitness keys: {list(fitness_dict.keys())}", file=sys.stderr)
     sys.exit(1)
 
-for key, value in sorted(metrics.items()):
+# Output primary metric first (fitness_default), then secondaries
+output_order = ['fitness_default', 'sharpe', 'total_return', 'profit_factor', 'win_rate', 'max_drawdown']
+for key in output_order:
+    if key in metrics:
+        value = metrics[key]
+        if value is not None:
+            print(f"METRIC {key}={value}")
+
+# Output any remaining metrics not in the order
+remaining = set(metrics.keys()) - set(output_order)
+for key in sorted(remaining):
+    value = metrics[key]
     if value is not None:
         print(f"METRIC {key}={value}")
 
