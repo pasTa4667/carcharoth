@@ -71,11 +71,11 @@ strategies:
       lookback: 19              # bars used for rolling mean/std
       entry_z: -1.2             # buy when price is this many std devs below the mean
       exit_z: -0.5              # sell (exit) once the z-score reverts to/above the mean
-      trend_ema_period: 195     # only buy when the rolling mean is above this EMA (trend filter)
+      trend_ema_period: 120     # OPTIMIZED: tightened from 195 (faster trend detection)
       rsi_period: 19
       rsi_entry_max: 30.0       # only buy when RSI is below this (oversold confirmation)
       atr_period: 12
-      atr_stop_multiplier: 2.1419157844870185  # exit when price < avg_entry - this * ATR
+      atr_stop_multiplier: 3.0  # OPTIMIZED: loosened from 2.14 (maximum ATR multiplier)
       entry_delay_minutes: 15   # no new entries within this many minutes of the open
       entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
       flatten_minutes: 15       # force-exit open positions within this window before close

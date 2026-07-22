@@ -18,7 +18,7 @@ BACKTEST_OUTPUT=$(python -m carcharoth backtest \
 
 # Extract the run_id from the output
 # Format: "run_id:  <uuid>"
-RUN_ID=$(echo "$BACKTEST_OUTPUT" | grep -oP 'run_id:\s+\K[a-f0-9\-]+' | head -1)
+RUN_ID=$(echo "$BACKTEST_OUTPUT" | grep -o 'run_id: [a-f0-9-]*' | awk '{print $NF}')
 
 if [ -z "$RUN_ID" ]; then
     echo "ERROR: Could not extract run_id from backtest output" >&2
