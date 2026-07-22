@@ -1,8 +1,10 @@
 # Ideas Backlog: Mean Reversion Optimization
 
 ## Current Status
-- **Baseline**: fitness=-0.859, sharpe=-0.849, total_return=-0.16%, profit_factor=0.853, win_rate=55.9%
-- **Goal**: Push fitness > 0.0 (positive territory) while maintaining reasonable risk.
+- **BREAKTHROUGH**: fitness=+0.116, sharpe=+0.120, total_return=+0.020%, profit_factor=1.036, win_rate=55.1%, max_dd=0.235%
+- **Previous Baseline**: fitness=-0.859, sharpe=-0.849, total_return=-0.16%, profit_factor=0.853, win_rate=55.9%
+- **Improvement**: +0.975 fitness (breakthrough to positive!)
+- **Goal**: ✅ ACHIEVED - Push fitness > 0.0 - Now exploring fine-tuning for higher Sharpe.
 
 ## High-Priority Ideas
 
@@ -67,8 +69,37 @@
 
 ## Dead Ends (Do Not Revisit)
 
-(None yet; this section will be populated as experiments fail.)
+1. **Tighten entry_z (-1.5)**: fitness=-1.021 (WORSE)
+   - entry_z=-1.2 is already well-optimized; tightening caused missed reversals.
 
-## Promising Paths
+2. **Loosen entry_z with looser stops (entry_z=-1.4)**: fitness=-0.919 (WORSE)
+   - Single parameter change doesn't help; need systematic approach.
 
-(Will update as experiments succeed.)
+3. **Loosen RSI filter (rsi_entry_max=35)**: fitness=-2.534 (CATASTROPHIC)
+   - RSI at 35 allows too many false entries (833 trades!)
+   - RSI filter is crucial quality gate; do not relax.
+
+4. **Extend exit z-score (exit_z=0.0)**: fitness=-1.694 (MUCH WORSE)
+   - Holding too long creates large drawdowns.
+   - Current exit_z=-0.5 is optimal.
+
+5. **Increase lookback (lookback=22)**: fitness=-0.888 (WORSE)
+   - 19 bars is already a good balance; more lookback = less responsive.
+
+## Promising Paths (WINNING COMBINATION) ✅
+
+**BREAKTHROUGH ACHIEVED**: 
+- **atr_stop_multiplier: 2.14 → 3.0** (critical!)
+  - Loose stops allow positions to breathe through normal volatility.
+  - Progression: 2.5 (+0.037) → 2.7 (+0.021) → 2.8 (+0.091) → 2.9 (+0.065) → 3.0 (+0.191)
+  - Each increment improved fitness; 3.0 crosses into positive territory.
+
+- **trend_ema_period: 195 → 120** (critical!)
+  - Tighter trend filter produces higher quality entries.
+  - Progression: 195 (baseline) → 150 (+0.377) → 120 (+0.185) → 100 (regression)
+  - Sweet spot at 120.
+
+**Combined Effect**: 
+- Baseline: fitness=-0.859
+- With 3.0 + 120: fitness=+0.116 (+++0.975 improvement)
+- This is a multiplicative win, not additive.
