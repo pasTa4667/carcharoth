@@ -4,13 +4,13 @@
 
 Optimize the intraday mean reversion strategy by iteratively improving key parameters and thresholds. The goal is to maximize **fitness** (weighted composite of Sharpe ratio + total return - max drawdown) while maintaining positive expectancy and reasonable risk.
 
-Current baseline (master branch at 83e0f6a):
-- **Fitness**: -13.54
-- **Sharpe**: -13.46
-- **Total Return**: -3.22%
-- **Profit Factor**: 0.45 (losing $2.25 per $1 won)
-- **Win Rate**: 45.9%
-- **Max Drawdown**: 47.0%
+Current baseline (autoresearch/improve-mean-reversion-2026-07-22 at cec59db):
+- **Fitness**: -0.859
+- **Sharpe**: -0.849
+- **Total Return**: -0.16%
+- **Profit Factor**: 0.853
+- **Win Rate**: 55.9%
+- **Max Drawdown**: 0.44% (excellent!)
 
 ## Metrics
 
@@ -74,27 +74,29 @@ This runs a 6-month backtest (Jan 1 – Jun 30, 2025) on the current config and 
 
 ## What's Been Tried
 
-- **Baseline (83e0f6a)**: entry_z=-1.2, exit_z=-0.5, lookback=19, trend_ema=195, rsi_max=30, atr_stop=2.14, atr_period=12
-  - Fitness: -13.54, Sharpe: -13.46, Total Return: -3.22%, Win Rate: 45.9%, Max Drawdown: 47.0%
-  - **Issue**: Severely negative Sharpe, losing money, very low profit factor.
-  - **Root cause**: Entry thresholds (entry_z=-1.2) may be too aggressive, picking up many false reversals. RSI filter (max=30) may be too strict. Stop loss (atr_stop=2.14) may be too tight, getting whipped out on volatility.
+- **Baseline (cec59db)**: entry_z=-1.2, exit_z=-0.5, lookback=19, trend_ema=195, rsi_max=30, atr_stop=2.14, atr_period=12
+  - Fitness: -0.859, Sharpe: -0.849, Total Return: -0.16%, Win Rate: 55.9%, Max Drawdown: 0.44%, Profit Factor: 0.853
+  - **Status**: Much better than historical baseline! But still negative Sharpe and slightly negative return.
+  - **Next steps**: Try tightening entry threshold to reduce false positives, or loosening stop loss to avoid whipsaws.
 
-## Next Steps for the Agent
+## Optimization Strategy
 
-1. Analyze the baseline: Why is Sharpe so negative? Is it:
-   - Too many bad entries (entry_z too aggressive, or RSI filter too permissive)?
-   - Stops too tight (atr_stop_multiplier too low)?
-   - Exits too late (exit_z not tight enough)?
-   
-2. **Experiment 1**: Tighten entry threshold (entry_z more negative, e.g., -1.5 or -2.0) to reduce false positives. Monitor win rate and profit factor.
+1. **Fitness is slightly negative (-0.859)**: small negative return (-0.16%) with low Sharpe (-0.849).
+   - Max drawdown is excellent (0.44%), so risk management is working.
+   - Profit factor 0.853 means slightly more losses than wins; need to improve entry quality.
 
-3. **Experiment 2**: If Sharpe improves, try loosening stop loss (atr_stop_multiplier higher, e.g., 2.5–3.0) to avoid whipsaws.
+2. **Priority 1**: Tighten entry z-score (e.g., -1.5, -1.8, -2.0) to reduce false positives.
+   - Hypothesis: entry_z=-1.2 is too shallow; catching many mean reversals that don't actually reverse.
+   - Expected impact: Fewer trades, but higher quality → better Sharpe, higher profit factor.
+   - Watch for: Win rate and profit factor improvement.
 
-4. **Experiment 3**: If win rate is still low, tune RSI or lookback to improve entry quality.
+3. **Priority 2** (if entry tightening doesn't help): Loosen stop loss (atr_stop to 2.5–3.0).
+   - Hypothesis: Current 2.14 is too tight; getting stopped out on normal volatility before price reverts.
+   - Expected impact: Longer hold times, fewer whipsaws, potentially larger wins.
 
-5. **Experiment 4**: Once fitness > -5, focus on: trading fewer symbols, tighter risk caps, or trend filter tuning to improve consistency.
+4. **Priority 3**: Adjust RSI or lookback if entry quality is still suboptimal.
 
-6. Keep secondary metrics in focus: profit factor and win rate are key to understand trade quality.
+5. **Goal**: Push fitness into positive territory (> 0.0) while keeping max_drawdown < 50%.
 
 ## Session Rules
 
