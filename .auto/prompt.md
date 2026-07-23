@@ -2,7 +2,7 @@
 
 ## Objective
 
-Optimize the intraday mean reversion strategy by iteratively improving key parameters and thresholds. The goal is to maximize **fitness** (weighted composite of Sharpe ratio + total return - max drawdown) while maintaining positive expectancy and reasonable risk.
+Optimize the intraday mean reversion strategy by iteratively improving key parameters and thresholds. The goal is to maximize **fitness** (weighted composite of Sharpe ratio + total return - max drawdown) while maintaining positive expectancy and reasonable risk. Focus on structural changes, not config changes, meaning adding/removing filters changing stop/loss behavior, different entry/exit conditions, etc.
 
 Current baseline (autoresearch/improve-mean-reversion-2026-07-22 at cec59db):
 - **Fitness**: -0.859
@@ -66,7 +66,7 @@ This runs a 6-month backtest (Jan 1 – Jun 30, 2025) on the current config and 
 
 ## Constraints
 
-- **Max 2 parameters per iteration** — simplicity and signal clarity.
+- **Max 2 items per iteration** — simplicity and signal clarity.
 - **Backtests must complete successfully** (full 6-month data, all 50 symbols).
 - **Simpler improvements are preferred** over complex tuning.
 - **Changes must be evidence-driven** — address specific weaknesses (low win rate, high drawdown, negative Sharpe, etc.).
