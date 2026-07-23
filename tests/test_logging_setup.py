@@ -42,7 +42,7 @@ def _started_at() -> datetime:
 
 def test_creates_yaml_file(tmp_path):
     run_id = _run_id()
-    write_backtest_summary(tmp_path, run_id, _started_at(), _regime(), _risk(), [])
+    write_backtest_summary(tmp_path, run_id, _started_at(), _regime(), _risk(), {}, [])
     assert (tmp_path / "backtests" / f"{run_id}.yaml").exists()
 
 
@@ -50,14 +50,14 @@ def test_creates_directory(tmp_path):
     run_id = _run_id()
     new_log_dir = tmp_path / "new_logs"
     assert not new_log_dir.exists()
-    write_backtest_summary(new_log_dir, run_id, _started_at(), _regime(), _risk(), [])
+    write_backtest_summary(new_log_dir, run_id, _started_at(), _regime(), _risk(), {}, [])
     assert (new_log_dir / "backtests").exists()
 
 
 def test_yaml_contains_run_id_and_date(tmp_path):
     run_id = _run_id()
     started = _started_at()
-    write_backtest_summary(tmp_path, run_id, started, _regime(), _risk(), [])
+    write_backtest_summary(tmp_path, run_id, started, _regime(), _risk(), {}, [])
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert doc["run_id"] == str(run_id)
     assert doc["date"] == started.isoformat()
@@ -66,7 +66,7 @@ def test_yaml_contains_run_id_and_date(tmp_path):
 def test_yaml_contains_risk_config(tmp_path):
     run_id = _run_id()
     risk = RiskConfig(max_position_notional=500.0, max_open_positions=3)
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, risk, [])
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, risk, {}, [])
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert doc["config"]["risk"]["max_position_notional"] == 500.0
     assert doc["config"]["risk"]["max_open_positions"] == 3
@@ -74,7 +74,7 @@ def test_yaml_contains_risk_config(tmp_path):
 
 def test_yaml_contains_regime_config(tmp_path):
     run_id = _run_id()
-    write_backtest_summary(tmp_path, run_id, _started_at(), _regime(), _risk(), [])
+    write_backtest_summary(tmp_path, run_id, _started_at(), _regime(), _risk(), {}, [])
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert "regime" in doc["config"]
     assert doc["config"]["regime"]["score"]["lookback"] == 400
@@ -82,9 +82,18 @@ def test_yaml_contains_regime_config(tmp_path):
 
 def test_no_regime_omits_key(tmp_path):
     run_id = _run_id()
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), [])
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), {}, [])
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert "regime" not in doc["config"]
+
+
+def test_yaml_contains_strategy_config(tmp_path):
+    run_id = _run_id()
+    strategy_cfgs = {"mean_reversion": {"lookback": 20, "entry_z": -2.0}}
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), strategy_cfgs, [])
+    doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
+    assert doc["config"]["strategies"]["mean_reversion"]["lookback"] == 20
+    assert doc["config"]["strategies"]["mean_reversion"]["entry_z"] == -2.0
 
 
 def test_flat_metrics_in_results(tmp_path):
@@ -93,7 +102,7 @@ def test_flat_metrics_in_results(tmp_path):
         MetricValue(name="total_return", value=0.05),
         MetricValue(name="sharpe", value=1.2),
     ]
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), metrics)
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), {}, metrics)
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert doc["results"]["total_return"] == 0.05
     assert doc["results"]["sharpe"] == 1.2
@@ -105,7 +114,7 @@ def test_per_symbol_metrics_grouped(tmp_path):
         MetricValue(name="symbol_pnl", value=42.0, symbol="AAPL"),
         MetricValue(name="symbol_pnl", value=-10.5, symbol="MSFT"),
     ]
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), metrics)
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), {}, metrics)
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert doc["results"]["per_symbol"]["AAPL"] == 42.0
     assert doc["results"]["per_symbol"]["MSFT"] == -10.5
@@ -117,7 +126,7 @@ def test_fitness_metrics_get_own_block(tmp_path):
         MetricValue(name="sharpe", value=1.2),
         MetricValue(name="fitness_default", value=3.82),
     ]
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), metrics)
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), {}, metrics)
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert doc["fitness"]["default"] == 3.82
     assert "fitness_default" not in doc["results"]
@@ -126,7 +135,7 @@ def test_fitness_metrics_get_own_block(tmp_path):
 
 def test_no_fitness_key_when_no_objectives(tmp_path):
     run_id = _run_id()
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), [])
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), {}, [])
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert "fitness" not in doc
 
@@ -134,7 +143,7 @@ def test_no_fitness_key_when_no_objectives(tmp_path):
 def test_no_per_symbol_key_when_empty(tmp_path):
     run_id = _run_id()
     metrics = [MetricValue(name="total_return", value=0.01)]
-    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), metrics)
+    write_backtest_summary(tmp_path, run_id, _started_at(), None, _risk(), {}, metrics)
     doc = yaml.safe_load((tmp_path / "backtests" / f"{run_id}.yaml").read_text())
     assert "per_symbol" not in doc["results"]
 

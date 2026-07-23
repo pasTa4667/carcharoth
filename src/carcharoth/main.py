@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import yaml
@@ -163,6 +163,15 @@ def _summary_regime(config: AppConfig) -> RegimeConfig | None:
     """The regime block to record in a backtest summary — only when it drove
     the run, so the summary reflects the mode that actually executed."""
     return config.regime if config.regime is not None and config.regime.active else None
+
+
+def _summary_strategies(config: AppConfig) -> dict[str, Any]:
+    """Strategy name → params dict for strategies that ran in this backtest."""
+    if config.regime is not None and config.regime.active:
+        names = {rc.strategy for rc in config.regime.regimes.values()}
+    else:
+        names = {_active_strategy(config)[0]}
+    return {name: config.strategies[name].params for name in names if name in config.strategies}
 
 
 def _strategy_description(config: AppConfig) -> str:
@@ -342,7 +351,7 @@ def run_backtest_once(
         round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
     ).analyze(run_id)
     write_backtest_summary(
-        LOG_DIR, run_id, started_at, _summary_regime(config), config.risk, metrics
+        LOG_DIR, run_id, started_at, _summary_regime(config), config.risk, _summary_strategies(config), metrics
     )
     logger.info("backtest run %s complete", run_id)
     return BacktestResult(run_id=run_id, metrics=metrics)
@@ -663,7 +672,7 @@ def _run_analyze(run_id: UUID) -> None:
             round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
         ).analyze(run_id)
         write_backtest_summary(
-            LOG_DIR, run_id, datetime.now(UTC), _summary_regime(config), config.risk, metrics
+            LOG_DIR, run_id, datetime.now(UTC), _summary_regime(config), config.risk, _summary_strategies(config), metrics
         )
     finally:
         db_engine.dispose()

@@ -10,6 +10,7 @@ import logging
 import logging.config
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import yaml
@@ -83,6 +84,7 @@ def write_backtest_summary(
     started_at: datetime,
     regime_cfg: RegimeConfig | None,
     risk_cfg: RiskConfig,
+    strategy_cfgs: dict[str, Any],
     metrics: list[MetricValue],
 ) -> None:
     backtest_dir = log_dir / "backtests"
@@ -103,6 +105,7 @@ def write_backtest_summary(
         results["per_symbol"] = per_symbol
 
     config_block: dict[str, object] = {}
+    config_block["strategies"] = strategy_cfgs
     if regime_cfg is not None:
         config_block["regime"] = regime_cfg.model_dump()
     config_block["risk"] = risk_cfg.model_dump()
