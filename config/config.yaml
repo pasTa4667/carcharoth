@@ -69,7 +69,7 @@ strategies:
     params:
       timeframe_minutes: 5      # bar resolution the strategy evaluates on
       lookback: 19              # bars used for rolling mean/std
-      entry_z: -1.2             # buy when price is this many std devs below the mean
+      entry_z: -1.1             # buy when price is this many std devs below the mean
       exit_z: -0.5              # sell (exit) once the z-score reverts to/above the mean
       trend_ema_period: 120     # OPTIMIZED: tightened from 195 (faster trend detection)
       rsi_period: 19
