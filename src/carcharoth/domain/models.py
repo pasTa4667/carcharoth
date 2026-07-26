@@ -19,10 +19,12 @@ class Side(StrEnum):
 
 
 class RunType(StrEnum):
-    """What produced a run's data: a live paper-trading session or a backtest."""
+    """What produced a run's data: a live paper-trading session, a backtest,
+    or an isolated strategy quick test."""
 
     PAPER = "PAPER"
     BACKTEST = "BACKTEST"
+    QUICKTEST = "QUICKTEST"
 
 
 class SignalAction(StrEnum):

@@ -35,6 +35,7 @@ More extension points (regime features, risk managers, optimization library) are
 - [Running the app, monitoring & troubleshooting](operations.md)
 - [Running a backtest](backtest.md)
 - [Running an optimization](optimize.md)
+- [Running a quicktest](quicktest.md)
 
 ## File Structure Map
 

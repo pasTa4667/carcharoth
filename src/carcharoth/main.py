@@ -29,6 +29,7 @@ from carcharoth.analysis.analyzer import BacktestAnalyzer
 from carcharoth.backtest.runner import BacktestRunner
 from carcharoth.config.app_config import AppConfig, RegimeConfig, StrategyConfig, load_config
 from carcharoth.config.optimize_config import OptimizeConfig, load_optimize_config
+from carcharoth.config.quicktest_config import load_quicktest_config
 from carcharoth.config.settings import Settings
 from carcharoth.domain.models import BacktestResult, OptimizationResult, RunType
 from carcharoth.engine.engine import TradingEngine
@@ -68,6 +69,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyStrategyDecisionRepository,
     SqlAlchemyTradeRepository,
 )
+from carcharoth.quicktest.runner import format_summary, run_quicktest_once
 from carcharoth.regime.detectors import build_detector
 from carcharoth.regime.hmm.fit_cache import HMM_PREFIX
 from carcharoth.regime.models import Regime
@@ -734,6 +736,46 @@ def _parse_date(value: str) -> datetime:
         raise argparse.ArgumentTypeError(f"invalid date {value!r}, expected YYYY-MM-DD") from exc
 
 
+def _run_quicktest(base_config_path: Path, quicktest_config_path: Path) -> None:
+    """Isolated strategy quick test: no engine, no regime, no risk manager.
+
+    The base config supplies only the `objectives:` (fitness) and `cache:`
+    sections; everything else comes from the quicktest YAML.
+    """
+    settings = Settings()  # type: ignore[call-arg]  # values come from .env
+    base_config = load_config(base_config_path)
+    config = load_quicktest_config(quicktest_config_path)
+    if config.objective not in base_config.objectives:
+        logger.warning(
+            "objective %r not defined in %s objectives: %s",
+            config.objective,
+            base_config_path,
+            sorted(base_config.objectives),
+        )
+
+    db_engine = build_engine(settings.database_url)
+    session_factory = build_session_factory(db_engine)
+    bars_store, _ = _build_cache_stores(settings, base_config)
+    fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
+    if bars_store is not None:
+        fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    try:
+        outcome = run_quicktest_once(
+            config,
+            base_config.objectives,
+            fetch_bars,
+            runs_repo=SqlAlchemyRunRepository(session_factory),
+            flush=sqlalchemy_flush(session_factory),
+            round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
+            metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
+        )
+    finally:
+        db_engine.dispose()
+
+    # Printed (not logged) so the result is always visible without --verbose.
+    print(format_summary(outcome, config.objective))
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="carcharoth", description="Algorithmic trading bot")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -811,6 +853,23 @@ def _build_parser() -> argparse.ArgumentParser:
     clear.add_argument("--bars", action="store_true", help="clear only the bars cache")
     clear.add_argument("--hmm", action="store_true", help="clear only the HMM fit cache")
 
+    quicktest = subparsers.add_parser(
+        "quicktest", help="isolated strategy quick test (no engine, no regime, no risk)"
+    )
+    quicktest.add_argument(
+        "--quicktest-config",
+        type=Path,
+        default=Path("config/quicktest.yaml"),
+        help="quicktest YAML path (symbols, window, strategy)",
+    )
+    quicktest.add_argument(
+        "--config",
+        type=Path,
+        default=CONFIG_PATH,
+        help="base config YAML path (supplies objectives and cache settings)",
+    )
+    quicktest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
+
     analyze = subparsers.add_parser("analyze", help="recompute metrics for a run")
     analyze.add_argument("--run-id", type=UUID, required=True)
 
@@ -881,6 +940,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.workers,
             no_hmm_cache=args.no_hmm_cache,
         )
+    elif args.command == "quicktest":
+        _run_quicktest(args.config, args.quicktest_config)
     elif args.command == "cache":
         if args.cache_command == "stats":
             _run_cache_stats()

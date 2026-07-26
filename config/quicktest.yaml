@@ -1,0 +1,87 @@
+# Isolated strategy quick-test configuration for `carcharoth quicktest`.
+#
+# The quick-test runner bypasses the engine entirely: no regime detection,
+# no risk management — bars go straight into the strategy and fills are
+# simulated in memory. Each symbol runs independently with its own capital,
+# so a strategy's per-symbol edge is not distorted by cash contention.
+# Results (run, trades, round trips, equity curve, metrics) are persisted in
+# one batch at the very end.
+
+symbols: [
+  "QQQ",
+  "JPM",
+  "SPY",
+  "ABNB",
+  "ADBE",
+  "ADI",
+  "AFRM",
+  "AKAM",
+  "AMKR",
+  "APP",
+  "ASTS",
+  "BBIO",
+  "BKNG",
+  "CART",
+  "COIN",
+  "CRWD",
+  "DASH",
+  "DDOG",
+  "DXCM",
+  "ENTG",
+  "FAST",
+  "FTNT",
+  "GEHC",
+  "GILD",
+  "HOOD",
+  "IBKR",
+  "INSM",
+  "INTU",
+  "KDP",
+  "LITE",
+  "MCHP",
+  "MDLZ",
+  "MNST",
+  "MRNA",
+  "MRVL",
+  "NDAQ",
+  "NTAP",
+  "OKTA",
+  "ON",
+  "ORLY",
+  "PEP",
+  "AMD",
+  "AMZN",
+  "AAPL",
+  "GOOGL",
+  "META",
+  "MSFT",
+  "NVDA",
+  "AVGO",
+  "TSLA",
+  "COST"
+]
+
+start: 2025-01-01        # YYYY-MM-DD (UTC)
+end: 2025-06-30          # inclusive
+
+strategy:
+  name: mean_reversion   # any name from strategies/registry.py
+  params:
+    timeframe_minutes: 5
+    lookback: 19
+    entry_z: -1.1
+    exit_z: -0.5
+    trend_ema_period: 120
+    rsi_period: 19
+    rsi_entry_max: 30.0
+    atr_period: 12
+    atr_stop_multiplier: 3.0
+    entry_delay_minutes: 15
+    entry_cutoff_minutes: 30
+    flatten_minutes: 15
+
+capital: 10000           # per symbol (independent portfolios)
+position_size_pct: 0.10  # buy notional = capital * position_size_pct
+spread_pct: 0.0005          # 0 = frictionless; set >0 to match the full backtest
+slippage_pct: 0.0005
+objective: default       # named objective from config.yaml `objectives:`
