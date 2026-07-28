@@ -32,7 +32,7 @@ uv run carcharoth quicktest --config config/quicktest.yaml
 uv run carcharoth quicktest --config config/quicktest.yaml --verbose
 ```
 
-Output: console summary (aggregate sharpe, profit factor, fitness, drawdown, win rate, trade count) + per-symbol table.
+Output: a short console block (`run_id` + summary file link, like `backtest`). Full results are written to `logs/quicktest/{run_id}.yaml` — the quicktest config, aggregate metrics (sharpe, profit factor, drawdown, win rate, trade count), a `per_symbol` breakdown with the same metrics per symbol, and `fitness` scores.
 
 ## What It Skips
 

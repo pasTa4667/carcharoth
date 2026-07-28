@@ -10,7 +10,7 @@ import logging
 import logging.config
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import yaml
@@ -18,6 +18,9 @@ import yaml
 from carcharoth.analysis.objective import FITNESS_PREFIX
 from carcharoth.config.app_config import RegimeConfig, RiskConfig
 from carcharoth.domain.models import MetricValue, OptimizationResult
+
+if TYPE_CHECKING:
+    from carcharoth.config.quicktest_config import QuickTestConfig
 
 TRADES_LOGGER = "carcharoth.trades"
 DECISIONS_LOGGER = "carcharoth.decisions"
@@ -120,6 +123,51 @@ def write_backtest_summary(
         summary["fitness"] = fitness
 
     with open(backtest_dir / f"{run_id}.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def write_quicktest_summary(
+    log_dir: Path,
+    run_id: UUID,
+    started_at: datetime,
+    config: "QuickTestConfig",
+    metrics: list[MetricValue],
+) -> None:
+    """Write a human-readable YAML summary of a quick test to
+    ``logs/quicktest/{run_id}.yaml`` (mirrors ``write_backtest_summary``).
+
+    ``results`` holds the aggregate metrics plus a ``per_symbol`` map where each
+    symbol carries its full metric breakdown (sharpe, profit_factor,
+    total_return, max_drawdown, win_rate, num_trades, ...).
+    """
+    quicktest_dir = log_dir / "quicktest"
+    quicktest_dir.mkdir(parents=True, exist_ok=True)
+
+    aggregate: dict[str, float] = {}
+    fitness: dict[str, float] = {}
+    per_symbol: dict[str, dict[str, float]] = {}
+    for m in metrics:
+        if m.symbol is not None:
+            per_symbol.setdefault(m.symbol, {})[m.name] = m.value
+        elif m.name.startswith(FITNESS_PREFIX):
+            fitness[m.name.removeprefix(FITNESS_PREFIX)] = m.value
+        else:
+            aggregate[m.name] = m.value
+
+    results: dict[str, object] = {**aggregate}
+    if per_symbol:
+        results["per_symbol"] = {sym: per_symbol[sym] for sym in sorted(per_symbol)}
+
+    summary: dict[str, object] = {
+        "run_id": str(run_id),
+        "date": started_at.isoformat(),
+        "config": config.model_dump(mode="json"),
+        "results": results,
+    }
+    if fitness:
+        summary["fitness"] = fitness
+
+    with open(quicktest_dir / f"{run_id}.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 

@@ -40,6 +40,7 @@ from carcharoth.logging_setup import (
     setup_logging,
     write_backtest_summary,
     write_optimize_summary,
+    write_quicktest_summary,
 )
 from carcharoth.optimize.bars_cache import BarsCache
 from carcharoth.optimize.overrides import validate_override_paths
@@ -69,7 +70,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyStrategyDecisionRepository,
     SqlAlchemyTradeRepository,
 )
-from carcharoth.quicktest.runner import format_summary, run_quicktest_once
+from carcharoth.quicktest.runner import run_quicktest_once
 from carcharoth.regime.detectors import build_detector
 from carcharoth.regime.hmm.fit_cache import HMM_PREFIX
 from carcharoth.regime.models import Regime
@@ -759,6 +760,7 @@ def _run_quicktest(base_config_path: Path, quicktest_config_path: Path) -> None:
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
     if bars_store is not None:
         fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    started_at = datetime.now(UTC)
     try:
         outcome = run_quicktest_once(
             config,
@@ -772,8 +774,13 @@ def _run_quicktest(base_config_path: Path, quicktest_config_path: Path) -> None:
     finally:
         db_engine.dispose()
 
-    # Printed (not logged) so the result is always visible without --verbose.
-    print(format_summary(outcome, config.objective))
+    write_quicktest_summary(LOG_DIR, outcome.run_id, started_at, config, outcome.metrics)
+
+    # Printed (not logged) so the essential result is always visible, even
+    # without --verbose (which lowers the console log level to WARNING).
+    print("quicktest complete")
+    print(f"  run_id:  {outcome.run_id}")
+    print(f"  summary: {LOG_DIR / 'quicktest' / f'{outcome.run_id}.yaml'}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
