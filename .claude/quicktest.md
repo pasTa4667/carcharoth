@@ -34,6 +34,13 @@ uv run carcharoth quicktest --config config/quicktest.yaml --verbose
 
 Output: a short console block (`run_id` + summary file link, like `backtest`). Full results are written to `logs/quicktest/{run_id}.yaml` — the quicktest config, aggregate metrics (sharpe, profit factor, drawdown, win rate, trade count), a `per_symbol` breakdown with the same metrics per symbol, and `fitness` scores.
 
+## Deleting Runs
+
+```bash
+uv run carcharoth delete-run --run-id <uuid>          # delete one run + all its data
+uv run carcharoth delete-run --all-quicktests         # delete every quicktest run
+```
+
 ## What It Skips
 
 - No regime detection or risk management

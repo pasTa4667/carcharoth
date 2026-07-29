@@ -709,13 +709,20 @@ def _run_cache_clear(bars: bool, hmm: bool) -> None:
         print(f"  deleted {store.delete_prefix(HMM_PREFIX)} hmm fit entries")
 
 
-def _run_delete(run_id: UUID | None, all_backtests: bool) -> None:
+def _run_delete(
+    run_id: UUID | None, all_backtests: bool, all_quicktests: bool = False
+) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
     try:
         runs_repo: RunRepository = SqlAlchemyRunRepository(session_factory)
-        run_ids = runs_repo.list_run_ids(RunType.BACKTEST) if all_backtests else [run_id]
+        if all_backtests:
+            run_ids = runs_repo.list_run_ids(RunType.BACKTEST)
+        elif all_quicktests:
+            run_ids = runs_repo.list_run_ids(RunType.QUICKTEST)
+        else:
+            run_ids = [run_id]
         deleted = 0
         for target in run_ids:
             assert target is not None  # guaranteed by the mutually exclusive CLI group
@@ -884,6 +891,7 @@ def _build_parser() -> argparse.ArgumentParser:
     target = delete.add_mutually_exclusive_group(required=True)
     target.add_argument("--run-id", type=UUID)
     target.add_argument("--all-backtests", action="store_true")
+    target.add_argument("--all-quicktests", action="store_true")
 
     return parser
 
@@ -957,7 +965,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.command == "analyze":
         _run_analyze(args.run_id)
     elif args.command == "delete-run":
-        _run_delete(args.run_id, args.all_backtests)
+        _run_delete(args.run_id, args.all_backtests, args.all_quicktests)
 
 
 if __name__ == "__main__":
