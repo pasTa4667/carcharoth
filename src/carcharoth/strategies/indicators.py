@@ -78,6 +78,43 @@ def highest_high(bars: Sequence[Bar], period: int) -> float | None:
     return max(bar.high for bar in bars[-period:])
 
 
+def efficiency_ratio(bars: Sequence[Bar], period: int) -> float | None:
+    """Kaufman efficiency ratio over the last `period` closes.
+
+    ER = |close[-1] - close[-1-period]| / sum(|close[i] - close[i-1]|)
+    Ranges 0..1: ~1 = trending, ~0 = choppy / mean-reverting.
+    """
+    if period < 1 or len(bars) < period + 1:
+        return None
+    closes = _closes(bars)[-(period + 1):]
+    direction = abs(closes[-1] - closes[0])
+    volatility = float(np.abs(np.diff(closes)).sum())
+    if volatility <= 0:
+        return None
+    return float(direction / volatility)
+
+
+def variance_ratio(bars: Sequence[Bar], k: int, window: int) -> float | None:
+    """Lo-MacKinlay variance ratio VR(k) over the last `window` log returns.
+
+    VR(k) = Var(k-period returns) / (k * Var(1-period returns)).
+    VR < 1 => mean-reverting; VR ~ 1 => random walk; VR > 1 => trending.
+    """
+    if k < 2 or window < k + 2 or len(bars) < window + 1:
+        return None
+    closes = _closes(bars)[-(window + 1):]
+    log_prices = np.log(closes)
+    r1 = np.diff(log_prices)
+    if r1.size < k + 1:
+        return None
+    var1 = float(np.var(r1, ddof=1))
+    if var1 <= 0:
+        return None
+    rk = log_prices[k:] - log_prices[:-k]
+    vark = float(np.var(rk, ddof=1))
+    return float(vark / (k * var1))
+
+
 def _closes(bars: Sequence[Bar]) -> npt.NDArray[np.float64]:
     return np.array([bar.close for bar in bars], dtype=np.float64)
 
