@@ -1,0 +1,30 @@
+---
+title: _process_symbol() — strategy → risk → execution for one symbol
+---
+flowchart TD
+    S([symbol]):::entry --> RES["provider.resolve(symbol, bars,<br/>position, as_of)"]:::engine
+    RES -- "None" --> SKIP([skip: no strategy<br/>for this regime]):::stop
+    RES -- Strategy --> EVAL["strategy.evaluate(…)<br/>→ Signal"]:::logic
+    EVAL --> HOLD{"HOLD or<br/>quote is None?"}:::decision
+    HOLD -- yes --> SAVE1["save decision<br/><small>no order</small>"]:::db
+    SAVE1 --> DONE([done]):::done
+    HOLD -- no --> RISK["risk.assess(signal,<br/>state, quote)"]:::risk
+    RISK --> SAVE2["save decision"]:::db
+    SAVE2 --> APP{"approved?"}:::decision
+    APP -- no --> DONE
+    APP -- yes --> CLR["_clear_conflicting_orders()"]:::engine
+    CLR -- "not clear" --> RETRY([retry next tick]):::stop
+    CLR -- clear --> SUB["executor.submit(OrderRequest)"]:::io
+    SUB -- "OrderConflictError" --> WASH([log wash-trade<br/>rejection, skip]):::stop
+    SUB -- ok --> SAVE3["orders_repo.save_submitted()<br/>→ trades.log"]:::db
+    SAVE3 --> DONE
+
+    classDef entry fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef engine fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#0f172a
+    classDef logic fill:#ccfbf1,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef risk fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef io fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a

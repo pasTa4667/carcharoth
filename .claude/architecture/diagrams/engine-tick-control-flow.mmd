@@ -1,0 +1,21 @@
+---
+title: TradingEngine.tick() — control flow and failure handling
+---
+flowchart TD
+    START([tick]):::entry --> REC["_reconcile_fills()"]:::engine
+    REC --> MD{"get_snapshot()<br/>succeeds?"}:::decision
+    MD -- "MarketDataError" --> ABORT([log + abort tick<br/><small>nothing to trade on</small>]):::stop
+    MD -- yes --> ACC["get_account_state()<br/>save positions snapshot"]:::engine
+    ACC --> LOOP{"for each symbol"}:::decision
+    LOOP --> PROC["_process_symbol()"]:::engine
+    PROC -- "exception" --> CONT["log + continue<br/><small>per-symbol isolation</small>"]:::warn
+    CONT --> LOOP
+    PROC -- ok --> LOOP
+    LOOP -- done --> END([tick complete]):::done
+
+    classDef entry fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef engine fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    classDef warn fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#0f172a
+    classDef done fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a

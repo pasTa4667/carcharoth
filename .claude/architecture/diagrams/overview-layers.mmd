@@ -1,0 +1,64 @@
+---
+title: System layers — dependencies point inward, toward interfaces and domain
+---
+flowchart TB
+    subgraph Entry["🚪 Entry / Composition"]
+        direction LR
+        MAIN["main.py<br/><small>composition root + CLI</small>"]:::entry
+        SCHED["Scheduler"]:::entry
+    end
+
+    subgraph Core["⚙️ Orchestration — provider-agnostic"]
+        direction LR
+        ENGINE["TradingEngine.tick()<br/><small>the fixed 5-step sequence</small>"]:::engine
+        SP["StrategyProvider<br/><small>single / regime</small>"]:::engine
+    end
+
+    subgraph Contracts["📜 interfaces/ — ABCs & Protocols"]
+        direction LR
+        I_BROKER(["MarketDataService<br/>AccountService<br/>OrderExecutor · MarketClock"]):::iface
+        I_LOGIC(["Strategy<br/>RegimeDetector<br/>RiskManager"]):::iface
+        I_INFRA(["Repository ABCs<br/>Cache / ByteStore<br/>ParameterOptimizer"]):::iface
+    end
+
+    subgraph Impl["🔌 Concrete implementations"]
+        direction LR
+        ALPACA["services/alpaca/<br/><small>live</small>"]:::io
+        BT["services/backtest/<br/><small>simulated</small>"]:::sim
+        LOGIC["strategies/ · regime/<br/>risk/"]:::logic
+        INFRA["persistence/ · services/cache/<br/>services/optuna/"]:::infra
+    end
+
+    DOMAIN["💎 domain/models.py &nbsp;·&nbsp; analysis/<br/><small>pure, no I/O — flows between every layer</small>"]:::pure
+
+    MAIN ==> SCHED ==> ENGINE ==> SP
+
+    ENGINE --> I_BROKER
+    ENGINE --> I_INFRA
+    SP --> I_LOGIC
+
+    I_BROKER -.- ALPACA
+    I_BROKER -.- BT
+    I_LOGIC -.- LOGIC
+    I_INFRA -.- INFRA
+
+    Impl ==> DOMAIN
+    Contracts ==> DOMAIN
+    MAIN -. "wires the concrete<br/>implementations<br/>(the only seam)" .-> Impl
+
+    LEGEND{{"solid = calls / depends on &nbsp;·&nbsp; dotted = implements"}}:::note
+
+    classDef entry fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef engine fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#0f172a
+    classDef iface fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef io fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef sim fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#0f172a
+    classDef logic fill:#ccfbf1,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef infra fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef pure fill:#fce7f3,stroke:#db2777,stroke-width:3px,color:#0f172a
+    classDef note fill:#fffbeb,stroke:#a16207,stroke-width:1px,color:#0f172a,font-style:italic
+
+    style Entry fill:#f8fafc,stroke:#475569,stroke-width:2px,color:#1e293b
+    style Core fill:#f0f7ff,stroke:#2563eb,stroke-width:3px,color:#1e3a8a
+    style Contracts fill:#faf5ff,stroke:#7c3aed,stroke-width:3px,color:#5b21b6
+    style Impl fill:#fefce8,stroke:#a16207,stroke-width:2px,color:#713f12

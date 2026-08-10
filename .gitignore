@@ -20,5 +20,4 @@ logs/
 .ruff_cache/
 .pytest_cache/
 .auto/
-.pi/
 plans/

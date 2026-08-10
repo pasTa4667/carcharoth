@@ -1,0 +1,42 @@
+---
+title: Optimize flow — an Optuna study over unchanged backtests
+---
+flowchart TB
+    CFG1["config/config.yaml<br/><small>raw dict + validated AppConfig</small>"]:::config
+    CFG2["config/optimize.yaml<br/><small>search space, budget, window</small>"]:::config
+    CFG1 & CFG2 --> OPT
+
+    OPT["OptunaOptimizer<br/><small>services/optuna/ — the only optuna importer</small>"]:::optimizer
+
+    OPT ==> TRIAL
+
+    subgraph TRIAL["per trial"]
+        direction TB
+        SUG["suggest a value per<br/>search-space dot-path"]:::optimizer
+        OV["apply_overrides() on the raw config<br/>→ AppConfig.model_validate()"]:::pure
+        VALID{"config valid?"}:::decision
+        BT["run a normal, fully persisted backtest<br/><small>BacktestFunc → run_backtest_once()</small>"]:::engine
+        FIT["read the run's fitness_&lt;objective&gt;<br/><small>computed by the analyzer, not here</small>"]:::analysis
+        CON{"hard constraints<br/>satisfied?"}:::decision
+
+        SUG --> OV --> VALID
+        VALID -- no --> FAIL(["FAIL trial<br/><small>study continues</small>"]):::stop
+        VALID -- yes --> BT --> FIT --> CON
+        CON -- yes --> OBJ["objective = fitness"]:::optimizer
+        CON -- no --> PEN["objective = penalty score<br/><small>search guidance only;<br/>persisted fitness untouched</small>"]:::penalty
+    end
+
+    BT -.->|"trial.user_attr run_id"| LINK[("runs / backtest_metrics<br/><small>linkage lives on the Optuna side</small>")]:::db
+    TRIAL ==> SUM["study summary<br/><small>logs/optimize/&lt;study&gt;.yaml</small>"]:::config
+
+    classDef config fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef optimizer fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef pure fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef engine fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#0f172a
+    classDef analysis fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#0f172a
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    classDef penalty fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#0f172a
+
+    style TRIAL fill:#fffdf5,stroke:#d97706,stroke-width:2px,color:#7c2d12
