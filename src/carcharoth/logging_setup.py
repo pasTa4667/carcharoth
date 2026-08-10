@@ -20,6 +20,7 @@ from carcharoth.config.app_config import RegimeConfig, RiskConfig
 from carcharoth.domain.models import MetricValue, OptimizationResult
 
 if TYPE_CHECKING:
+    from carcharoth.config.app_config import AppConfig
     from carcharoth.config.quicktest_config import QuickTestConfig
     from carcharoth.permutation.runner import PermutationTestOutcome
 
@@ -175,44 +176,61 @@ def write_quicktest_summary(
 def write_permutation_summary(
     log_dir: Path,
     started_at: datetime,
-    config: "QuickTestConfig",
+    config: "QuickTestConfig | AppConfig",
     outcome: "PermutationTestOutcome",
 ) -> None:
     """Write a human-readable YAML summary of a permutation test to
     ``logs/permutation/{test_id}.yaml`` (mirrors ``write_quicktest_summary``;
-    the baseline run's own summary lives in ``logs/quicktest/{run_id}.yaml``).
+    the baseline run's own summary lives in ``logs/quicktest/{run_id}.yaml``
+    or ``logs/backtests/{run_id}.yaml``).
+
+    Bar-permutation tests get a verdict block (p-value vs. significance);
+    monte carlo trade tests (``p_value is None``) get distributions only:
+    percentile tables per metric plus the observed run's percentile ranks.
     """
     permutation_dir = log_dir / "permutation"
     permutation_dir.mkdir(parents=True, exist_ok=True)
-
-    scores = sorted(outcome.scores)
-    distribution: dict[str, float] = {}
-    if scores:
-        distribution = {
-            "min": scores[0],
-            "median": scores[len(scores) // 2],
-            "max": scores[-1],
-        }
 
     summary: dict[str, object] = {
         "test_id": str(outcome.test_id),
         "run_id": str(outcome.run_id),
         "date": started_at.isoformat(),
-        "verdict": "PASS" if outcome.passed else "FAIL",
-        "results": {
+    }
+
+    if outcome.p_value is not None:
+        scores = sorted(outcome.scores)
+        distribution: dict[str, float] = {}
+        if scores:
+            distribution = {
+                "min": scores[0],
+                "median": scores[len(scores) // 2],
+                "max": scores[-1],
+            }
+        summary["verdict"] = "PASS" if outcome.passed else "FAIL"
+        summary["results"] = {
             "observed_score": outcome.observed_score,
             "p_value": outcome.p_value,
             "significance": outcome.significance,
             "permuted_scores": distribution,
-        },
-        "permutation": {
-            "method": outcome.method,
-            "n_permutations": outcome.n_permutations,
-            "seed": outcome.seed,
-            "objective": outcome.objective,
-        },
-        "config": config.model_dump(mode="json"),
+        }
+    else:
+        # Distribution-only monte carlo trade analysis — no verdict. The
+        # percentile rank says where the observed run sits among the sampled
+        # paths (e.g. max_drawdown rank 10 = 90% of samples drew down more).
+        summary["results"] = {
+            "observed": outcome.observed_metrics,
+            "observed_percentile_ranks": outcome.observed_percentile_ranks,
+            "prob_profit": outcome.prob_profit,
+            "distributions": outcome.percentiles,
+        }
+
+    summary["permutation"] = {
+        "method": outcome.method,
+        "n_permutations": outcome.n_permutations,
+        "seed": outcome.seed,
+        "objective": outcome.objective,
     }
+    summary["config"] = config.model_dump(mode="json")
 
     with open(permutation_dir / f"{outcome.test_id}.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

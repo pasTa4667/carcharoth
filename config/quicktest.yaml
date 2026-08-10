@@ -87,17 +87,24 @@ slippage_pct: 0.0005
 objective: default       # named objective from config.yaml `objectives:`
 
 # Optional: permutation-test settings, only used with `quicktest --permute`.
-# The quicktest above becomes the baseline; its bars are permuted and
-# re-simulated n times, and the baseline's fitness is compared against the
-# permuted-score distribution (PASS when p_value <= significance). Results
-# are held in memory and written to the database in one batch at the end
-# (tables permutation_tests / permutation_results).
+# Two kinds of method (see permutation/registry.py):
+# - bar methods (in_sample_bars): the quicktest above becomes the baseline;
+#   its bars are permuted and re-simulated n times, and the baseline's fitness
+#   is compared against the permuted-score distribution (PASS when
+#   p_value <= significance).
+# - trade methods (monte_carlo_trades): the baseline runs once, then its
+#   closed trades are resampled/shuffled n times and the equity path rebuilt
+#   from each sample — no re-simulation. Reports percentile distributions
+#   (drawdown, return, ...) instead of PASS/FAIL; significance/workers unused.
+# Results are held in memory and written to the database in one batch at the
+# end (tables permutation_tests / permutation_results).
 permutation:
   method: in_sample_bars # any name from permutation/registry.py
                          # (`--permute METHOD` overrides)
-  n_permutations: 100    # more permutations -> finer p-value resolution
+  n_permutations: 100    # more permutations -> finer p-value/percentile resolution
   seed: 42               # permutation i uses SeedSequence([seed, i]) - reproducible
-  significance: 0.05     # p-value threshold for PASS/FAIL
+  significance: 0.05     # p-value threshold for PASS/FAIL (bar methods only)
   workers: 0             # parallel processes; 0 = auto (cpu count); `--workers` overrides
-  params: {}             # method-specific knobs
+  params: {}             # method-specific knobs; monte_carlo_trades:
+                         #   sampling: resample (bootstrap, default) | shuffle (reorder)
 

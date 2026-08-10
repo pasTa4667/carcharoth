@@ -26,6 +26,7 @@ from uuid import UUID
 import yaml
 
 from carcharoth.analysis.analyzer import BacktestAnalyzer
+from carcharoth.analysis.metrics import match_round_trips
 from carcharoth.backtest.runner import BacktestRunner
 from carcharoth.config.app_config import AppConfig, RegimeConfig, StrategyConfig, load_config
 from carcharoth.config.optimize_config import OptimizeConfig, load_optimize_config
@@ -45,7 +46,8 @@ from carcharoth.logging_setup import (
 )
 from carcharoth.optimize.bars_cache import BarsCache
 from carcharoth.optimize.overrides import validate_override_paths
-from carcharoth.permutation.runner import run_permutation_test
+from carcharoth.permutation.registry import method_kind
+from carcharoth.permutation.runner import run_monte_carlo_test, run_permutation_test
 from carcharoth.persistence.buffered import (
     BufferedEquityOnlyRepository,
     BufferedPositionSnapshotRepository,
@@ -363,6 +365,25 @@ def run_backtest_once(
     return BacktestResult(run_id=run_id, metrics=metrics)
 
 
+def _backtest_permutation_config(config: AppConfig, method_override: str) -> PermutationConfig:
+    """The `backtest.permutation:` section (defaulting to monte_carlo_trades
+    when absent) with the CLI method override applied. Only trade-based
+    methods can run against a finished backtest — bar methods would need to
+    re-run the engine per permutation."""
+    section = config.backtest.permutation or PermutationConfig(method="monte_carlo_trades")
+    if method_override:
+        section = PermutationConfig.model_validate(
+            {**section.model_dump(), "method": method_override}
+        )
+    if method_kind(section.method) != "trades":
+        raise SystemExit(
+            f"permutation method {section.method!r} re-simulates permuted bars and is not "
+            "supported for backtests; use a trade-based method (e.g. monte_carlo_trades) "
+            "or run it via `carcharoth quicktest --permute`"
+        )
+    return section
+
+
 def _run_backtest(
     config_path: Path,
     start: datetime,
@@ -371,11 +392,14 @@ def _run_backtest(
     verbose: bool = False,
     no_hmm_cache: bool = False,
     verbose_db: bool = False,
+    permute: str | None = None,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = load_config(config_path)
     watchlist = symbols if symbols else config.watchlist.symbols
     end_exclusive = end + timedelta(days=1)  # --end is inclusive
+    # Validate before the (long) backtest so a bad method fails fast.
+    permutation = _backtest_permutation_config(config, permute) if permute is not None else None
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
@@ -383,6 +407,7 @@ def _run_backtest(
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
     if bars_store is not None:
         fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    permutation_outcome = None
     try:
         # Only the interactive CLI run gets the tqdm bar; with --verbose we fall
         # back to the periodic progress logs to avoid clobbering the bar.
@@ -397,14 +422,37 @@ def _run_backtest(
             hmm_store=hmm_store,
             verbose_db=verbose_db,
         )
+        if permutation is not None:
+            # Monte carlo the finished run's closed trades — read back from
+            # the DB, FIFO-matched exactly like the analyzer does.
+            trades = SqlAlchemyAnalysisReader(session_factory).list_trades(result.run_id)
+            round_trips = match_round_trips(trades)
+            if not round_trips:
+                logger.warning("backtest produced no closed round trips; skipping monte carlo")
+            else:
+                permutation_outcome = run_monte_carlo_test(
+                    run_id=result.run_id,
+                    round_trips=round_trips,
+                    initial_capital=config.backtest.initial_capital,
+                    permutation=permutation,
+                    permutation_repo=SqlAlchemyPermutationRepository(session_factory),
+                    flush=sqlalchemy_flush(session_factory),
+                )
     finally:
         db_engine.dispose()
+
+    if permutation_outcome is not None:
+        write_permutation_summary(LOG_DIR, datetime.now(UTC), config, permutation_outcome)
 
     # Printed (not logged) so the essential result is always visible, even
     # without --verbose (which lowers the console log level to WARNING).
     print("backtest complete")
     print(f"  run_id:  {result.run_id}")
     print(f"  summary: {LOG_DIR / 'backtests' / f'{result.run_id}.yaml'}")
+    if permutation_outcome is not None:
+        print("monte carlo trade analysis complete")
+        print(f"  test_id: {permutation_outcome.test_id}")
+        print(f"  summary: {LOG_DIR / 'permutation' / f'{permutation_outcome.test_id}.yaml'}")
 
 
 def _run_optimize(
@@ -796,7 +844,12 @@ def _run_quicktest(
     started_at = datetime.now(UTC)
     permutation_outcome = None
     try:
-        if permute is None:
+        permutation = (
+            _effective_permutation_config(config.permutation, permute, workers)
+            if permute is not None
+            else None
+        )
+        if permutation is None or method_kind(permutation.method) == "trades":
             outcome = run_quicktest_once(
                 config,
                 base_config.objectives,
@@ -806,8 +859,18 @@ def _run_quicktest(
                 round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
                 metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
             )
+            if permutation is not None:
+                # Trade-shuffle methods need no re-simulation: monte-carlo the
+                # baseline quicktest's round trips in-process.
+                permutation_outcome = run_monte_carlo_test(
+                    run_id=outcome.run_id,
+                    round_trips=outcome.round_trips,
+                    initial_capital=config.capital * len(config.symbols),
+                    permutation=permutation,
+                    permutation_repo=SqlAlchemyPermutationRepository(session_factory),
+                    flush=sqlalchemy_flush(session_factory),
+                )
         else:
-            permutation = _effective_permutation_config(config.permutation, permute, workers)
             outcome, permutation_outcome = run_permutation_test(
                 config,
                 permutation,
@@ -880,6 +943,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "persist strategy decisions, position snapshots, and regime evaluations; "
             "default skips these high-volume tables to keep DB size small"
         ),
+    )
+    backtest.add_argument(
+        "--permute",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="METHOD",
+        help="monte carlo the finished backtest's trades; METHOD overrides "
+        "backtest.permutation.method (trade-based methods only, e.g. monte_carlo_trades)",
     )
 
     optimize = subparsers.add_parser(
@@ -1007,6 +1079,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             verbose=args.verbose,
             no_hmm_cache=args.no_hmm_cache,
             verbose_db=args.verbose_db,
+            permute=args.permute,
         )
     elif args.command == "optimize":
         _run_optimize(

@@ -6,6 +6,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from carcharoth.config.quicktest_config import PermutationConfig
 from carcharoth.regime.models import Regime
 
 
@@ -121,6 +122,9 @@ class BacktestConfig(BaseModel):
     spread_pct: float = Field(default=0.0005, ge=0)
     #: fills execute this fraction worse than the quoted side
     slippage_pct: float = Field(default=0.0005, ge=0)
+    #: monte carlo trade-shuffle settings for `backtest --permute`; only
+    #: trade-based methods work here (bar methods need engine re-runs)
+    permutation: PermutationConfig | None = None
 
 
 class CacheConfig(BaseModel):

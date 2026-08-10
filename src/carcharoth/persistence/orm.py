@@ -211,7 +211,8 @@ class RoundTripRow(Base):
 class PermutationTestRow(Base):
     """One permutation test against a baseline run: method, inputs, and the
     verdict (observed score vs. the permuted-score distribution). This row
-    alone answers "did the strategy beat luck"."""
+    alone answers "did the strategy beat luck". Monte carlo trade-shuffle
+    tests report distributions only: their verdict columns are NULL."""
 
     __tablename__ = "permutation_tests"
 
@@ -223,10 +224,10 @@ class PermutationTestRow(Base):
     n_permutations: Mapped[int]
     seed: Mapped[int]
     objective: Mapped[str]
-    significance: Mapped[float]
+    significance: Mapped[float | None]
     observed_score: Mapped[float]
-    p_value: Mapped[float]
-    passed: Mapped[bool]
+    p_value: Mapped[float | None]
+    passed: Mapped[bool | None]
     created_at: Mapped[datetime]
 
 

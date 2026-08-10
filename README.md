@@ -49,7 +49,7 @@ requires changes anywhere else.
 | Historical bars | `BarsFetcher` | `services/alpaca/historical.py` |
 | Bars/HMM cache | `ByteStore` | `services/cache/redis_store.py`, `services/cache/bars.py` |
 | Optimization | `ParameterOptimizer` | `services/optuna/optimizer.py` |
-| Permutation testing | `PermutationMethod` | `permutation/methods/in_sample_bars.py` |
+| Permutation testing | `PermutationMethod` | `permutation/methods/in_sample_bars.py`, `permutation/methods/monte_carlo_trades.py` |
 | Persistence | repository ABCs | `persistence/repositories.py` (SQLAlchemy/Postgres) |
 
 Alpaca is the **source of truth** for live account state. PostgreSQL stores run-scoped history:
@@ -92,6 +92,7 @@ while it is closed, and shuts down cleanly on Ctrl-C / SIGTERM.
 |---|---|
 | `carcharoth` / `carcharoth run` | Live paper trading |
 | `carcharoth backtest` | Replay history through the full engine (regime + risk) |
+| `carcharoth backtest --permute [METHOD]` | Backtest + monte carlo trade analysis (how path-lucky was the run?) |
 | `carcharoth quicktest` | Isolated strategy test — no engine, regime, or risk |
 | `carcharoth quicktest --permute [METHOD] [--workers N]` | Quicktest + permutation test (is the edge real or luck?) |
 | `carcharoth optimize` | Optuna parameter search over backtests |
@@ -107,7 +108,8 @@ Also works: `uv run python -m carcharoth`.
   `OPTUNA_DATABASE_URL`, Grafana credentials. See `.env.example`.
 - **Runtime** (`config/config.yaml`): watchlist, engine tick interval, keyed `strategies:` block
   (each with `active` + `params`, including per-strategy `timeframe_minutes`), `regime:`,
-  `backtest:` simulation params, `cache:` toggles, named `objectives:`, and `risk:` limits.
+  `backtest:` simulation params (plus an optional `backtest.permutation:` section for
+  `backtest --permute`), `cache:` toggles, named `objectives:`, and `risk:` limits.
   Validated with pydantic at startup.
 - **Optimization** (`config/optimize.yaml`): study settings, backtest window, search space
   (dot-paths into `config.yaml`), constraints, objective name.
@@ -172,6 +174,20 @@ log-returns per symbol, preserving drift and OHLC shape while destroying serial 
 Results land in `permutation_tests` / `permutation_results` (Permutation Tests dashboard) and
 a summary YAML in `logs/permutation/<test_id>.yaml`.
 
+**Monte carlo trade analysis** (`monte_carlo_trades`, `kind="trades"`) is different: the
+strategy runs **once**, then its closed round trips are resampled `n_permutations` times and
+the equity path rebuilt from each sample — no re-simulation, so it runs in-process in seconds
+and works on top of **both** commands: `quicktest --permute monte_carlo_trades` and
+`backtest --permute [METHOD]` (backtests support only trade-based methods; settings come from
+the optional `backtest.permutation:` section in `config/config.yaml`). Two sampling modes via
+`params.sampling`: `resample` (default; bootstrap with replacement — total return, drawdown
+and profit factor all vary: does the edge rest on a few lucky trades?) and `shuffle` (reorder
+without replacement — the same trades, so only path-dependent metrics vary: how lucky was the
+trade ordering?). This is a path-risk analysis, not a significance test: instead of a PASS/FAIL
+verdict it reports percentile tables (p5…p99) per metric, the observed run's percentile rank
+within each distribution, and the probability of profit. Same tables/dashboard/summary paths;
+the verdict columns are stored as NULL.
+
 **Optimize** uses Optuna; study tables live in a dedicated `optuna` Postgres schema. Search
 space keys are dot-paths into `config.yaml` (see `config/optimize.yaml`). Use `--no-hmm-cache`
 when the study searches HMM parameters. Summary YAML: `logs/optimize/<study_name>.yaml`.
@@ -219,7 +235,7 @@ under **Dashboards → Carcharoth**:
 | Trading Overview | Live paper trading — positions, PnL, signals, trades, regime |
 | Live Analysis | Live session analytics |
 | Backtest Results | Backtest and optimize runs — equity, metrics, round trips |
-| Permutation Tests | Permutation-test verdicts — p-value, score distribution vs. observed |
+| Permutation Tests | Permutation tests — p-value/verdict (bar methods) or sampled-metric distributions vs. observed (monte carlo) |
 
 | `.env` variable | Purpose |
 |---|---|

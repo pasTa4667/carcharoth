@@ -52,14 +52,31 @@ uv run carcharoth quicktest --permute in_sample_bars --workers 4
 ```
 
 - Methods implement the `PermutationMethod` interface (`interfaces/permutation.py`) and are
-  registered in `src/carcharoth/permutation/registry.py`; currently `in_sample_bars`
-  (shuffles gap + intrabar log-returns per symbol; warm-up bars stay real).
+  registered in `src/carcharoth/permutation/registry.py`. Each method has a `kind`:
+  - `in_sample_bars` (`kind="bars"`): shuffles gap + intrabar log-returns per symbol
+    (warm-up bars stay real) and re-simulates — the p-value/PASS-FAIL flow above.
+  - `monte_carlo_trades` (`kind="trades"`): the baseline runs **once**, then its closed
+    round trips are resampled `n_permutations` times and the equity path rebuilt per sample
+    (in-process, no re-simulation, no workers). `params.sampling: resample` (default,
+    bootstrap with replacement) or `shuffle` (reorder — only path-dependent metrics vary).
+    No verdict: the summary reports percentile tables (p5…p99) for total_return,
+    max_drawdown, sharpe, profit_factor and final_equity, the observed run's percentile
+    rank per metric, and the probability of profit.
 - Reproducible: permutation `i` is seeded with `SeedSequence([seed, i])`, so results are
   identical for any worker count.
 - Persistence: one `permutation_tests` header row (method, seed, observed score, p-value,
-  verdict) + one `permutation_results` row per permutation (score + headline metrics),
-  cascade-deleted with the baseline run. Grafana: **Permutation Tests** dashboard.
+  verdict — the latter NULL for monte carlo) + one `permutation_results` row per permutation
+  (score + headline metrics), cascade-deleted with the baseline run. Grafana: **Permutation
+  Tests** dashboard.
 - Summary YAML: `logs/permutation/{test_id}.yaml` (path printed on the console).
+
+### Monte carlo for backtests
+
+Because trade-based methods only need a finished run's trades, they also work on full
+backtests: `uv run carcharoth backtest --permute [METHOD] --start ... --end ...` monte-carlos
+the backtest's round trips after the run (settings from the optional `backtest.permutation:`
+section in `config/config.yaml`; defaults to `monte_carlo_trades` when absent). Bar-based
+methods are rejected there — they would need to re-run the engine per permutation.
 
 ## Deleting Runs
 

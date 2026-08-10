@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from carcharoth.domain.models import Bar
 from carcharoth.interfaces.permutation import PermutationContext, PermutedOutcome
@@ -32,8 +32,11 @@ class InSampleBarsPermutation:
     """Shuffle in-window bar returns per symbol, then re-simulate."""
 
     name: ClassVar[str] = "in_sample_bars"
+    kind: ClassVar[Literal["bars", "trades"]] = "bars"
 
     def permute(self, ctx: PermutationContext, rng: np.random.Generator) -> PermutedOutcome:
+        if ctx.simulate is None or ctx.start is None:
+            raise ValueError("in_sample_bars needs a bars context (simulate + start)")
         permuted = {
             symbol: permute_symbol_bars(bars, ctx.start, rng)
             for symbol, bars in ctx.bars.items()

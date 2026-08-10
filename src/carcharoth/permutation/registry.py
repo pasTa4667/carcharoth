@@ -11,10 +11,22 @@ from typing import Any
 
 from carcharoth.interfaces.permutation import PermutationMethod
 from carcharoth.permutation.methods.in_sample_bars import InSampleBarsPermutation
+from carcharoth.permutation.methods.monte_carlo_trades import MonteCarloTradesPermutation
 
 PERMUTATION_METHODS: dict[str, Callable[..., PermutationMethod]] = {
     InSampleBarsPermutation.name: InSampleBarsPermutation,
+    MonteCarloTradesPermutation.name: MonteCarloTradesPermutation,
 }
+
+
+def method_kind(name: str) -> str:
+    """``"bars"`` (permute + re-simulate) or ``"trades"`` (resample the
+    baseline trades) — callers dispatch their runner path on this."""
+    try:
+        return str(PERMUTATION_METHODS[name].kind)  # type: ignore[attr-defined]
+    except KeyError:
+        available = ", ".join(sorted(PERMUTATION_METHODS))
+        raise ValueError(f"unknown permutation method {name!r}; available: {available}") from None
 
 
 def build_permutation_method(name: str, params: dict[str, Any]) -> PermutationMethod:

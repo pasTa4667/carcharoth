@@ -169,7 +169,8 @@ class RoundTripRepository(ABC):
 
 class PermutationRepository(ABC):
     """Header row of one permutation test; the high-volume per-permutation
-    rows go through the WriteBuffer bulk path instead."""
+    rows go through the WriteBuffer bulk path instead. Verdict fields are
+    None for distribution-only tests (monte carlo trade shuffle)."""
 
     @abstractmethod
     def create_test(
@@ -180,10 +181,10 @@ class PermutationRepository(ABC):
         n_permutations: int,
         seed: int,
         objective: str,
-        significance: float,
+        significance: float | None,
         observed_score: float,
-        p_value: float,
-        passed: bool,
+        p_value: float | None,
+        passed: bool | None,
         created_at: datetime,
     ) -> UUID: ...
 
@@ -625,10 +626,10 @@ class SqlAlchemyPermutationRepository(PermutationRepository):
         n_permutations: int,
         seed: int,
         objective: str,
-        significance: float,
+        significance: float | None,
         observed_score: float,
-        p_value: float,
-        passed: bool,
+        p_value: float | None,
+        passed: bool | None,
         created_at: datetime,
     ) -> UUID:
         test_id = uuid4()

@@ -165,6 +165,16 @@ backtest:
   initial_capital: 100000.0  # starting cash of the simulated account
   spread_pct: 0.0005         # synthetic quote spread around the bar close
   slippage_pct: 0.0005       # fills execute this fraction worse than the quote
+  # Optional: monte carlo trade analysis, only used with `backtest --permute`.
+  # The finished backtest's closed trades are resampled/shuffled n times and
+  # the equity path rebuilt from each sample — no re-simulation. Reports
+  # percentile distributions (drawdown, return, ...) instead of PASS/FAIL.
+  # Only trade-based methods work here (bar methods need engine re-runs).
+  # permutation:
+  #   method: monte_carlo_trades
+  #   n_permutations: 1000
+  #   seed: 42
+  #   params: {}             # sampling: resample (bootstrap, default) | shuffle (reorder)
 
 # Persistent Redis cache for backtest/optimize runs (REDIS_URL in .env;
 # live paper trading never uses it). Runs degrade to no caching, with a
