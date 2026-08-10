@@ -21,3 +21,4 @@ logs/
 .pytest_cache/
 .auto/
 .pi/
+plans/
