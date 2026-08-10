@@ -1,0 +1,19 @@
+---
+title: _clear_conflicting_orders() — wash-trade and double-execution guard
+---
+flowchart TD
+    A["orders_repo.find_open_orders(symbol)"]:::db --> B{"any open?"}:::decision
+    B -- no --> OK([return True<br/><small>safe to submit</small>]):::done
+    B -- yes --> C{"for each open order"}:::decision
+    C --> D{"same side as<br/>the new order?"}:::decision
+    D -- yes --> E["skip<br/><small>a duplicate is already in flight</small>"]:::warn
+    D -- no --> F["executor.cancel_order(id)<br/><small>Alpaca cancels asynchronously</small>"]:::io
+    E --> G([return False<br/><small>signal re-fires next tick</small>]):::stop
+    F --> G
+
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef io fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef warn fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a

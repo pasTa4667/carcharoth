@@ -1,0 +1,78 @@
+---
+title: Run-scoped schema — every table cascades from runs
+---
+erDiagram
+    runs ||--o{ trades : has
+    runs ||--o{ orders : has
+    runs ||--o{ positions_snapshot : has
+    runs ||--o{ strategy_decisions : has
+    runs ||--o{ regime_evaluations : has
+    runs ||--o{ strategy_assignments : has
+    runs ||--o{ equity_snapshots : has
+    runs ||--o{ backtest_metrics : has
+    runs ||--o{ round_trips : has
+    runs ||--o{ configurations : has
+
+    runs {
+        uuid run_id PK
+        text run_type "PAPER | BACKTEST"
+        json symbols
+        datetime started_at
+    }
+    trades {
+        uuid run_id FK
+        text symbol
+        text side
+        numeric filled_qty
+        numeric filled_avg_price
+    }
+    orders {
+        uuid run_id FK
+        text broker_order_id
+        text status
+        text side
+    }
+    strategy_decisions {
+        uuid run_id FK
+        text symbol
+        text action "BUY | SELL | HOLD"
+        json indicators
+    }
+    regime_evaluations {
+        uuid run_id FK
+        text symbol
+        text regime
+        json probabilities
+    }
+    strategy_assignments {
+        uuid run_id FK
+        text symbol
+        text strategy
+        text regime
+    }
+    positions_snapshot {
+        uuid run_id FK
+        datetime as_of
+        text symbol
+        numeric qty
+    }
+    equity_snapshots {
+        uuid run_id FK
+        datetime as_of
+        numeric equity
+    }
+    backtest_metrics {
+        uuid run_id FK
+        text key
+        numeric value
+        text symbol "optional"
+    }
+    round_trips {
+        uuid run_id FK
+        text symbol
+        numeric pnl
+    }
+    configurations {
+        uuid run_id FK
+        json snapshot
+    }

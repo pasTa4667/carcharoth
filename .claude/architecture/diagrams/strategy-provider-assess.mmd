@@ -1,0 +1,17 @@
+---
+title: _assess() — detection is always persisted, but not always acted on
+---
+flowchart TD
+    A["detector.assess(symbol, bars)"]:::regime --> B{"returned None?<br/><small>warming up</small>"}:::decision
+    B -- yes --> WARM([log and return<br/><small>attempt is still throttled</small>]):::stop
+    B -- no --> SAVE["evaluations_repo.save()<br/><small>always persisted</small>"]:::db
+    SAVE --> CONF{"probabilistic <b>and</b><br/>score &lt; min_confidence?"}:::decision
+    CONF -- yes --> KEEP([keep the previous regime<br/><small>posterior already persisted</small>]):::warn
+    CONF -- no --> SET([latest_regime = assessment.regime]):::done
+
+    classDef regime fill:#ccfbf1,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef warn fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a

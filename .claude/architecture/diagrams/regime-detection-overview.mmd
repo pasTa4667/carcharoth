@@ -1,0 +1,24 @@
+---
+title: Regime detectors — config selects one implementation behind the ABC
+---
+flowchart TB
+    CFG["config: regime.detector"]:::config --> BUILD["build_detector(RegimeConfig)<br/><small>regime/detectors.py</small>"]:::factory
+    I(["RegimeDetector (ABC)<br/><small>assess(symbol, bars) → RegimeAssessment?<br/>required_lookback()</small>"]):::iface
+
+    BUILD -- "'score'" --> SCORE["ScoreRegimeDetector<br/><small>weighted feature evidence</small>"]:::regime
+    BUILD -- "'hmm'" --> HMM["HmmRegimeDetector<br/><small>per-symbol Gaussian HMM</small>"]:::regime
+
+    SCORE -.->|implements| I
+    HMM -.->|implements| I
+
+    SCORE --- SREG["emits:<br/>trending · mean_reverting"]:::emit
+    HMM --- HREG["emits:<br/>trending_up · trending_down<br/>range_bound · high_volatility"]:::emit
+
+    I ==>|"the only thing<br/>the engine sees"| CONSUMER["RegimeStrategyProvider"]:::engine
+
+    classDef config fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef factory fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef iface fill:#ede9fe,stroke:#7c3aed,stroke-width:3px,color:#0f172a
+    classDef regime fill:#ccfbf1,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef emit fill:#f0fdfa,stroke:#5eead4,stroke-width:1px,color:#0f172a,font-style:italic
+    classDef engine fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#0f172a

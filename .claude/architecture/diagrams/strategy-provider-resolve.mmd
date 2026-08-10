@@ -1,0 +1,29 @@
+---
+title: RegimeStrategyProvider.resolve() — hold-until-flat strategy switching
+---
+flowchart TD
+    START([resolve symbol, bars,<br/>position, as_of]):::entry --> DUE{"evaluate_interval<br/>elapsed?"}:::decision
+    DUE -- yes --> ASSESS["_assess()<br/><small>detect + persist</small>"]:::regime
+    DUE -- no --> DESIRE
+    ASSESS --> DESIRE["desired = latest_regime<br/>?? default_regime"]:::regime
+
+    DESIRE --> MAPPED{"desired regime has<br/>a mapped strategy?"}:::decision
+
+    MAPPED -- "no / warming up" --> HASCUR{"an assignment<br/>already exists?"}:::decision
+    HASCUR -- yes --> HOLD1(["keep the entering strategy<br/><small>hold-until-flat</small>"]):::hold
+    HASCUR -- no --> NONE([return None<br/><small>skip this tick</small>]):::stop
+
+    MAPPED -- yes --> CUR{"current<br/>assignment?"}:::decision
+    CUR -- none --> ASSIGN["_assign(desired)<br/><small>persist assignment</small>"]:::db
+    CUR -- exists --> SWITCH{"different strategy<br/><b>and</b> position is None?"}:::decision
+    SWITCH -- yes --> LOGSW["log regime switch"]:::regime
+    LOGSW --> ASSIGN
+    SWITCH -- "no — position open<br/>or same strategy" --> RET(["return current strategy"]):::hold
+    ASSIGN --> RET
+
+    classDef entry fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef regime fill:#ccfbf1,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef hold fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a

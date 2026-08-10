@@ -1,0 +1,21 @@
+---
+title: ScoreRegimeDetector — weighted feature evidence on a trend ↔ MR axis
+---
+flowchart LR
+    BARS[("bars")]:::data --> F1["hurst"]:::feature
+    BARS --> F2["cusum"]:::feature
+    BARS --> F3["vol_clustering"]:::feature
+    BARS --> F4["wasserstein"]:::feature
+
+    F1 & F2 & F3 & F4 ==> W["weighted score<br/><small>trend ↔ mean-reversion axis</small>"]:::regime
+    W --> ATT["attenuate by stability<br/><small>change-detection evidence</small>"]:::regime
+    ATT ==> OUT(["RegimeAssessment<br/><small>trending | mean_reverting</small>"]):::done
+
+    REG{{"features are pluggable:<br/>implement RegimeFeature → register in regime/registry.py<br/>→ list under regime.score.features"}}:::note
+    REG -.-> F1
+
+    classDef data fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef feature fill:#f0fdfa,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef regime fill:#ccfbf1,stroke:#0d9488,stroke-width:3px,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef note fill:#fffbeb,stroke:#a16207,stroke-width:1px,color:#0f172a,font-style:italic

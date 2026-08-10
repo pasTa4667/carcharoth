@@ -1,0 +1,24 @@
+---
+title: _reconcile_fills() — idempotent fill recording
+---
+flowchart TD
+    A["orders_repo.find_open_broker_order_ids()"]:::db --> B{"for each id"}:::decision
+    B --> C["executor.get_order(id)"]:::io
+    C -- "error" --> LOG["log + skip this order"]:::warn
+    LOG --> B
+    C -- ok --> D["orders_repo.update_from_broker()"]:::db
+    D --> E{"FILLED <b>and</b><br/>trade not yet recorded?"}:::decision
+    E -- no --> B
+    E -- yes --> F["trades_repo.save_fill()<br/>→ trades.log"]:::done
+    F --> B
+    B -- done --> END([reconciled]):::done
+
+    GUARD{{"the exists_for_order guard makes this idempotent:<br/>a replayed tick never double-records a trade"}}:::note
+    GUARD -.-> E
+
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef io fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a
+    classDef warn fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef note fill:#fffbeb,stroke:#a16207,stroke-width:1px,color:#0f172a,font-style:italic

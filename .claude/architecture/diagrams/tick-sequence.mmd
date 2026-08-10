@@ -1,0 +1,67 @@
+---
+title: One tick — the fixed 5-step sequence (identical live and in backtests)
+---
+%%{init: {'theme':'base','themeVariables':{
+    'primaryColor':'#dbeafe','primaryBorderColor':'#2563eb','primaryTextColor':'#0f172a',
+    'actorBkg':'#dbeafe','actorBorder':'#2563eb','actorTextColor':'#0f172a',
+    'signalColor':'#334155','signalTextColor':'#0f172a',
+    'noteBkgColor':'#fef3c7','noteBorderColor':'#d97706','noteTextColor':'#0f172a',
+    'labelBoxBkgColor':'#ede9fe','labelBoxBorderColor':'#7c3aed',
+    'sequenceNumberColor':'#ffffff','activationBkgColor':'#c7d2fe'
+}}}%%
+sequenceDiagram
+    autonumber
+    participant SCH as 🕒 Scheduler / BacktestRunner
+    participant ENG as ⚙️ TradingEngine
+    participant EXE as 📤 OrderExecutor
+    participant MD as 📈 MarketDataService
+    participant ACC as 💰 AccountService
+    participant SP as 🔀 StrategyProvider
+    participant RK as 🛡️ RiskManager
+    participant DB as 🗄️ Repositories
+
+    SCH->>+ENG: tick()
+
+    rect rgb(236, 253, 245)
+        Note over ENG,EXE: 0 · Reconcile fills from earlier ticks
+        ENG->>EXE: get_order(open broker ids)
+        EXE-->>ENG: OrderResult (status, fills)
+        ENG->>DB: update_from_broker / save_fill
+    end
+
+    rect rgb(255, 251, 235)
+        Note over ENG,ACC: 1–2 · Gather state
+        ENG->>MD: get_snapshot(symbols, required_bars)
+        MD-->>ENG: MarketSnapshot (bars + quotes)
+        ENG->>ACC: get_account_state()
+        ACC-->>ENG: AccountState (equity, buying power, positions)
+        ENG->>DB: save_snapshot(as_of, state)
+    end
+
+    rect rgb(245, 243, 255)
+        Note over ENG,RK: 3–5 · Decide and act, per symbol
+        loop for each symbol
+            ENG->>SP: resolve(symbol, bars, position, as_of)
+            SP-->>ENG: Strategy | None
+            ENG->>SP: evaluate(symbol, bars, quote, position)
+            SP-->>ENG: Signal (BUY / SELL / HOLD)
+            ENG->>DB: save decision
+
+            alt HOLD or no quote
+                Note right of ENG: nothing to do
+            else actionable
+                ENG->>RK: assess(signal, state, quote)
+                RK-->>ENG: RiskDecision (approved, qty)
+                alt approved
+                    ENG->>ENG: clear conflicting open orders
+                    ENG->>EXE: submit(OrderRequest)
+                    EXE-->>ENG: OrderResult (ACCEPTED)
+                    ENG->>DB: save_submitted
+                else rejected
+                    Note right of RK: decision persisted,<br/>no order
+                end
+            end
+        end
+    end
+
+    ENG-->>-SCH: tick complete

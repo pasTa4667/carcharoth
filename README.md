@@ -1,6 +1,10 @@
+![Carcharoth](assets/banner.png)
+
 # Carcharoth
 
-Algorithmic stock trading bot running against the **Alpaca paper trading API**.
+Algorithmic stock trading bot and research platform. Live trading runs against the **Alpaca
+paper trading API**; backtests, quicktests, and Optuna optimization replay history through the
+same engine (or a stripped-down simulator for quick iteration).
 
 > **Disclaimer:** This bot is wired to a paper trading account. It is a learning/experimentation
 > project, not financial advice. Do not point it at a live account without a serious review.
@@ -15,31 +19,45 @@ them — all trading logic lives inside the individual components.
 Scheduler (1 min, market hours only)
    └─> TradingEngine.tick()
          0. Order Executor   — reconcile fills of open orders   -> trades table, trades.log
-         1. Market Data      — bars + quotes for the watchlist  (Alpaca)
-         2. Account Service  — equity, buying power, positions  (Alpaca, source of truth)
-         3. Strategy Engine  — BUY / SELL / HOLD signal per symbol
+         1. Market Data      — bars + quotes for the watchlist  (Alpaca / sim replay)
+         2. Account Service  — equity, buying power, positions  (Alpaca / sim broker)
+         3. StrategyProvider — resolve Strategy per symbol      (single or regime-driven)
          4. Risk Manager     — approve/reject + position sizing
-         5. Order Executor   — submit approved orders           (Alpaca)
+         5. Order Executor   — submit approved orders           (Alpaca / sim broker)
 ```
+
+When `regime.active` is true, step 3 uses `RegimeStrategyProvider`: a per-symbol regime
+detector picks which registered strategy trades each symbol. Regime is re-assessed on a slower
+interval; open positions stay with the strategy that entered them until flat (hold-until-flat).
 
 Every component is defined by an interface in `src/carcharoth/interfaces/` and wired together in
 exactly one place: `src/carcharoth/main.py` (the composition root). Swapping a component never
 requires changes anywhere else.
 
-| Component | Interface | v1 implementation |
+| Component | Interface | Implementation |
 |---|---|---|
-| Market data | `MarketDataService` | `services/alpaca/market_data.py` |
-| Account/portfolio | `AccountService` | `services/alpaca/account.py` |
-| Strategy | `Strategy` | `strategies/mean_reversion.py` |
+| Market data (live) | `MarketDataService` | `services/alpaca/market_data.py` |
+| Market data (backtest) | `MarketDataService` | `services/backtest/market_data.py` |
+| Account/portfolio (live) | `AccountService` | `services/alpaca/account.py` |
+| Execution (live) | `OrderExecutor` | `services/alpaca/execution.py` |
+| Sim broker (backtest) | `AccountService` + `OrderExecutor` | `services/backtest/broker.py` |
+| Strategy routing | `StrategyProvider` | `engine/strategy_provider.py` |
+| Strategy | `Strategy` | `strategies/mean_reversion.py`, `strategies/ema_vwap.py` |
+| Regime detection | `RegimeDetector` | `regime/score_detector.py`, `regime/hmm/detector.py` |
 | Risk | `RiskManager` | `risk/basic.py` |
-| Execution | `OrderExecutor` | `services/alpaca/execution.py` |
 | Market hours | `MarketClock` | `services/alpaca/clock.py` |
-| Cache (optional) | `Cache` | `services/cache/noop.py` (no-op) |
+| Historical bars | `BarsFetcher` | `services/alpaca/historical.py` |
+| Bars/HMM cache | `ByteStore` | `services/cache/redis_store.py`, `services/cache/bars.py` |
+| Optimization | `ParameterOptimizer` | `services/optuna/optimizer.py` |
 | Persistence | repository ABCs | `persistence/repositories.py` (SQLAlchemy/Postgres) |
 
-Alpaca is the **source of truth** for live account state; PostgreSQL stores our own history:
-`trades`, `orders`, `positions_snapshot`, `strategy_decisions` (analysis log with indicators as
-JSONB) and `configurations` (the effective config of each run).
+Alpaca is the **source of truth** for live account state. PostgreSQL stores run-scoped history:
+every live session, backtest, or quicktest creates a row in `runs`; all other tables reference
+it via `run_id` (cascade delete via `carcharoth delete-run`).
+
+Core tables: `trades`, `orders`, `positions_snapshot`, `strategy_decisions` (signals +
+indicators as JSONB), `equity_snapshots`, `round_trips` (FIFO closed positions with MAE/MFE),
+`backtest_metrics`, `configurations`, `regime_evaluations`, `strategy_assignments`.
 
 ## Setup
 
@@ -52,28 +70,103 @@ uv sync
 # 2. Configure secrets — fill in your Alpaca paper API key + secret
 cp .env.example .env
 
-# 3. Start PostgreSQL (+ Grafana)
+# 3. Start PostgreSQL, Redis, and Grafana (and optionally the app container)
 docker compose up -d
 
 # 4. Create the schema
 uv run alembic upgrade head
 
 # 5. Run the bot
-uv run python -m carcharoth
+uv run carcharoth          # same as `uv run carcharoth run`
 ```
 
 The bot ticks every minute while the market is open (checked via Alpaca's market clock), sleeps
 while it is closed, and shuts down cleanly on Ctrl-C / SIGTERM.
 
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `carcharoth` / `carcharoth run` | Live paper trading |
+| `carcharoth backtest` | Replay history through the full engine (regime + risk) |
+| `carcharoth quicktest` | Isolated strategy test — no engine, regime, or risk |
+| `carcharoth optimize` | Optuna parameter search over backtests |
+| `carcharoth analyze --run-id <uuid>` | Recompute metrics for a run |
+| `carcharoth delete-run --run-id \| --all-backtests \| --all-quicktests` | Delete a run and all data |
+| `carcharoth cache stats` / `cache clear [--bars\|--hmm]` | Inspect or clear the Redis cache |
+
+Also works: `uv run python -m carcharoth`.
+
 ## Configuration
 
-- **Secrets** (`.env`, gitignored): Alpaca key/secret, database URL, Grafana credentials. See `.env.example`.
-- **Everything else** (`config/config.yaml`): watchlist symbols, tick interval, bar timeframe,
-  strategy name + parameters, risk limits. Validated with pydantic at startup.
+- **Secrets** (`.env`, gitignored): Alpaca key/secret, database URL, optional `REDIS_URL` and
+  `OPTUNA_DATABASE_URL`, Grafana credentials. See `.env.example`.
+- **Runtime** (`config/config.yaml`): watchlist, engine tick interval, keyed `strategies:` block
+  (each with `active` + `params`, including per-strategy `timeframe_minutes`), `regime:`,
+  `backtest:` simulation params, `cache:` toggles, named `objectives:`, and `risk:` limits.
+  Validated with pydantic at startup.
+- **Optimization** (`config/optimize.yaml`): study settings, backtest window, search space
+  (dot-paths into `config.yaml`), constraints, objective name.
+- **Quicktest** (`config/quicktest.yaml`): symbols, date window, strategy name + params, per-symbol
+  capital, position sizing, spread/slippage, objective name.
+
+### Regime detection
+
+Configured under `regime:` in `config/config.yaml`. Set `regime.active: true` to enable
+regime-driven strategy routing; set it to `false` and mark one strategy `active: true` for
+single-strategy mode.
+
+Two detectors (`regime.detector: score | hmm`):
+
+- **Score** — weighted evidence features (hurst, vol clustering, CUSUM, Wasserstein) on a
+  trending ↔ mean-reverting axis. Emits `trending`, `mean_reverting`.
+- **HMM** — per-symbol Gaussian HMM (hmmlearn) over log return, rolling log-volatility,
+  EMA-distance, and ADX. Emits `trending_up`, `trending_down`, `range_bound`, `high_volatility`
+  with posterior probabilities; uses `min_confidence` to avoid noisy switches.
+
+Map regimes to strategies under `regime.regimes`. Unmapped regimes do not open new positions.
+Implementation lives in `src/carcharoth/regime/`.
+
+## Research workflow
+
+Typical iteration loop:
+
+```bash
+# 1. Fast signal check — one strategy, no regime/risk, per-symbol capital
+uv run carcharoth quicktest
+
+# 2. Full engine replay with regime detection and risk manager
+uv run carcharoth backtest --start 2025-01-01 --end 2025-06-30
+# omit --start/--end to use defaults from config/optimize.yaml
+
+# 3. Parameter search (each trial is a persisted backtest run)
+uv run carcharoth optimize --n-trials 20 --workers 2
+
+# 4. Inspect results
+uv run carcharoth analyze --run-id <uuid>
+open http://localhost:3333   # Backtest Results dashboard
+```
+
+**Backtest** runs the same `TradingEngine` tick loop against simulated market data and a sim
+broker. By default it skips high-volume tables (`strategy_decisions`, `positions_snapshot`,
+`regime_evaluations`); pass `--verbose-db` to persist them. Summary YAML:
+`logs/backtests/<run_id>.yaml`.
+
+**Quicktest** bypasses the engine entirely: bars go straight into one strategy with fixed
+position sizing and per-symbol independent portfolios, so cash contention does not mask
+per-symbol edge. Summary YAML: `logs/quicktest/<run_id>.yaml`.
+
+**Optimize** uses Optuna; study tables live in a dedicated `optuna` Postgres schema. Search
+space keys are dot-paths into `config.yaml` (see `config/optimize.yaml`). Use `--no-hmm-cache`
+when the study searches HMM parameters. Summary YAML: `logs/optimize/<study_name>.yaml`.
+
+Redis caches historical Alpaca bars and fitted HMM models for backtest/optimize runs. Live
+paper trading never uses the cache. Clear it after data or model changes:
+`uv run carcharoth cache clear`.
 
 ## Logs
 
-Written to `logs/` (rotating, 10 MB × 5):
+Rotating application logs in `logs/` (10 MB × 5):
 
 | File | Content |
 |---|---|
@@ -82,13 +175,16 @@ Written to `logs/` (rotating, 10 MB × 5):
 | `trades.log` | order submissions and fills |
 | `decisions.log` | every signal + risk verdict incl. indicator values |
 
+Run summaries (backtest, quicktest, optimize) are written as YAML under
+`logs/backtests/`, `logs/quicktest/`, and `logs/optimize/` respectively.
+
 ## Monitoring (Grafana)
 
 Grafana runs as a Docker service and reads trading history from PostgreSQL via SQL panels.
-The datasource and a starter dashboard are provisioned from `grafana/provisioning/`.
+The datasource and dashboards are provisioned from `grafana/provisioning/`.
 
 ```bash
-# start the full stack (app, postgres, grafana)
+# start the full stack (app, postgres, redis, grafana)
 docker compose up -d
 
 # if the postgres volume already existed before grafana was added, create the
@@ -99,9 +195,14 @@ docker compose up -d
 open http://localhost:3333
 ```
 
-Log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`. The provisioned
-dashboard is **Dashboards → Carcharoth → Trading Overview** — positions, PnL, signals, trades,
-and open orders.
+Log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`. Provisioned dashboards
+under **Dashboards → Carcharoth**:
+
+| Dashboard | Use |
+|---|---|
+| Trading Overview | Live paper trading — positions, PnL, signals, trades, regime |
+| Live Analysis | Live session analytics |
+| Backtest Results | Backtest and optimize runs — equity, metrics, round trips |
 
 | `.env` variable | Purpose |
 |---|---|
@@ -126,8 +227,8 @@ If panels show no data but the database has rows, test the datasource under
 **Connections → Data sources → Carcharoth Postgres → Save & test**, then re-run the sync script
 and restart grafana: `docker compose restart grafana`.
 
-Dashboard JSON lives in `grafana/provisioning/dashboards/trading-overview.json`. Edit panels in
-the UI, then export and commit if you want changes versioned.
+Dashboard JSON lives in `grafana/provisioning/dashboards/`. Edit panels in the UI, then export
+and commit if you want changes versioned.
 
 ## Development
 
@@ -146,7 +247,15 @@ payoff of the interface-first design.
 1. Implement the `Strategy` ABC (`interfaces/strategy.py`) in a new module under `strategies/`.
    `evaluate()` must stay pure — no I/O.
 2. Register it in `strategies/registry.py` (one line).
-3. Select it in `config/config.yaml` under `strategy.name` / `strategy.params`.
+3. Add it under `strategies:` in `config/config.yaml` with its params.
+   - Single-strategy mode: set `active: true` on one strategy and `regime.active: false`.
+   - Regime mode: map regimes to it under `regime.regimes` (the `active` flags are ignored).
+
+### Adding a regime feature (score detector)
+
+1. Implement `RegimeFeature` in `regime/features/`.
+2. Register it in `regime/registry.py`.
+3. Add it to `regime.score.features` in `config/config.yaml`.
 
 ### Swapping the broker / data provider
 

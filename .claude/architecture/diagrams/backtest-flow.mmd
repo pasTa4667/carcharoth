@@ -1,0 +1,36 @@
+---
+title: Backtest flow — historical replay through the unchanged engine
+---
+flowchart TB
+    CLI(["carcharoth backtest<br/>--start … --end …"]):::entry
+
+    CLI --> FETCH["fetch_historical_bars()<br/><small>incl. warm-up window</small>"]:::io
+    FETCH <--> CACHE[("bars cache<br/>in-process → Redis<br/><small>gap-filled, cross-run</small>")]:::cache
+
+    FETCH -- bars --> LOOP
+
+    subgraph LOOP["BacktestRunner · one iteration per session bar (no scheduler)"]
+        direction TB
+        ADV["market_data.advance_to(ts)<br/><small>move the simulated 'now'</small>"]:::sim
+        MTM["broker.mark_to_market(ts, closes)<br/><small>reprice positions, roll equity</small>"]:::sim
+        TICK["TradingEngine.tick()<br/><small>unchanged live 5-step sequence</small>"]:::engine
+        ADV --> MTM --> TICK
+    end
+
+    LOOP -- "loop ends" --> REC["final reconcile pass"]:::engine
+    REC --> AN["BacktestAnalyzer<br/><small>metrics + fitness_&lt;name&gt;</small>"]:::analysis
+    AN --> DB[("backtest_metrics<br/><small>run-scoped</small>")]:::db
+
+    SWAP{{"wired in main.py instead of the Alpaca services:<br/>HistoricalMarketDataService · SimulatedBroker"}}:::note
+    SWAP -.-> LOOP
+
+    classDef entry fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+    classDef io fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef cache fill:#cffafe,stroke:#0891b2,stroke-width:2px,color:#0f172a
+    classDef sim fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef engine fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#0f172a
+    classDef analysis fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#0f172a
+    classDef db fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#0f172a
+    classDef note fill:#fffbeb,stroke:#a16207,stroke-width:1px,color:#0f172a,font-style:italic
+
+    style LOOP fill:#f8fafc,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
