@@ -15,10 +15,10 @@ STABLE = [100.0, 101.0, 99.0, 100.0, 101.0, 99.0, 100.0, 101.0, 99.0, 100.0] * 2
 # in the shape it takes live — the dip itself pierces the trend line.
 DIP_IN_UPTREND = [85.0] * 10 + [*STABLE[:-1], 90.0]
 
-# A dip in an uptrend where the last bar closed at the bottom (85) and the
-# current quote is recovering (90). The z-score is improving (less negative
-# than the previous bar's), so all entry filters should pass → BUY.
-DIP_REVERTING = [85.0] * 10 + [*STABLE[:-1], 85.0]
+# A dip in an uptrend that has begun to reverse: prior bar bottomed at 85,
+# last bar closed at 90. With quote=last close, z-score is improving vs the
+# previous bar, so all entry filters should pass → BUY.
+DIP_REVERTING = [85.0] * 10 + [*STABLE[:-2], 85.0, 90.0]
 
 # Long-ago expensive bars keep the trend EMA above the recent rolling mean, so
 # the final dip reads as a continuation of a downtrend.
@@ -26,13 +26,29 @@ DIP_IN_DOWNTREND = [200.0] * 10 + [*STABLE[:-1], 90.0]
 
 
 def make_strategy(**overrides: Any) -> MeanReversionStrategy:
-    """Strategy with filter periods small enough for compact test fixtures."""
+    """Strategy with filter periods small enough for compact test fixtures.
+
+    Advanced production gates are disabled here so unit tests can target one
+    behaviour at a time; individual tests re-enable what they cover.
+    """
     params: dict[str, Any] = {
         "lookback": 20,
         "trend_ema_period": 30,
         "rsi_period": 5,
         "rsi_entry_max": 99.0,
         "atr_period": 5,
+        "er_period": 10,
+        "er_max": 1.0,
+        "vr_window": 10,
+        "vr_max": 10.0,
+        "min_dip_pct": 0.0,
+        "dip_vr_slope": 0.0,
+        "dip_er_slope": 0.0,
+        "reversal_close_pos": 0.0,
+        "reversion_exit_z": -0.5,
+        "exit_er_slope": 0.0,
+        "stop_z": -100.0,
+        "stop_atr_multiplier": 0.0,
     }
     params.update(overrides)
     return MeanReversionStrategy(**params)
@@ -48,7 +64,7 @@ def test_deep_dip_without_position_buys() -> None:
 
 
 def test_reversion_with_position_sells() -> None:
-    strategy = MeanReversionStrategy(lookback=20)
+    strategy = make_strategy(reversion_exit_z=-0.5, exit_er_slope=0.0)
     signal = strategy.evaluate(
         "AAPL", make_bars(STABLE), make_quote(100.0), position=make_position()
     )
@@ -98,7 +114,7 @@ def test_signal_carries_indicators() -> None:
 
 
 def test_stop_loss_triggers_sell() -> None:
-    strategy = make_strategy(atr_stop_multiplier=2.0)
+    strategy = make_strategy(atr_stop_multiplier=2.0, stop_atr_multiplier=2.0, stop_z=-100.0)
     bars = make_bars(STABLE, hl_range=1.0)
     signal = strategy.evaluate("AAPL", bars, make_quote(95.0), position=make_position(price=100.0))
     assert signal.action is SignalAction.SELL
@@ -107,14 +123,14 @@ def test_stop_loss_triggers_sell() -> None:
 
 
 def test_price_above_stop_does_not_trigger_stop() -> None:
-    strategy = make_strategy(atr_stop_multiplier=2.0)
+    strategy = make_strategy(atr_stop_multiplier=2.0, stop_atr_multiplier=2.0, stop_z=-100.0)
     bars = make_bars(STABLE, hl_range=1.0)
     signal = strategy.evaluate("AAPL", bars, make_quote(99.0), position=make_position(price=100.0))
     assert signal.action is SignalAction.HOLD
 
 
 def test_stop_loss_works_with_short_history() -> None:
-    strategy = make_strategy()
+    strategy = make_strategy(atr_stop_multiplier=2.0, stop_atr_multiplier=2.0, stop_z=-100.0)
     bars = make_bars(STABLE[:8], hl_range=1.0)
     signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=make_position(price=100.0))
     assert signal.action is SignalAction.SELL
@@ -207,9 +223,9 @@ def test_worsening_zscore_blocks_entry() -> None:
 
 
 def test_improving_zscore_allows_entry() -> None:
-    # DIP_REVERTING bottomed at 85 (bars[-1]) and is now recovering (quote=90).
-    # The previous z-score (bars[-1].close=85 vs its window) is more negative
-    # than the current z-score (quote=90 vs current window), so entry is allowed.
+    # DIP_REVERTING bottomed at 85 (bars[-2]) and last bar closed at 90.
+    # Previous z-score (85 vs its window) is more negative than current
+    # (quote=90 vs current window), so entry is allowed.
     strategy = make_strategy()
     bars = make_bars(DIP_REVERTING)
     signal = strategy.evaluate("AAPL", bars, make_quote(90.0), position=None)
@@ -218,7 +234,9 @@ def test_improving_zscore_allows_entry() -> None:
 
 
 def test_required_bars_covers_all_periods() -> None:
+    # Default: trend EMA(200) + padding dominates.
     assert MeanReversionStrategy().required_bars().lookback == 205
+    # Test helper: trend EMA(30) + padding; ER/VR windows kept smaller.
     assert make_strategy().required_bars().lookback == 35
 
 

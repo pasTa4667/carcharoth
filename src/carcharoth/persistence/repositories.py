@@ -45,6 +45,7 @@ from carcharoth.persistence.orm import (
     ConfigurationRow,
     EquitySnapshotRow,
     OrderRow,
+    PermutationTestRow,
     PositionSnapshotRow,
     RegimeEvaluationRow,
     RoundTripRow,
@@ -164,6 +165,27 @@ class RoundTripRepository(ABC):
     @abstractmethod
     def save_all(self, run_id: UUID, round_trips: Sequence[RoundTrip]) -> None:
         """Replace round trips for the run (idempotent for re-analysis)."""
+
+
+class PermutationRepository(ABC):
+    """Header row of one permutation test; the high-volume per-permutation
+    rows go through the WriteBuffer bulk path instead."""
+
+    @abstractmethod
+    def create_test(
+        self,
+        run_id: UUID,
+        method: str,
+        params: dict[str, Any],
+        n_permutations: int,
+        seed: int,
+        objective: str,
+        significance: float,
+        observed_score: float,
+        p_value: float,
+        passed: bool,
+        created_at: datetime,
+    ) -> UUID: ...
 
 
 class AnalysisReader(ABC):
@@ -589,6 +611,45 @@ class SqlAlchemyAnalysisReader(AnalysisReader):
                 )
                 for row in rows
             ]
+
+
+class SqlAlchemyPermutationRepository(PermutationRepository):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def create_test(
+        self,
+        run_id: UUID,
+        method: str,
+        params: dict[str, Any],
+        n_permutations: int,
+        seed: int,
+        objective: str,
+        significance: float,
+        observed_score: float,
+        p_value: float,
+        passed: bool,
+        created_at: datetime,
+    ) -> UUID:
+        test_id = uuid4()
+        with self._session_factory.begin() as session:
+            session.add(
+                PermutationTestRow(
+                    test_id=test_id,
+                    run_id=run_id,
+                    method=method,
+                    params=params,
+                    n_permutations=n_permutations,
+                    seed=seed,
+                    objective=objective,
+                    significance=significance,
+                    observed_score=observed_score,
+                    p_value=p_value,
+                    passed=passed,
+                    created_at=created_at,
+                )
+            )
+        return test_id
 
 
 class SqlAlchemyConfigurationRepository(ConfigurationRepository):

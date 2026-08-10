@@ -21,6 +21,7 @@ from carcharoth.domain.models import MetricValue, OptimizationResult
 
 if TYPE_CHECKING:
     from carcharoth.config.quicktest_config import QuickTestConfig
+    from carcharoth.permutation.runner import PermutationTestOutcome
 
 TRADES_LOGGER = "carcharoth.trades"
 DECISIONS_LOGGER = "carcharoth.decisions"
@@ -168,6 +169,52 @@ def write_quicktest_summary(
         summary["fitness"] = fitness
 
     with open(quicktest_dir / f"{run_id}.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def write_permutation_summary(
+    log_dir: Path,
+    started_at: datetime,
+    config: "QuickTestConfig",
+    outcome: "PermutationTestOutcome",
+) -> None:
+    """Write a human-readable YAML summary of a permutation test to
+    ``logs/permutation/{test_id}.yaml`` (mirrors ``write_quicktest_summary``;
+    the baseline run's own summary lives in ``logs/quicktest/{run_id}.yaml``).
+    """
+    permutation_dir = log_dir / "permutation"
+    permutation_dir.mkdir(parents=True, exist_ok=True)
+
+    scores = sorted(outcome.scores)
+    distribution: dict[str, float] = {}
+    if scores:
+        distribution = {
+            "min": scores[0],
+            "median": scores[len(scores) // 2],
+            "max": scores[-1],
+        }
+
+    summary: dict[str, object] = {
+        "test_id": str(outcome.test_id),
+        "run_id": str(outcome.run_id),
+        "date": started_at.isoformat(),
+        "verdict": "PASS" if outcome.passed else "FAIL",
+        "results": {
+            "observed_score": outcome.observed_score,
+            "p_value": outcome.p_value,
+            "significance": outcome.significance,
+            "permuted_scores": distribution,
+        },
+        "permutation": {
+            "method": outcome.method,
+            "n_permutations": outcome.n_permutations,
+            "seed": outcome.seed,
+            "objective": outcome.objective,
+        },
+        "config": config.model_dump(mode="json"),
+    }
+
+    with open(permutation_dir / f"{outcome.test_id}.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 

@@ -1,0 +1,449 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "preload": false,
+  "refresh": "",
+  "schemaVersion": 40,
+  "tags": ["carcharoth"],
+  "time": { "from": "now-1y", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Permutation Tests",
+  "uid": "permutation-tests",
+  "version": 1,
+  "weekStart": "",
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+        "definition": "SELECT test_id::text AS __value, to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | ' || method || ' n=' || n_permutations || ' p=' || round(p_value::numeric, 4) || CASE WHEN passed THEN ' PASS' ELSE ' FAIL' END AS __text FROM permutation_tests ORDER BY created_at DESC",
+        "includeAll": false,
+        "label": "Permutation Test",
+        "multi": false,
+        "name": "test",
+        "options": [],
+        "query": "SELECT test_id::text AS __value, to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | ' || method || ' n=' || n_permutations || ' p=' || round(p_value::numeric, 4) || CASE WHEN passed THEN ' PASS' ELSE ' FAIL' END AS __text FROM permutation_tests ORDER BY created_at DESC",
+        "refresh": 2,
+        "regex": "",
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 1,
+      "title": "Verdict",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            {
+              "options": {
+                "0": { "color": "red", "index": 1, "text": "FAIL" },
+                "1": { "color": "green", "index": 0, "text": "PASS" }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT passed::int AS verdict FROM permutation_tests WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 2,
+      "title": "p-value",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 4,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p_value FROM permutation_tests WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 3,
+      "title": "Observed Score",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 4,
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT observed_score FROM permutation_tests WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 4,
+      "title": "Permuted Score Percentile of Observed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 1,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 95 }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT 100.0 * count(*) FILTER (WHERE r.score < t.observed_score) / count(*) AS percentile FROM permutation_results r JOIN permutation_tests t ON t.test_id = r.test_id WHERE t.test_id::text = '${test}' GROUP BY t.observed_score",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 5,
+      "title": "Method",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*/", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT method FROM permutation_tests WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 6,
+      "title": "Permutations",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT n_permutations FROM permutation_tests WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 7,
+      "title": "Score Distribution (observed score in test selector / stat above)",
+      "type": "histogram",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "bucketCount": 40,
+        "combine": false,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT score FROM permutation_results WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 8,
+      "title": "Permutation Total Return Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1
+          },
+          "mappings": [],
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "bucketCount": 40,
+        "combine": false,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT total_return FROM permutation_results WHERE test_id::text = '${test}'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 9,
+      "title": "Permutation Results",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "decimals": 4,
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "score" }]
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT permutation_index, ROUND(score::numeric, 4) AS score, ROUND(total_return::numeric, 4) AS total_return, ROUND(max_drawdown::numeric, 4) AS max_drawdown, ROUND(sharpe::numeric, 2) AS sharpe, ROUND(profit_factor::numeric, 2) AS profit_factor, num_round_trips, ROUND(final_equity::numeric, 2) AS final_equity FROM permutation_results WHERE test_id::text = '${test}' ORDER BY permutation_index",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "id": 10,
+      "title": "All Permutation Tests",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 13 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "passed" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "false": { "color": "red", "index": 1, "text": "FAIL" },
+                      "true": { "color": "green", "index": 0, "text": "PASS" }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT to_char(t.created_at, 'YYYY-MM-DD HH24:MI') AS created, t.method, t.objective, t.n_permutations AS n, ROUND(t.observed_score::numeric, 4) AS observed_score, ROUND(t.p_value::numeric, 4) AS p_value, t.passed, t.run_id::text AS baseline_run FROM permutation_tests t ORDER BY t.created_at DESC",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

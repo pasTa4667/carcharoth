@@ -59,6 +59,51 @@ class QuickTestOutcome:
     metrics: list[MetricValue]
 
 
+def fetch_quicktest_bars(
+    config: QuickTestConfig, fetch_bars: BarsFetcher
+) -> dict[str, list[Bar]]:
+    """Fetch the run's bars once (warm-up included) so callers — e.g. the
+    permutation runner — can reuse them across many simulations."""
+    strategy = build_strategy(config.strategy.name, config.strategy.params)
+    spec = strategy.required_bars()
+    return fetch_bars(
+        config.symbols,
+        spec.timeframe,
+        config.start_dt - warmup_window(spec),
+        config.end_exclusive_dt,
+    )
+
+
+def simulation_settings(config: QuickTestConfig) -> SimulationSettings:
+    return SimulationSettings(
+        capital=config.capital,
+        position_size_pct=config.position_size_pct,
+        spread_pct=config.spread_pct,
+        slippage_pct=config.slippage_pct,
+    )
+
+
+def simulate_and_analyze(
+    config: QuickTestConfig,
+    objectives: Mapping[str, ObjectiveConfig],
+    bars: Mapping[str, list[Bar]],
+) -> tuple[QuickTestResult, list[RoundTrip], list[MetricValue]]:
+    """The pure in-memory core of one quick test over pre-fetched bars:
+    simulate every symbol independently (fresh strategy — strategies are
+    stateful), then compute round trips and metrics. No I/O."""
+    strategy = build_strategy(config.strategy.name, config.strategy.params)
+    start, end_exclusive = config.start_dt, config.end_exclusive_dt
+    settings = simulation_settings(config)
+    result = QuickTestResult(capital_per_symbol=config.capital)
+    for symbol in config.symbols:
+        result.symbols[symbol] = simulate_symbol(
+            strategy, symbol, bars.get(symbol, []), start, end_exclusive, settings
+        )
+    round_trips = analyze_round_trips(result, config.strategy.name)
+    metrics = compute_quicktest_metrics(result, round_trips, objectives)
+    return result, round_trips, metrics
+
+
 def run_quicktest_once(
     config: QuickTestConfig,
     objectives: Mapping[str, ObjectiveConfig],
@@ -68,15 +113,14 @@ def run_quicktest_once(
     round_trips_repo: RoundTripRepository,
     metrics_repo: BacktestMetricsRepository,
     bars_transform: BarsTransform | None = None,
+    bars: dict[str, list[Bar]] | None = None,
 ) -> QuickTestOutcome:
-    """One quick test: fetch, simulate all symbols independently, compute
-    metrics in memory, then persist everything in a single end-of-run batch."""
+    """One quick test: fetch (unless ``bars`` is given), simulate all symbols
+    independently, compute metrics in memory, then persist everything in a
+    single end-of-run batch."""
     started_at = datetime.now(UTC)
-    strategy = build_strategy(config.strategy.name, config.strategy.params)
-    spec = strategy.required_bars()
-    start, end_exclusive = config.start_dt, config.end_exclusive_dt
-
-    bars = fetch_bars(config.symbols, spec.timeframe, start - warmup_window(spec), end_exclusive)
+    if bars is None:
+        bars = fetch_quicktest_bars(config, fetch_bars)
     if bars_transform is not None:
         bars = bars_transform(bars)
     total_bars = sum(len(symbol_bars) for symbol_bars in bars.values())
@@ -89,20 +133,7 @@ def run_quicktest_once(
         config.end,
     )
 
-    settings = SimulationSettings(
-        capital=config.capital,
-        position_size_pct=config.position_size_pct,
-        spread_pct=config.spread_pct,
-        slippage_pct=config.slippage_pct,
-    )
-    result = QuickTestResult(capital_per_symbol=config.capital)
-    for symbol in config.symbols:
-        result.symbols[symbol] = simulate_symbol(
-            strategy, symbol, bars.get(symbol, []), start, end_exclusive, settings
-        )
-
-    round_trips = analyze_round_trips(result, config.strategy.name)
-    metrics = compute_quicktest_metrics(result, round_trips, objectives)
+    result, round_trips, metrics = simulate_and_analyze(config, objectives, bars)
 
     run_id = persist_quicktest(
         config=config,

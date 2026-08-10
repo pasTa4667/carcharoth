@@ -85,3 +85,19 @@ position_size_pct: 0.10  # buy notional = capital * position_size_pct
 spread_pct: 0.0005          # 0 = frictionless; set >0 to match the full backtest
 slippage_pct: 0.0005
 objective: default       # named objective from config.yaml `objectives:`
+
+# Optional: permutation-test settings, only used with `quicktest --permute`.
+# The quicktest above becomes the baseline; its bars are permuted and
+# re-simulated n times, and the baseline's fitness is compared against the
+# permuted-score distribution (PASS when p_value <= significance). Results
+# are held in memory and written to the database in one batch at the end
+# (tables permutation_tests / permutation_results).
+permutation:
+  method: in_sample_bars # any name from permutation/registry.py
+                         # (`--permute METHOD` overrides)
+  n_permutations: 100    # more permutations -> finer p-value resolution
+  seed: 42               # permutation i uses SeedSequence([seed, i]) - reproducible
+  significance: 0.05     # p-value threshold for PASS/FAIL
+  workers: 0             # parallel processes; 0 = auto (cpu count); `--workers` overrides
+  params: {}             # method-specific knobs
+

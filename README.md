@@ -49,6 +49,7 @@ requires changes anywhere else.
 | Historical bars | `BarsFetcher` | `services/alpaca/historical.py` |
 | Bars/HMM cache | `ByteStore` | `services/cache/redis_store.py`, `services/cache/bars.py` |
 | Optimization | `ParameterOptimizer` | `services/optuna/optimizer.py` |
+| Permutation testing | `PermutationMethod` | `permutation/methods/in_sample_bars.py` |
 | Persistence | repository ABCs | `persistence/repositories.py` (SQLAlchemy/Postgres) |
 
 Alpaca is the **source of truth** for live account state. PostgreSQL stores run-scoped history:
@@ -57,7 +58,9 @@ it via `run_id` (cascade delete via `carcharoth delete-run`).
 
 Core tables: `trades`, `orders`, `positions_snapshot`, `strategy_decisions` (signals +
 indicators as JSONB), `equity_snapshots`, `round_trips` (FIFO closed positions with MAE/MFE),
-`backtest_metrics`, `configurations`, `regime_evaluations`, `strategy_assignments`.
+`backtest_metrics`, `configurations`, `regime_evaluations`, `strategy_assignments`,
+`permutation_tests` + `permutation_results` (permutation-test verdicts and score
+distributions, cascade-deleted with their baseline run).
 
 ## Setup
 
@@ -90,6 +93,7 @@ while it is closed, and shuts down cleanly on Ctrl-C / SIGTERM.
 | `carcharoth` / `carcharoth run` | Live paper trading |
 | `carcharoth backtest` | Replay history through the full engine (regime + risk) |
 | `carcharoth quicktest` | Isolated strategy test — no engine, regime, or risk |
+| `carcharoth quicktest --permute [METHOD] [--workers N]` | Quicktest + permutation test (is the edge real or luck?) |
 | `carcharoth optimize` | Optuna parameter search over backtests |
 | `carcharoth analyze --run-id <uuid>` | Recompute metrics for a run |
 | `carcharoth delete-run --run-id \| --all-backtests \| --all-quicktests` | Delete a run and all data |
@@ -108,7 +112,8 @@ Also works: `uv run python -m carcharoth`.
 - **Optimization** (`config/optimize.yaml`): study settings, backtest window, search space
   (dot-paths into `config.yaml`), constraints, objective name.
 - **Quicktest** (`config/quicktest.yaml`): symbols, date window, strategy name + params, per-symbol
-  capital, position sizing, spread/slippage, objective name.
+  capital, position sizing, spread/slippage, objective name, and an optional `permutation:`
+  section (method, `n_permutations`, `seed`, `significance`, `workers`) used with `--permute`.
 
 ### Regime detection
 
@@ -156,6 +161,17 @@ broker. By default it skips high-volume tables (`strategy_decisions`, `positions
 position sizing and per-symbol independent portfolios, so cash contention does not mask
 per-symbol edge. Summary YAML: `logs/quicktest/<run_id>.yaml`.
 
+**Permutation test** (`carcharoth quicktest --permute [METHOD]`) checks whether the quicktest's
+fitness beats luck: the baseline quicktest runs as usual, then its bars are permuted and
+re-simulated `n_permutations` times in parallel worker processes (in-memory; one batched DB
+write at the very end). The verdict is a right-tailed p-value of the observed score against the
+permuted-score distribution — PASS when `p_value <= significance`. Methods live in
+`src/carcharoth/permutation/methods/` behind the `PermutationMethod` interface and are
+registered in `permutation/registry.py` (currently `in_sample_bars`: shuffles gap + intrabar
+log-returns per symbol, preserving drift and OHLC shape while destroying serial structure).
+Results land in `permutation_tests` / `permutation_results` (Permutation Tests dashboard) and
+a summary YAML in `logs/permutation/<test_id>.yaml`.
+
 **Optimize** uses Optuna; study tables live in a dedicated `optuna` Postgres schema. Search
 space keys are dot-paths into `config.yaml` (see `config/optimize.yaml`). Use `--no-hmm-cache`
 when the study searches HMM parameters. Summary YAML: `logs/optimize/<study_name>.yaml`.
@@ -175,8 +191,8 @@ Rotating application logs in `logs/` (10 MB × 5):
 | `trades.log` | order submissions and fills |
 | `decisions.log` | every signal + risk verdict incl. indicator values |
 
-Run summaries (backtest, quicktest, optimize) are written as YAML under
-`logs/backtests/`, `logs/quicktest/`, and `logs/optimize/` respectively.
+Run summaries (backtest, quicktest, permutation, optimize) are written as YAML under
+`logs/backtests/`, `logs/quicktest/`, `logs/permutation/`, and `logs/optimize/` respectively.
 
 ## Monitoring (Grafana)
 
@@ -203,6 +219,7 @@ under **Dashboards → Carcharoth**:
 | Trading Overview | Live paper trading — positions, PnL, signals, trades, regime |
 | Live Analysis | Live session analytics |
 | Backtest Results | Backtest and optimize runs — equity, metrics, round trips |
+| Permutation Tests | Permutation-test verdicts — p-value, score distribution vs. observed |
 
 | `.env` variable | Purpose |
 |---|---|

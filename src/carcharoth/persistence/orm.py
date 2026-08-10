@@ -208,6 +208,49 @@ class RoundTripRow(Base):
     mfe_pct: Mapped[Decimal | None]
 
 
+class PermutationTestRow(Base):
+    """One permutation test against a baseline run: method, inputs, and the
+    verdict (observed score vs. the permuted-score distribution). This row
+    alone answers "did the strategy beat luck"."""
+
+    __tablename__ = "permutation_tests"
+
+    test_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    #: baseline run (run_type QUICKTEST today; any run type later)
+    run_id: Mapped[uuid.UUID] = _run_id_column()
+    method: Mapped[str]
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    n_permutations: Mapped[int]
+    seed: Mapped[int]
+    objective: Mapped[str]
+    significance: Mapped[float]
+    observed_score: Mapped[float]
+    p_value: Mapped[float]
+    passed: Mapped[bool]
+    created_at: Mapped[datetime]
+
+
+class PermutationResultRow(Base):
+    """One permutation's score + headline performance (Grafana histograms).
+    total_return/max_drawdown are fractions (0.05 = 5%), like backtest_metrics."""
+
+    __tablename__ = "permutation_results"
+    __table_args__ = (UniqueConstraint("test_id", "permutation_index"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    test_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("permutation_tests.test_id", ondelete="CASCADE")
+    )
+    permutation_index: Mapped[int]
+    score: Mapped[float]
+    total_return: Mapped[float | None]
+    max_drawdown: Mapped[float | None]
+    sharpe: Mapped[float | None]
+    profit_factor: Mapped[float | None]
+    num_round_trips: Mapped[int]
+    final_equity: Mapped[float | None]
+
+
 class ConfigurationRow(Base):
     __tablename__ = "configurations"
 

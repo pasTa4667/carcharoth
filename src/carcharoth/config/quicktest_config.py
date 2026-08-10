@@ -12,7 +12,33 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from carcharoth.permutation.registry import PERMUTATION_METHODS
 from carcharoth.strategies.registry import STRATEGIES
+
+
+class PermutationConfig(BaseModel):
+    """Optional `permutation:` section — only used with `quicktest --permute`."""
+
+    #: any name from permutation/registry.py
+    method: str = "in_sample_bars"
+    n_permutations: int = Field(default=100, ge=1)
+    #: master seed; permutation i uses SeedSequence([seed, i]) — reproducible
+    #: independent of worker count
+    seed: int = 42
+    #: p-value threshold: PASS when p_value <= significance
+    significance: float = Field(default=0.05, gt=0, lt=1)
+    #: parallel worker processes; 0 = auto (cpu count)
+    workers: int = Field(default=0, ge=0)
+    #: method-specific knobs, passed to the method factory
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("method")
+    @classmethod
+    def _known_method(cls, name: str) -> str:
+        if name not in PERMUTATION_METHODS:
+            available = ", ".join(sorted(PERMUTATION_METHODS))
+            raise ValueError(f"unknown permutation method {name!r}; available: {available}")
+        return name
 
 
 class QuickTestStrategyConfig(BaseModel):
@@ -44,6 +70,8 @@ class QuickTestConfig(BaseModel):
     slippage_pct: float = Field(default=0.0, ge=0)
     #: named objective from the base config's `objectives:` used for fitness
     objective: str = "default"
+    #: permutation-test settings; only consulted when `--permute` is given
+    permutation: PermutationConfig | None = None
 
     @model_validator(mode="after")
     def _start_before_end(self) -> "QuickTestConfig":

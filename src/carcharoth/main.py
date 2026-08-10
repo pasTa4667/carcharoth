@@ -29,7 +29,7 @@ from carcharoth.analysis.analyzer import BacktestAnalyzer
 from carcharoth.backtest.runner import BacktestRunner
 from carcharoth.config.app_config import AppConfig, RegimeConfig, StrategyConfig, load_config
 from carcharoth.config.optimize_config import OptimizeConfig, load_optimize_config
-from carcharoth.config.quicktest_config import load_quicktest_config
+from carcharoth.config.quicktest_config import PermutationConfig, load_quicktest_config
 from carcharoth.config.settings import Settings
 from carcharoth.domain.models import BacktestResult, OptimizationResult, RunType
 from carcharoth.engine.engine import TradingEngine
@@ -40,10 +40,12 @@ from carcharoth.logging_setup import (
     setup_logging,
     write_backtest_summary,
     write_optimize_summary,
+    write_permutation_summary,
     write_quicktest_summary,
 )
 from carcharoth.optimize.bars_cache import BarsCache
 from carcharoth.optimize.overrides import validate_override_paths
+from carcharoth.permutation.runner import run_permutation_test
 from carcharoth.persistence.buffered import (
     BufferedEquityOnlyRepository,
     BufferedPositionSnapshotRepository,
@@ -62,6 +64,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyBacktestMetricsRepository,
     SqlAlchemyConfigurationRepository,
     SqlAlchemyOrderRepository,
+    SqlAlchemyPermutationRepository,
     SqlAlchemyPositionSnapshotRepository,
     SqlAlchemyRegimeEvaluationRepository,
     SqlAlchemyRoundTripRepository,
@@ -744,11 +747,34 @@ def _parse_date(value: str) -> datetime:
         raise argparse.ArgumentTypeError(f"invalid date {value!r}, expected YYYY-MM-DD") from exc
 
 
-def _run_quicktest(base_config_path: Path, quicktest_config_path: Path) -> None:
+def _effective_permutation_config(
+    config_section: PermutationConfig | None, method_override: str, workers: int | None
+) -> PermutationConfig:
+    """The `permutation:` YAML section (or defaults when absent) with CLI
+    overrides applied: `--permute METHOD` picks the method, `--workers N` the
+    process count. Overrides are validated like the YAML section."""
+    section = config_section or PermutationConfig()
+    updates: dict[str, Any] = {}
+    if method_override:
+        updates["method"] = method_override
+    if workers is not None:
+        updates["workers"] = workers
+    if not updates:
+        return section
+    return PermutationConfig.model_validate({**section.model_dump(), **updates})
+
+
+def _run_quicktest(
+    base_config_path: Path,
+    quicktest_config_path: Path,
+    permute: str | None = None,
+    workers: int | None = None,
+) -> None:
     """Isolated strategy quick test: no engine, no regime, no risk manager.
 
     The base config supplies only the `objectives:` (fitness) and `cache:`
-    sections; everything else comes from the quicktest YAML.
+    sections; everything else comes from the quicktest YAML. With `--permute`
+    the quicktest becomes the baseline of a permutation test.
     """
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     base_config = load_config(base_config_path)
@@ -768,26 +794,47 @@ def _run_quicktest(base_config_path: Path, quicktest_config_path: Path) -> None:
     if bars_store is not None:
         fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
     started_at = datetime.now(UTC)
+    permutation_outcome = None
     try:
-        outcome = run_quicktest_once(
-            config,
-            base_config.objectives,
-            fetch_bars,
-            runs_repo=SqlAlchemyRunRepository(session_factory),
-            flush=sqlalchemy_flush(session_factory),
-            round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
-            metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
-        )
+        if permute is None:
+            outcome = run_quicktest_once(
+                config,
+                base_config.objectives,
+                fetch_bars,
+                runs_repo=SqlAlchemyRunRepository(session_factory),
+                flush=sqlalchemy_flush(session_factory),
+                round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
+                metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
+            )
+        else:
+            permutation = _effective_permutation_config(config.permutation, permute, workers)
+            outcome, permutation_outcome = run_permutation_test(
+                config,
+                permutation,
+                base_config.objectives,
+                fetch_bars,
+                runs_repo=SqlAlchemyRunRepository(session_factory),
+                flush=sqlalchemy_flush(session_factory),
+                round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
+                metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
+                permutation_repo=SqlAlchemyPermutationRepository(session_factory),
+            )
     finally:
         db_engine.dispose()
 
     write_quicktest_summary(LOG_DIR, outcome.run_id, started_at, config, outcome.metrics)
+    if permutation_outcome is not None:
+        write_permutation_summary(LOG_DIR, started_at, config, permutation_outcome)
 
     # Printed (not logged) so the essential result is always visible, even
     # without --verbose (which lowers the console log level to WARNING).
     print("quicktest complete")
     print(f"  run_id:  {outcome.run_id}")
     print(f"  summary: {LOG_DIR / 'quicktest' / f'{outcome.run_id}.yaml'}")
+    if permutation_outcome is not None:
+        print("permutation test complete")
+        print(f"  test_id: {permutation_outcome.test_id}")
+        print(f"  summary: {LOG_DIR / 'permutation' / f'{permutation_outcome.test_id}.yaml'}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -883,6 +930,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="base config YAML path (supplies objectives and cache settings)",
     )
     quicktest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
+    quicktest.add_argument(
+        "--permute",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="METHOD",
+        help="run a permutation test around the quicktest; METHOD overrides "
+        "the config's permutation.method (see permutation/registry.py)",
+    )
+    quicktest.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="permutation worker processes (overrides permutation.workers; 0 = auto)",
+    )
 
     analyze = subparsers.add_parser("analyze", help="recompute metrics for a run")
     analyze.add_argument("--run-id", type=UUID, required=True)
@@ -956,7 +1018,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             no_hmm_cache=args.no_hmm_cache,
         )
     elif args.command == "quicktest":
-        _run_quicktest(args.config, args.quicktest_config)
+        _run_quicktest(args.config, args.quicktest_config, args.permute, args.workers)
     elif args.command == "cache":
         if args.cache_command == "stats":
             _run_cache_stats()
