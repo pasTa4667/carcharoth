@@ -1,0 +1,1 @@
+../../.claude/rules/documentation-sync.md

@@ -16,12 +16,13 @@ import optuna
 from pydantic import ValidationError
 
 from carcharoth.analysis.objective import fitness_metric_name
-from carcharoth.config.app_config import AppConfig, ObjectiveConfig
+from carcharoth.config.app_config import ObjectiveConfig
 from carcharoth.config.optimize_config import OptimizeConfig
+from carcharoth.config.overrides import apply_overrides, validate_override_paths
+from carcharoth.config.run_config import RunConfig
 from carcharoth.domain.models import OptimizationResult
 from carcharoth.interfaces.optimization import BacktestFunc, ParameterOptimizer
 from carcharoth.optimize.constraints import violated_constraints
-from carcharoth.optimize.overrides import apply_overrides, validate_override_paths
 from carcharoth.services.optuna.search_space import suggest_overrides
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ class OptunaOptimizer(ParameterOptimizer):
     def _trial_objective(self, trial: optuna.Trial) -> float:
         overrides = suggest_overrides(trial, self._config.search_space)
         raw = apply_overrides(self._raw_config, overrides)
-        config = AppConfig.model_validate(raw)  # invalid combination -> trial FAILs
+        config = RunConfig.model_validate(raw)  # invalid combination -> trial FAILs
 
         window = self._config.backtest
         result = self._run_backtest(config, window.start_dt, window.end_exclusive_dt, self._symbols)

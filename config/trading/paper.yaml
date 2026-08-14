@@ -1,0 +1,3 @@
+# Protected paper-trading config: `carcharoth run` (default profile).
+# Changes here affect the live paper session — edit deliberately.
+extends: [base, symbols/core51, strategies/mean_reversion]

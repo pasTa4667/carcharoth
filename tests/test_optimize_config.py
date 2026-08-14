@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from carcharoth.config.optimize_config import (
@@ -13,7 +14,6 @@ from carcharoth.config.optimize_config import (
     FloatParam,
     IntParam,
     OptimizeConfig,
-    load_optimize_config,
 )
 
 MINIMAL = {
@@ -45,7 +45,7 @@ search_space:
   strategies.mean_reversion.params.timeframe_minutes: {type: categorical, choices: [5, 15]}
 """
     )
-    config = load_optimize_config(path)
+    config = OptimizeConfig.model_validate(yaml.safe_load(path.read_text()))
     assert config.study.name == "sweep"
     assert config.objective == "growth"
     assert config.constraints[0].metric == "num_trades"
@@ -53,11 +53,6 @@ search_space:
     assert isinstance(entry_z, FloatParam)
     timeframe = config.search_space["strategies.mean_reversion.params.timeframe_minutes"]
     assert isinstance(timeframe, CategoricalParam)
-
-
-def test_shipped_optimize_yaml_is_valid() -> None:
-    config = load_optimize_config(Path("config/optimize.yaml"))
-    assert config.search_space
 
 
 def test_window_datetime_properties() -> None:

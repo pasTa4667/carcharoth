@@ -1,0 +1,26 @@
+# Full mean-reversion search space (9 parameters), the study that produced
+# the current tuned params. search_space is atomic: this layer replaces it
+# wholesale; keys are dot-paths into the resolved config.
+optimization:
+  constraints:
+    - {metric: num_trades, min: 110}
+    - {metric: max_drawdown, max: 0.30}
+  search_space:
+    strategies.mean_reversion.params.entry_z:
+      {type: float, low: -3.0, high: -0.5, step: 0.1}
+    strategies.mean_reversion.params.exit_z:
+      {type: float, low: -0.5, high: 0.5, step: 0.1}
+    strategies.mean_reversion.params.trend_ema_period:
+      {type: categorical, choices: [20, 50, 100, 200]}
+    strategies.mean_reversion.params.rsi_period:
+      {type: categorical, choices: [7, 10, 14, 21]}
+    strategies.mean_reversion.params.atr_period:
+      {type: categorical, choices: [10, 14, 21]}
+    strategies.mean_reversion.params.lookback:
+      {type: int, low: 10, high: 60}
+    strategies.mean_reversion.params.atr_stop_multiplier:
+      {type: float, low: 1.5, high: 5.0}
+    strategies.mean_reversion.params.rsi_entry_max:
+      {type: float, low: 25.0, high: 50.0, step: 5.0}
+    risk.max_position_pct_equity:
+      {type: float, low: 0.05, high: 0.25, log: true}

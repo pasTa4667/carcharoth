@@ -1,0 +1,5 @@
+# Optuna study: `carcharoth optimize` (default profile).
+extends: [base, symbols/core51, strategies/mean_reversion, optimization/mean_reversion_full]
+optimization:
+  study:
+    name: hydra-quant-spta-26

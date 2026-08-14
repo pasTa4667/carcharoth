@@ -20,8 +20,8 @@ from carcharoth.config.app_config import RegimeConfig, RiskConfig
 from carcharoth.domain.models import MetricValue, OptimizationResult
 
 if TYPE_CHECKING:
-    from carcharoth.config.app_config import AppConfig
     from carcharoth.config.quicktest_config import QuickTestConfig
+    from carcharoth.config.run_config import RunConfig
     from carcharoth.permutation.runner import PermutationTestOutcome
 
 TRADES_LOGGER = "carcharoth.trades"
@@ -91,6 +91,8 @@ def write_backtest_summary(
     risk_cfg: RiskConfig,
     strategy_cfgs: dict[str, Any],
     metrics: list[MetricValue],
+    config_hash: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     backtest_dir = log_dir / "backtests"
     backtest_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +123,7 @@ def write_backtest_summary(
         "config": config_block,
         "results": results,
     }
+    _stamp(summary, config_hash, provenance)
     if fitness:
         summary["fitness"] = fitness
 
@@ -134,6 +137,8 @@ def write_quicktest_summary(
     started_at: datetime,
     config: "QuickTestConfig",
     metrics: list[MetricValue],
+    config_hash: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write a human-readable YAML summary of a quick test to
     ``logs/quicktest/{run_id}.yaml`` (mirrors ``write_backtest_summary``).
@@ -166,6 +171,7 @@ def write_quicktest_summary(
         "config": config.model_dump(mode="json"),
         "results": results,
     }
+    _stamp(summary, config_hash, provenance)
     if fitness:
         summary["fitness"] = fitness
 
@@ -176,8 +182,10 @@ def write_quicktest_summary(
 def write_permutation_summary(
     log_dir: Path,
     started_at: datetime,
-    config: "QuickTestConfig | AppConfig",
+    config: "QuickTestConfig | RunConfig",
     outcome: "PermutationTestOutcome",
+    config_hash: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Write a human-readable YAML summary of a permutation test to
     ``logs/permutation/{test_id}.yaml`` (mirrors ``write_quicktest_summary``;
@@ -231,13 +239,32 @@ def write_permutation_summary(
         "objective": outcome.objective,
     }
     summary["config"] = config.model_dump(mode="json")
+    _stamp(summary, config_hash, provenance)
 
     with open(permutation_dir / f"{outcome.test_id}.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
+def _stamp(
+    summary: dict[str, object],
+    config_hash: str | None,
+    provenance: dict[str, Any] | None,
+) -> None:
+    """Reproducibility metadata: the resolved config's content hash plus the
+    profile/layers/overrides that produced it (see loader.ResolvedConfig)."""
+    if config_hash is not None:
+        summary["config_hash"] = config_hash
+    if provenance is not None:
+        summary["provenance"] = provenance
+
+
 def write_optimize_summary(
-    log_dir: Path, finished_at: datetime, objective: str, result: OptimizationResult
+    log_dir: Path,
+    finished_at: datetime,
+    objective: str,
+    result: OptimizationResult,
+    config_hash: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Study-level summary only. Per-trial data lives in Optuna's storage;
     each trial run has its own backtest summary and database rows."""
@@ -261,6 +288,7 @@ def write_optimize_summary(
             "run_id": str(result.best_run_id) if result.best_run_id else None,
             "params": dict(result.best_params),
         }
+    _stamp(summary, config_hash, provenance)
 
     with open(optimize_dir / f"{result.study_name}.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

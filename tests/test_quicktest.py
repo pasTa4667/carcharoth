@@ -8,10 +8,11 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+import yaml
 
 from carcharoth.analysis.metrics import RoundTrip, match_round_trips
 from carcharoth.config.app_config import ObjectiveConfig
-from carcharoth.config.quicktest_config import QuickTestConfig, load_quicktest_config
+from carcharoth.config.quicktest_config import QuickTestConfig
 from carcharoth.domain.models import (
     Bar,
     BarSpec,
@@ -309,7 +310,7 @@ position_size_pct: 0.2
 """
     path = tmp_path / "quicktest.yaml"
     path.write_text(yaml_text)
-    config = load_quicktest_config(path)
+    config = QuickTestConfig.model_validate(yaml.safe_load(path.read_text()))
     assert config.capital == 5_000.0
     assert config.strategy.params == {"entry_z": -1.5}
     assert config.spread_pct == 0.0  # frictionless by default

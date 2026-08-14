@@ -1,0 +1,2 @@
+# Tiny symbol set for fast local iteration (`-p smoke`).
+symbols: ["SPY", "QQQ", "AAPL"]

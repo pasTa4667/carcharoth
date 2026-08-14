@@ -104,22 +104,53 @@ Also works: `uv run python -m carcharoth`.
 
 ## Configuration
 
-- **Secrets** (`.env`, gitignored): Alpaca key/secret, database URL, optional `REDIS_URL` and
-  `OPTUNA_DATABASE_URL`, Grafana credentials. See `.env.example`.
-- **Runtime** (`config/config.yaml`): watchlist, engine tick interval, keyed `strategies:` block
-  (each with `active` + `params`, including per-strategy `timeframe_minutes`), `regime:`,
-  `backtest:` simulation params (plus an optional `backtest.permutation:` section for
-  `backtest --permute`), `cache:` toggles, named `objectives:`, and `risk:` limits.
-  Validated with pydantic at startup.
-- **Optimization** (`config/optimize.yaml`): study settings, backtest window, search space
-  (dot-paths into `config.yaml`), constraints, objective name.
-- **Quicktest** (`config/quicktest.yaml`): symbols, date window, strategy name + params, per-symbol
-  capital, position sizing, spread/slippage, objective name, and an optional `permutation:`
-  section (method, `n_permutations`, `seed`, `significance`, `workers`) used with `--permute`.
+Secrets (`.env`, gitignored): Alpaca key/secret, database URL, optional `REDIS_URL` and
+`OPTUNA_DATABASE_URL`, Grafana credentials. See `.env.example`.
+
+Everything else is one **layered config system**. Every run command resolves a *profile* into a
+single validated `RunConfig` (pydantic, `extra="forbid"`):
+
+```
+config/
+  base.yaml                 # THE structure: every key, with defaults (incl. all strategy params)
+  symbols/                  # symbol universes (core51, megacap, smoke)
+  strategies/               # strategy selection presets (mean_reversion, ema_vwap)
+  optimization/             # Optuna search spaces (atomic: replaced wholesale)
+  profiles/                 # quicktest, backtest, optimization, smoke
+  trading/paper.yaml        # protected paper-trading profile
+```
+
+A profile declares its stack: `extends: [base, symbols/core51, strategies/mean_reversion]`,
+then overrides values. Resolution order: `extends` chain (depth-first, in order) → profile body
+→ CLI `--set path=value`. Merge rules: **dicts merge recursively, lists replace wholesale,
+later layers win**. `base.yaml` owns the key structure — layers may only *override* existing
+values (typos fail with the offending file and path); `null`/`{}` base values are open slots,
+and `optimization.search_space` is replaced wholesale by whichever layer defines it.
+
+Strategy params live **once** in the `strategies:` map; the quicktest and optimizer reference
+them by name, so a quicktest and a backtest of the same strategy always test identical params.
+
+Default profile per command (override with `-p`): `run` → `trading/paper`, `backtest` →
+`backtest`, `quicktest` → `quicktest`, `optimize` → `optimization`.
+
+```bash
+uv run carcharoth quicktest -p smoke                       # swap the whole profile
+uv run carcharoth backtest --set risk.max_open_positions=12
+uv run carcharoth config list                              # profiles, symbol sets, presets
+uv run carcharoth config resolve -p quicktest              # fully merged + validated config
+uv run carcharoth config validate -p backtest [--json]     # exit 1 + errors when invalid
+uv run carcharoth config diff -p smoke --against backtest  # leaf-level diff
+uv run carcharoth config hash -p optimization              # content hash of the resolved config
+uv run carcharoth config schema                            # JSON Schema (for tooling/TUIs)
+```
+
+Every run persists its exact resolved config (`runs.config`) and writes a `config_hash` plus a
+`provenance` block (profile, layers, `--set` overrides) into its summary YAML — any result is
+replayable: `carcharoth config hash -p <profile> [--set ...]` must reproduce the hash.
 
 ### Regime detection
 
-Configured under `regime:` in `config/config.yaml`. Set `regime.active: true` to enable
+Configured under `regime:` in `config/base.yaml`. Set `regime.active: true` to enable
 regime-driven strategy routing; set it to `false` and mark one strategy `active: true` for
 single-strategy mode.
 
@@ -144,7 +175,7 @@ uv run carcharoth quicktest
 
 # 2. Full engine replay with regime detection and risk manager
 uv run carcharoth backtest --start 2025-01-01 --end 2025-06-30
-# omit --start/--end to use defaults from config/optimize.yaml
+# omit --start/--end to use the profile's data window
 
 # 3. Parameter search (each trial is a persisted backtest run)
 uv run carcharoth optimize --n-trials 20 --workers 2
@@ -179,7 +210,7 @@ strategy runs **once**, then its closed round trips are resampled `n_permutation
 the equity path rebuilt from each sample — no re-simulation, so it runs in-process in seconds
 and works on top of **both** commands: `quicktest --permute monte_carlo_trades` and
 `backtest --permute [METHOD]` (backtests support only trade-based methods; settings come from
-the optional `backtest.permutation:` section in `config/config.yaml`). Two sampling modes via
+the optional `backtest.permutation:` section of the resolved config). Two sampling modes via
 `params.sampling`: `resample` (default; bootstrap with replacement — total return, drawdown
 and profit factor all vary: does the edge rest on a few lucky trades?) and `shuffle` (reorder
 without replacement — the same trades, so only path-dependent metrics vary: how lucky was the
@@ -189,8 +220,10 @@ within each distribution, and the probability of profit. Same tables/dashboard/s
 the verdict columns are stored as NULL.
 
 **Optimize** uses Optuna; study tables live in a dedicated `optuna` Postgres schema. Search
-space keys are dot-paths into `config.yaml` (see `config/optimize.yaml`). Use `--no-hmm-cache`
-when the study searches HMM parameters. Summary YAML: `logs/optimize/<study_name>.yaml`.
+space keys are dot-paths into the resolved config (see `config/optimization/*.yaml`). Use
+`--no-hmm-cache` when the study searches HMM parameters. Parallel workers re-resolve the same
+profile + overrides and refuse to start if the config hash no longer matches the parent's.
+Summary YAML: `logs/optimize/<study_name>.yaml`.
 
 Redis caches historical Alpaca bars and fitted HMM models for backtest/optimize runs. Live
 paper trading never uses the cache. Clear it after data or model changes:
@@ -280,7 +313,7 @@ payoff of the interface-first design.
 1. Implement the `Strategy` ABC (`interfaces/strategy.py`) in a new module under `strategies/`.
    `evaluate()` must stay pure — no I/O.
 2. Register it in `strategies/registry.py` (one line).
-3. Add it under `strategies:` in `config/config.yaml` with its params.
+3. Add it under `strategies:` in `config/base.yaml` with its params.
    - Single-strategy mode: set `active: true` on one strategy and `regime.active: false`.
    - Regime mode: map regimes to it under `regime.regimes` (the `active` flags are ignored).
 
@@ -288,7 +321,7 @@ payoff of the interface-first design.
 
 1. Implement `RegimeFeature` in `regime/features/`.
 2. Register it in `regime/registry.py`.
-3. Add it to `regime.score.features` in `config/config.yaml`.
+3. Add it to `regime.score.features` in `config/base.yaml`.
 
 ### Swapping the broker / data provider
 

@@ -1,0 +1,4 @@
+# Full-engine research backtest: `carcharoth backtest` (default profile).
+# Window and simulation params come from base.yaml; override per run with
+# `--start/--end/--symbols` or `--set`.
+extends: [base, symbols/core51, strategies/mean_reversion]

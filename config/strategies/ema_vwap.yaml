@@ -1,0 +1,6 @@
+# Selects ema_vwap as the strategy under test (params in base.yaml).
+strategies:
+  mean_reversion: {active: false}
+  ema_vwap: {active: true}
+quicktest:
+  strategy: ema_vwap

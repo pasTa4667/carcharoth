@@ -1,20 +1,25 @@
-"""Optimization study config (search space, objective reference) from YAML.
+"""Optimization study config (search space, objective reference).
 
 Which parameters are searched is fully config-driven: each search-space key
-is a dot-path into the app config (e.g.
+is a dot-path into the resolved run config (e.g.
 ``strategies.mean_reversion.params.entry_z``), so changing what gets
 optimized never requires a code change.
+
+This model is no longer loaded from its own YAML file; it is derived from
+the resolved layered config via ``RunConfig.optimize_view()`` (the study
+settings and search space live in the ``optimization:`` section, symbols
+and the date window in the shared ``symbols`` / ``data`` sections).
 """
 
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Annotated, Literal
 
-import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+
+from carcharoth.config.strict import StrictModel
 
 
-class StudyConfig(BaseModel):
+class StudyConfig(StrictModel):
     #: studies are resumable: re-running with the same name continues it
     name: str = Field(min_length=1)
     n_trials: int = Field(gt=0)
@@ -26,7 +31,7 @@ class StudyConfig(BaseModel):
     sampler_seed: int | None = None
 
 
-class BacktestWindowConfig(BaseModel):
+class BacktestWindowConfig(StrictModel):
     start: date
     #: inclusive, like the backtest CLI's --end
     end: date
@@ -48,7 +53,7 @@ class BacktestWindowConfig(BaseModel):
         return datetime(self.end.year, self.end.month, self.end.day, tzinfo=UTC) + timedelta(days=1)
 
 
-class ConstraintConfig(BaseModel):
+class ConstraintConfig(StrictModel):
     """Hard constraint on a portfolio-level metric; violations make the
     trial infeasible for the sampler (the run's stored fitness is untouched)."""
 
@@ -63,7 +68,7 @@ class ConstraintConfig(BaseModel):
         return self
 
 
-class IntParam(BaseModel):
+class IntParam(StrictModel):
     type: Literal["int"]
     low: int
     high: int
@@ -76,7 +81,7 @@ class IntParam(BaseModel):
         return self
 
 
-class FloatParam(BaseModel):
+class FloatParam(StrictModel):
     type: Literal["float"]
     low: float
     high: float
@@ -92,7 +97,7 @@ class FloatParam(BaseModel):
         return self
 
 
-class CategoricalParam(BaseModel):
+class CategoricalParam(StrictModel):
     type: Literal["categorical"]
     choices: list[bool | int | float | str] = Field(min_length=2)
 
@@ -100,17 +105,11 @@ class CategoricalParam(BaseModel):
 SearchParam = Annotated[IntParam | FloatParam | CategoricalParam, Field(discriminator="type")]
 
 
-class OptimizeConfig(BaseModel):
+class OptimizeConfig(StrictModel):
     study: StudyConfig
     backtest: BacktestWindowConfig
     #: name of an objective defined in the base config's `objectives:` section
     objective: str = "default"
     constraints: list[ConstraintConfig] = Field(default_factory=list)
-    #: dot-path into the app config -> parameter distribution
+    #: dot-path into the resolved run config -> parameter distribution
     search_space: dict[str, SearchParam] = Field(min_length=1)
-
-
-def load_optimize_config(path: Path) -> OptimizeConfig:
-    with path.open() as f:
-        raw = yaml.safe_load(f)
-    return OptimizeConfig.model_validate(raw)

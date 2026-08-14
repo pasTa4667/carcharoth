@@ -1,0 +1,11 @@
+# The full 51-symbol research watchlist (US equities + ETFs).
+symbols: [
+  "QQQ", "JPM", "SPY",
+  "ABNB", "ADBE", "ADI", "AFRM", "AKAM", "AMKR", "APP", "ASTS", "BBIO",
+  "BKNG", "CART", "COIN", "CRWD", "DASH", "DDOG", "DXCM", "ENTG", "FAST",
+  "FTNT", "GEHC", "GILD", "HOOD", "IBKR", "INSM", "INTU", "KDP", "LITE",
+  "MCHP", "MDLZ", "MNST", "MRNA", "MRVL", "NDAQ", "NTAP", "OKTA", "ON",
+  "ORLY", "PEP",
+  "AMD", "AMZN", "AAPL", "GOOGL", "META", "MSFT", "NVDA", "AVGO", "TSLA",
+  "COST"
+]

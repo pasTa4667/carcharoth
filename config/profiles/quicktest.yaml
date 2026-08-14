@@ -1,0 +1,3 @@
+# Isolated strategy quick test: `carcharoth quicktest` (default profile).
+# Window, quicktest knobs and permutation defaults come from base.yaml.
+extends: [base, symbols/core51, strategies/mean_reversion]

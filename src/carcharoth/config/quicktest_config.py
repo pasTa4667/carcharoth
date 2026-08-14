@@ -1,22 +1,26 @@
-"""Quick-test config (symbols, window, strategy, simulation settings) from YAML.
+"""Quick-test config: the validated shape the quick-test runner consumes.
 
 The quick-test runner is intentionally minimal: one strategy, a symbol list,
 and a time window. Everything else (regime detection, risk management) is
 deliberately absent — see `carcharoth.quicktest`.
+
+This model is no longer loaded from its own YAML file; it is derived from
+the resolved layered config via ``RunConfig.quicktest_view()`` (strategy
+params come from the shared ``strategies`` map, symbols and the date window
+from the shared ``symbols`` / ``data`` sections).
 """
 
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
-import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
+from carcharoth.config.strict import StrictModel
 from carcharoth.permutation.registry import PERMUTATION_METHODS
 from carcharoth.strategies.registry import STRATEGIES
 
 
-class PermutationConfig(BaseModel):
+class PermutationConfig(StrictModel):
     """Optional `permutation:` section — only used with `quicktest --permute`."""
 
     #: any name from permutation/registry.py
@@ -41,7 +45,7 @@ class PermutationConfig(BaseModel):
         return name
 
 
-class QuickTestStrategyConfig(BaseModel):
+class QuickTestStrategyConfig(StrictModel):
     name: str = Field(min_length=1)
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -54,7 +58,7 @@ class QuickTestStrategyConfig(BaseModel):
         return name
 
 
-class QuickTestConfig(BaseModel):
+class QuickTestConfig(StrictModel):
     symbols: list[str] = Field(min_length=1)
     start: date
     #: inclusive, like the backtest CLI's --end
@@ -86,9 +90,3 @@ class QuickTestConfig(BaseModel):
     @property
     def end_exclusive_dt(self) -> datetime:
         return datetime(self.end.year, self.end.month, self.end.day, tzinfo=UTC) + timedelta(days=1)
-
-
-def load_quicktest_config(path: Path) -> QuickTestConfig:
-    with path.open() as f:
-        raw = yaml.safe_load(f)
-    return QuickTestConfig.model_validate(raw)

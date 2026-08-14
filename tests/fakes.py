@@ -6,7 +6,7 @@ from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 from carcharoth.analysis.metrics import RoundTrip
-from carcharoth.config.app_config import AppConfig
+from carcharoth.config.run_config import RunConfig
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
@@ -365,12 +365,12 @@ class FakeBacktestFunc:
 
     def __init__(self, scripted: Sequence[Sequence[MetricValue] | Exception]) -> None:
         self.scripted = list(scripted)
-        self.calls: list[AppConfig] = []
+        self.calls: list[RunConfig] = []
         self.run_ids: list[UUID] = []
 
     def __call__(
         self,
-        config: AppConfig,
+        config: RunConfig,
         start: datetime,
         end_exclusive: datetime,
         symbols: Sequence[str],

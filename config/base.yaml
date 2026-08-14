@@ -1,0 +1,197 @@
+# Carcharoth base layer: THE config structure.
+#
+# Every key that exists is defined here with its default. Layers above
+# (symbols/, strategies/, optimization/, profiles/, trading/) may only
+# OVERRIDE values — adding or removing a key is a deliberate edit of this
+# file. Exceptions (open slots): values that are null or {} here may be
+# filled freely by a layer; `optimization.search_space` is replaced
+# wholesale by whichever layer defines it.
+#
+# Merge rules: dicts merge recursively, lists replace wholesale, later
+# layers win. Secrets (API keys, database URL) live in .env, not here.
+
+# The symbol universe, shared by every run type. Empty here: every profile
+# extends one of the symbols/ layers (lists replace, never concatenate).
+symbols: []
+
+# Shared historical window: backtests, quicktests and optimizer trials all
+# replay this range. Ignored by live paper trading. Override per profile or
+# via `--start/--end`.
+data:
+  start: 2025-01-01        # YYYY-MM-DD (UTC)
+  end: 2025-06-30          # inclusive
+
+engine:
+  tick_interval_seconds: 60
+
+# Strategies are defined ONCE here, keyed by strategy name, each with its
+# params — quicktests, backtests and the optimizer all read from this map.
+# `active` marks the one strategy that trades in single-strategy mode
+# (regime.active: false); under regime-driven mode the `active` flags are
+# ignored. The strategies/ layers select the strategy under test.
+strategies:
+  mean_reversion:
+    active: true
+    params:
+      timeframe_minutes: 5      # bar resolution the strategy evaluates on
+      lookback: 19              # bars used for rolling mean/std
+      entry_z: -1.1             # buy when price is this many std devs below the mean
+      exit_z: -0.5              # sell (exit) once the z-score reverts to/above the mean
+      trend_ema_period: 120     # OPTIMIZED: tightened from 195 (faster trend detection)
+      rsi_period: 19
+      rsi_entry_max: 30.0       # only buy when RSI is below this (oversold confirmation)
+      atr_period: 12
+      atr_stop_multiplier: 3.0  # OPTIMIZED: loosened from 2.14 (maximum ATR multiplier)
+      entry_delay_minutes: 15   # no new entries within this many minutes of the open
+      entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
+      flatten_minutes: 15       # force-exit open positions within this window before close
+  ema_vwap:
+    active: false
+    params:
+      timeframe_minutes: 5            # bar resolution the strategy evaluates on
+      ema_fast: 9
+      ema_slow: 21
+      cross_within_bars: 2            # fast EMA must have crossed above slow within this many bars
+      atr_period: 14
+      atr_stop_multiplier: 1.0        # exit when price < avg_entry - this * ATR
+      atr_take_profit_multiplier: 2.0 # exit when price >= avg_entry + this * ATR
+      entry_delay_minutes: 15         # no new entries within this many minutes of the open
+      entry_cutoff_minutes: 30        # no new entries within this many minutes of the close
+      flatten_minutes: 15             # force-exit open positions within this window before close
+
+# Regime-driven mode: a per-symbol market regime detector decides which of
+# the mapped strategies trades each symbol. Two detector implementations
+# exist, selected via `detector`; each keeps its parameters in its own
+# section. Trading still happens every tick — only the regime re-assessment
+# runs on the selected detector's evaluate_interval_minutes. Switches are
+# hold-until-flat. Regimes without a mapped strategy don't trade.
+regime:
+  active: true
+  detector: hmm              # score | hmm
+  default_regime: null       # regime assumed until the detector has enough history
+
+  # Evidence-based score detector: each feature contributes a direction
+  # (trending <-> mean_reverting) and/or a stability score; the weighted,
+  # stability-attenuated sum picks the regime.
+  score:
+    evaluate_interval_minutes: 5
+    lookback: 400            # 5-min bars the detector analyzes (~5 sessions)
+    winsorize_sigma: 5.0     # clip log returns at this many std devs (overnight gaps)
+    features:
+      hurst:                 # trend persistence: H>0.5 trending, H<0.5 mean-reverting
+        weight: 1.0
+        params: {min_window: 8, scale: 0.2}
+      vol_clustering:        # bursty volatility -> weak mean-reversion evidence
+        weight: 0.5
+        params: {max_lag: 5, window: 150, scale: 0.3}
+      cusum:                 # change detection on standardized returns
+        weight: 1.0
+        params: {drift: 0.5, calm_level: 4.0, alarm_level: 10.0, window: 150}
+      wasserstein:           # distribution shift between recent and reference returns
+        weight: 1.0
+        params: {recent_window: 60, reference_window: 180, calm_level: 0.2, alarm_level: 1.0}
+
+  # Gaussian-HMM detector: a 4-state hidden Markov model per symbol over
+  # [log return, rolling log-volatility, EMA-distance, ADX], states labeled
+  # from the fitted emission means. Decisions use posterior probabilities.
+  hmm:
+    evaluate_interval_minutes: 30  # re-assess the regime every ~30 market minutes
+    n_states: 4
+    training_window: 1560    # bars the model trains on (~20 sessions of 5-min bars)
+    refit_interval_bars: 78  # refit after this many new bars (~1 session)
+    min_confidence: 0.5      # below this top-regime probability, keep previous regime
+    seed: 42                 # base seed; per-symbol seeds are derived deterministically
+    n_restarts: 2            # EM restarts per fit, best log-likelihood wins
+    covariance_type: diag    # diag | full
+    n_iter: 100
+    tol: 1.0e-3
+    min_covar: 1.0e-3
+    winsorize_sigma: 5.0     # clip log returns at this many std devs (overnight gaps)
+    vol_window: 20           # rolling-std window of the volatility feature (bars)
+    ema_period: 50           # EMA-distance feature period
+    adx_period: 14           # ADX feature period
+
+  regimes:                   # regime -> which strategy trades it (params from `strategies`)
+    # hmm regimes; trending_down / high_volatility are intentionally unmapped -> no trading
+    range_bound:
+      strategy: mean_reversion
+    # score-detector regime (used when detector: score)
+    mean_reverting:
+      strategy: mean_reversion
+
+# Simulation parameters used by `carcharoth backtest` (ignored in live mode).
+backtest:
+  initial_capital: 100000.0  # starting cash of the simulated account
+  spread_pct: 0.0005         # synthetic quote spread around the bar close
+  slippage_pct: 0.0005       # fills execute this fraction worse than the quote
+  # Open slot: monte carlo trade analysis, only used with `backtest --permute`.
+  # Only trade-based methods work here (bar methods need engine re-runs), e.g.
+  # permutation: {method: monte_carlo_trades, n_permutations: 1000, seed: 42, params: {}}
+  permutation: null
+
+# Isolated strategy quick test (`carcharoth quicktest`): no engine, no
+# regime, no risk manager; each symbol runs independently with its own
+# capital. `strategy` names an entry in the `strategies` map above — params
+# are never duplicated here.
+quicktest:
+  strategy: mean_reversion
+  capital: 10000           # per symbol (independent portfolios)
+  position_size_pct: 0.10  # buy notional = capital * position_size_pct
+  spread_pct: 0.0005       # 0 = frictionless; >0 matches the full backtest
+  slippage_pct: 0.0005
+  objective: default       # named objective from `objectives:`
+  # Permutation-test settings, only used with `quicktest --permute`.
+  permutation:
+    method: in_sample_bars # any name from permutation/registry.py (`--permute METHOD` overrides)
+    n_permutations: 100    # more permutations -> finer p-value/percentile resolution
+    seed: 42               # permutation i uses SeedSequence([seed, i]) - reproducible
+    significance: 0.05     # p-value threshold for PASS/FAIL (bar methods only)
+    workers: 0             # parallel processes; 0 = auto (cpu count); `--workers` overrides
+    params: {}             # method-specific knobs; monte_carlo_trades:
+                           #   sampling: resample (bootstrap, default) | shuffle (reorder)
+
+# Optimization studies (`carcharoth optimize`, Optuna). The search space is
+# ATOMIC: the layer that defines it (config/optimization/*.yaml) replaces it
+# wholesale; its keys are dot-paths into the resolved config.
+optimization:
+  study:
+    name: default-study    # studies are resumable: same name continues it
+    n_trials: 20
+    workers: 2             # parallel worker processes; trials are split across them
+    sampler_seed: 42       # null for nondeterministic sampling; with workers > 1
+                           # each worker uses seed+index (not reproducible run-to-run)
+  objective: default       # named objective the study maximizes
+  # Hard constraints: a violating trial is reported to the sampler as heavily
+  # penalized (search guidance); the run's stored fitness stays untouched.
+  constraints: []
+  search_space: {}
+
+# Persistent Redis cache for backtest/optimize runs (REDIS_URL in .env;
+# live paper trading never uses it). Runs degrade to no caching, with a
+# warning, when Redis is unreachable.
+cache:
+  enabled: true  # master switch; false behaves exactly as without the cache
+  bars: true     # historical Alpaca bars, gap-filled per (timeframe, symbol)
+  hmm: true      # fitted HMM models; disable (or use --no-hmm-cache) when an
+                 # Optuna study searches HMM params — trials would never hit
+
+# Named fitness definitions: every backtest's analysis computes one score
+# per objective (persisted as metric `fitness_<name>`). The weight's sign
+# encodes direction: positive -> higher is better, negative -> lower.
+objectives:
+  default:
+    weights:
+      sharpe: 1.0
+      total_return: 0.5
+      max_drawdown: -2.0
+    on_missing_metric: penalize  # penalize | zero | fail
+    penalty_score: -1.0e6
+
+risk:
+  max_position_notional: 1000.0   # hard cap per position, in account currency
+  max_position_pct_equity: 0.11634802340974812   # per-position cap as fraction of equity
+  max_total_exposure_pct: 0.50    # cap on sum of all position values vs equity
+  max_open_positions: 8
+  buying_power_buffer: 0.95       # only ever use this fraction of buying power
+  slippage_buffer: 0.02           # assume fills up to this much worse than quote
+  max_daily_loss_pct: 0.03        # stop opening positions after this daily drawdown

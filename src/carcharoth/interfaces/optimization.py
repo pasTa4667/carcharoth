@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
 
-    from carcharoth.config.app_config import AppConfig
+    from carcharoth.config.run_config import RunConfig
 
 
 class BarsFetcher(Protocol):
@@ -33,7 +33,7 @@ class BacktestFunc(Protocol):
 
     def __call__(
         self,
-        config: AppConfig,
+        config: RunConfig,
         start: datetime,
         end_exclusive: datetime,
         symbols: Sequence[str],

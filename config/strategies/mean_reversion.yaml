@@ -1,0 +1,8 @@
+# Selects mean_reversion as the strategy under test. The tuned params live
+# in base.yaml `strategies.mean_reversion.params` (single source of truth);
+# override individual params here only for a deliberate variant.
+strategies:
+  mean_reversion: {active: true}
+  ema_vwap: {active: false}
+quicktest:
+  strategy: mean_reversion

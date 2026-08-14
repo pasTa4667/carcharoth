@@ -10,7 +10,8 @@ from carcharoth.services.optuna.optimizer import OptunaOptimizer
 from tests.fakes import FakeBacktestFunc
 
 RAW_CONFIG = {
-    "watchlist": {"symbols": ["AAPL"]},
+    "symbols": ["AAPL"],
+    "data": {"start": "2026-06-01", "end": "2026-06-30"},
     "strategies": {"mean_reversion": {"active": True, "params": {"lookback": 20}}},
     "objectives": {"default": {"weights": {"sharpe": 1.0}}},
 }

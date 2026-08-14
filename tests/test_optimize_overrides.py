@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from carcharoth.optimize.overrides import OverrideError, apply_overrides, validate_override_paths
+from carcharoth.config.overrides import OverrideError, apply_overrides, validate_override_paths
 
 
 def raw_config() -> dict:

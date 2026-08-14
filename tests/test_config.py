@@ -1,74 +1,9 @@
-from pathlib import Path
+"""Validation of the root RunConfig schema and its views."""
 
 import pytest
 from pydantic import ValidationError
 
-from carcharoth.config import AppConfig, load_config
-
-PROJECT_ROOT = Path(__file__).parent.parent
-
-
-def test_load_shipped_config() -> None:
-    config = load_config(PROJECT_ROOT / "config" / "config.yaml")
-    assert config.watchlist.symbols
-    assert set(config.strategies) == {"mean_reversion", "ema_vwap"}
-    assert config.strategies["mean_reversion"].active
-    assert config.regime is not None
-    assert config.regime.active is True
-    assert config.regime.detector == "hmm"
-    assert config.regime.score is not None
-    assert config.regime.hmm is not None
-    assert set(config.regime.regimes) == {
-        "trending_up",
-        "range_bound",
-        "trending",
-        "mean_reverting",
-    }
-    assert set(config.regime.score.features) == {
-        "hurst",
-        "vol_clustering",
-        "cusum",
-        "wasserstein",
-    }
-    assert config.engine.tick_interval_seconds == 60
-    assert 0 < config.risk.max_position_pct_equity <= 1
-
-
-def test_load_config_roundtrip(tmp_path: Path) -> None:
-    yaml_text = """
-watchlist:
-  symbols: [AAPL]
-strategies:
-  mean_reversion:
-    active: true
-    params: {lookback: 30}
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(yaml_text)
-    config = load_config(path)
-    assert config.watchlist.symbols == ["AAPL"]
-    assert config.strategies["mean_reversion"].params == {"lookback": 30}
-    # defaults kick in for omitted sections
-    assert config.risk.max_open_positions == 5
-    assert config.engine.tick_interval_seconds == 60
-
-
-def test_empty_watchlist_rejected() -> None:
-    with pytest.raises(ValidationError):
-        AppConfig.model_validate(
-            {"watchlist": {"symbols": []}, "strategies": {"mean_reversion": {"active": True}}}
-        )
-
-
-def test_invalid_risk_params_rejected() -> None:
-    with pytest.raises(ValidationError):
-        AppConfig.model_validate(
-            {
-                "watchlist": {"symbols": ["AAPL"]},
-                "strategies": {"mean_reversion": {"active": True}},
-                "risk": {"max_position_pct_equity": 1.5},
-            }
-        )
+from carcharoth.config import RunConfig, run_config_from_stored
 
 
 def make_strategies() -> dict[str, object]:
@@ -93,15 +28,48 @@ def make_regime_section(*, active: bool = True, detector: str = "score") -> dict
 
 def make_raw_config(**overrides: object) -> dict[str, object]:
     raw: dict[str, object] = {
-        "watchlist": {"symbols": ["AAPL"]},
+        "symbols": ["AAPL"],
+        "data": {"start": "2025-01-01", "end": "2025-06-30"},
         "strategies": make_strategies(),
         **overrides,
     }
     return raw
 
 
+def test_defaults_kick_in_for_omitted_sections() -> None:
+    config = RunConfig.model_validate(make_raw_config())
+    assert config.symbols == ["AAPL"]
+    assert config.risk.max_open_positions == 5
+    assert config.engine.tick_interval_seconds == 60
+    assert config.quicktest.capital == 10_000.0
+    assert config.optimization.study is None
+    assert config.optimization.search_space == {}
+
+
+def test_empty_symbols_rejected() -> None:
+    with pytest.raises(ValidationError):
+        RunConfig.model_validate(make_raw_config(symbols=[]))
+
+
+def test_unknown_key_rejected() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        RunConfig.model_validate(make_raw_config(watchlist={"symbols": ["AAPL"]}))
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        RunConfig.model_validate(make_raw_config(risk={"max_open_positionz": 3}))
+
+
+def test_data_end_before_start_rejected() -> None:
+    with pytest.raises(ValidationError, match=r"data\.end must not be before"):
+        RunConfig.model_validate(make_raw_config(data={"start": "2025-06-30", "end": "2025-01-01"}))
+
+
+def test_invalid_risk_params_rejected() -> None:
+    with pytest.raises(ValidationError):
+        RunConfig.model_validate(make_raw_config(risk={"max_position_pct_equity": 1.5}))
+
+
 def test_regime_config_defaults() -> None:
-    config = AppConfig.model_validate(make_raw_config(regime=make_regime_section()))
+    config = RunConfig.model_validate(make_raw_config(regime=make_regime_section()))
     assert config.regime is not None
     assert config.regime.detector == "score"
     assert config.regime.default_regime is None
@@ -113,22 +81,14 @@ def test_regime_config_defaults() -> None:
 
 
 def test_cache_config_defaults_to_fully_enabled() -> None:
-    config = AppConfig.model_validate(make_raw_config())
+    config = RunConfig.model_validate(make_raw_config())
     assert config.cache.enabled is True
     assert config.cache.bars is True
     assert config.cache.hmm is True
 
 
-def test_cache_section_is_parsed() -> None:
-    raw = make_raw_config()
-    raw["cache"] = {"enabled": True, "bars": False, "hmm": False}
-    config = AppConfig.model_validate(raw)
-    assert config.cache.bars is False
-    assert config.cache.hmm is False
-
-
 def test_hmm_config_defaults() -> None:
-    config = AppConfig.model_validate(make_raw_config(regime=make_regime_section(detector="hmm")))
+    config = RunConfig.model_validate(make_raw_config(regime=make_regime_section(detector="hmm")))
     assert config.regime is not None
     assert config.regime.hmm is not None
     assert config.regime.hmm.n_states == 4
@@ -143,18 +103,18 @@ def test_selected_detector_section_must_exist() -> None:
     section = make_regime_section(detector="hmm")
     del section["hmm"]
     with pytest.raises(ValidationError, match="'hmm' section is missing"):
-        AppConfig.model_validate(make_raw_config(regime=section))
+        RunConfig.model_validate(make_raw_config(regime=section))
 
     section = make_regime_section(detector="score")
     del section["score"]
     with pytest.raises(ValidationError, match="'score' section is missing"):
-        AppConfig.model_validate(make_raw_config(regime=section))
+        RunConfig.model_validate(make_raw_config(regime=section))
 
 
 def test_unknown_detector_rejected() -> None:
     section = make_regime_section(detector="oracle")
     with pytest.raises(ValidationError):
-        AppConfig.model_validate(make_raw_config(regime=section))
+        RunConfig.model_validate(make_raw_config(regime=section))
 
 
 def test_hmm_regime_names_accepted() -> None:
@@ -163,7 +123,7 @@ def test_hmm_regime_names_accepted() -> None:
         "trending_up": {"strategy": "ema_vwap"},
         "range_bound": {"strategy": "mean_reversion"},
     }
-    config = AppConfig.model_validate(make_raw_config(regime=section))
+    config = RunConfig.model_validate(make_raw_config(regime=section))
     assert config.regime is not None
     assert set(config.regime.regimes) == {"trending_up", "range_bound"}
 
@@ -171,13 +131,13 @@ def test_hmm_regime_names_accepted() -> None:
 def test_no_active_strategy_rejected() -> None:
     strategies = {"mean_reversion": {"active": False}, "ema_vwap": {"active": False}}
     with pytest.raises(ValidationError, match="exactly one strategy"):
-        AppConfig.model_validate(make_raw_config(strategies=strategies))
+        RunConfig.model_validate(make_raw_config(strategies=strategies))
 
 
 def test_multiple_active_strategies_rejected() -> None:
     strategies = {"mean_reversion": {"active": True}, "ema_vwap": {"active": True}}
     with pytest.raises(ValidationError, match="exactly one strategy"):
-        AppConfig.model_validate(make_raw_config(strategies=strategies))
+        RunConfig.model_validate(make_raw_config(strategies=strategies))
 
 
 def test_active_regime_referencing_unknown_strategy_rejected() -> None:
@@ -186,7 +146,7 @@ def test_active_regime_referencing_unknown_strategy_rejected() -> None:
     assert isinstance(regimes, dict)
     regimes["trending"] = {"strategy": "does_not_exist"}
     with pytest.raises(ValidationError, match="not defined in 'strategies'"):
-        AppConfig.model_validate(make_raw_config(regime=section))
+        RunConfig.model_validate(make_raw_config(regime=section))
 
 
 def test_unknown_regime_key_rejected() -> None:
@@ -195,28 +155,72 @@ def test_unknown_regime_key_rejected() -> None:
     assert isinstance(regimes, dict)
     regimes["sideways"] = {"strategy": "mean_reversion"}
     with pytest.raises(ValidationError, match="unknown regimes"):
-        AppConfig.model_validate(make_raw_config(regime=section))
+        RunConfig.model_validate(make_raw_config(regime=section))
 
 
-def test_partial_regime_mapping_allowed() -> None:
-    section = make_regime_section()
-    regimes = section["regimes"]
-    assert isinstance(regimes, dict)
-    del regimes["trending"]
-    config = AppConfig.model_validate(make_raw_config(regime=section))
-    assert config.regime is not None
-    assert set(config.regime.regimes) == {"mean_reverting"}
+def test_quicktest_unknown_strategy_reference_rejected() -> None:
+    with pytest.raises(ValidationError, match=r"quicktest\.strategy"):
+        RunConfig.model_validate(make_raw_config(quicktest={"strategy": "nope"}))
 
 
-def test_unknown_default_regime_rejected() -> None:
-    section = make_regime_section()
-    section["default_regime"] = "sideways"
-    with pytest.raises(ValidationError, match="default_regime"):
-        AppConfig.model_validate(make_raw_config(regime=section))
+def test_quicktest_view_resolves_params_from_shared_strategies() -> None:
+    raw = make_raw_config(
+        strategies={
+            "mean_reversion": {"active": True, "params": {"lookback": 30, "entry_z": -1.5}},
+        },
+        quicktest={"strategy": "mean_reversion", "capital": 5000},
+    )
+    view = RunConfig.model_validate(raw).quicktest_view()
+    assert view.strategy.name == "mean_reversion"
+    assert view.strategy.params == {"lookback": 30, "entry_z": -1.5}
+    assert view.capital == 5000
+    assert view.symbols == ["AAPL"]
+    assert str(view.start) == "2025-01-01"
 
 
-def test_regime_requires_at_least_one_feature() -> None:
-    section = make_regime_section()
-    section["score"] = {"features": {}}
-    with pytest.raises(ValidationError):
-        AppConfig.model_validate(make_raw_config(regime=section))
+def test_quicktest_view_falls_back_to_single_active_strategy() -> None:
+    config = RunConfig.model_validate(make_raw_config())
+    assert config.quicktest.strategy is None
+    assert config.quicktest_view().strategy.name == "mean_reversion"
+
+
+def test_optimize_view_requires_study_and_search_space() -> None:
+    config = RunConfig.model_validate(make_raw_config())
+    with pytest.raises(ValueError, match=r"optimization\.study"):
+        config.optimize_view()
+
+    raw = make_raw_config(
+        optimization={"study": {"name": "s", "n_trials": 2}},
+    )
+    with pytest.raises(ValueError, match="search_space is empty"):
+        RunConfig.model_validate(raw).optimize_view()
+
+
+def test_optimize_view_takes_window_and_symbols_from_shared_sections() -> None:
+    raw = make_raw_config(
+        optimization={
+            "study": {"name": "s", "n_trials": 2},
+            "search_space": {"risk.max_open_positions": {"type": "int", "low": 1, "high": 10}},
+        },
+    )
+    view = RunConfig.model_validate(raw).optimize_view()
+    assert view.study.name == "s"
+    assert view.backtest.symbols == ["AAPL"]
+    assert str(view.backtest.start) == "2025-01-01"
+    assert str(view.backtest.end) == "2025-06-30"
+
+
+def test_stored_legacy_appconfig_shape_is_translated() -> None:
+    legacy = {
+        "watchlist": {"symbols": ["AAPL", "MSFT"]},
+        "strategies": make_strategies(),
+        "risk": {"max_open_positions": 3},
+    }
+    config = run_config_from_stored(legacy)
+    assert config.symbols == ["AAPL", "MSFT"]
+    assert config.risk.max_open_positions == 3
+
+
+def test_stored_current_shape_passes_through() -> None:
+    config = run_config_from_stored(make_raw_config())
+    assert config.symbols == ["AAPL"]

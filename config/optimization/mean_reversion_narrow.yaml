@@ -1,0 +1,12 @@
+# Narrow mean-reversion search space: entry/exit thresholds + lookback only.
+optimization:
+  constraints:
+    - {metric: num_trades, min: 110}
+    - {metric: max_drawdown, max: 0.30}
+  search_space:
+    strategies.mean_reversion.params.entry_z:
+      {type: float, low: -3.0, high: -0.5, step: 0.1}
+    strategies.mean_reversion.params.exit_z:
+      {type: float, low: -0.5, high: 0.5, step: 0.1}
+    strategies.mean_reversion.params.lookback:
+      {type: int, low: 10, high: 60}
