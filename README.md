@@ -102,6 +102,41 @@ while it is closed, and shuts down cleanly on Ctrl-C / SIGTERM.
 
 Also works: `uv run python -m carcharoth`.
 
+## TUI
+
+`tui/` holds a small Rust terminal UI (`carcharoth-tui`) for driving the CLI and the layered
+config. It is a *front-end only*: every action shells out to `uv run carcharoth ...`, so the
+Python side stays the single source of truth for config resolution, validation and hashing.
+
+```bash
+cargo run -p carcharoth-tui     # must be started from the repository root
+```
+
+Four screens, switched with `Tab` / `Shift-Tab` (`F1` shows the full key list, `Ctrl-C` quits):
+
+| Screen | What it does |
+|---|---|
+| Commands | every CLI command under a short name (`run backtest`, `cache clear`, `config diff`), each with a small form; `/` filters, `Enter` opens the form and runs it |
+| Config | the resolved profile as a collapsible tree; edit a single value, drop overrides again |
+| Promote | leaf-level diff from a research profile to `trading/paper`, tick values and promote them |
+| Output | stdout/stderr of the running (or last) command, scrollable, `x` cancels |
+
+Command forms prefill what they can from the resolved profile — the backtest window from
+`data.start`/`data.end`, the study name, trial count and workers from `optimization.study` — and
+the exact command line is shown before it runs. Live paper trading, cache clearing, run deletion
+and promotion ask for confirmation first. Only one command runs at a time.
+
+Config edits are **temporary**: a value edited in the tree becomes a `--set path=value` override
+(validated through `carcharoth config validate --json`, so out-of-range or misspelled paths are
+rejected with the CLI's own error) and is passed to every profile-aware command you run. They
+live in the TUI session only — nothing on disk changes until you promote.
+
+Promotion is the one write: it diffs the source profile (plus temporary overrides) against
+`trading/paper`, and writes the values you tick to `config/generated/paper-promoted.yaml`, the
+last layer of `config/trading/paper.yaml`. Values promoted earlier are kept, the full candidate
+paper config is validated first, and the generated file is replaced atomically — a rejected
+candidate leaves it untouched. The hand-authored `trading/paper.yaml` is never rewritten.
+
 ## Configuration
 
 Secrets (`.env`, gitignored): Alpaca key/secret, database URL, optional `REDIS_URL` and
@@ -118,6 +153,7 @@ config/
   optimization/             # Optuna search spaces (atomic: replaced wholesale)
   profiles/                 # quicktest, backtest, optimization, smoke
   trading/paper.yaml        # protected paper-trading profile
+  generated/                # machine-written layers (TUI config promotion)
 ```
 
 A profile declares its stack: `extends: [base, symbols/core51, strategies/mean_reversion]`,
@@ -303,6 +339,15 @@ uv run pytest              # unit tests (no network, no DB needed)
 uv run ruff check          # lint
 uv run ruff format         # format
 uv run mypy src            # strict type check
+```
+
+The Rust TUI (`tui/`) is a separate cargo workspace member:
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                  # pure unit + rendering tests
+cargo test --workspace -- --ignored     # integration tests that spawn the real CLI
 ```
 
 Tests run entirely against in-memory fakes of the interfaces (`tests/fakes.py`) — this is the

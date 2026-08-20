@@ -1,3 +1,8 @@
 # Protected paper-trading config: `carcharoth run` (default profile).
 # Changes here affect the live paper session — edit deliberately.
-extends: [base, symbols/core51, strategies/mean_reversion]
+#
+# `generated/paper-promoted` is the last layer: values promoted from a
+# research profile by the TUI (see tui/, `carcharoth-tui`). It is machine-
+# written, so hand edits belong in this file (they lose to the layer above
+# only for keys the promotion actually set).
+extends: [base, symbols/core51, strategies/mean_reversion, generated/paper-promoted]
