@@ -1,5 +1,5 @@
 ---
-name: autoresearch-strategy
+name: autoresearch-prompt
 summary: Write a filled Autoresearch prompt.md for a strategy against a fixed quicktest benchmark.
 description: Use when asked to set up Autoresearch, write .auto/prompt.md, autonomously experiment on a trading strategy, find a robust strategy edge, or run strategy autoresearch.
 disable-model-invocation: true
@@ -8,11 +8,11 @@ disable-model-invocation: true
 # Autoresearch: write `.auto/prompt.md`
 
 Autoresearch reads `.auto/prompt.md`. This skill's job is to create that file.
-
-1. Infer or ask for every `<PLACEHOLDER>` in the template below for the strategy and benchmark being studied, unless they can be infered by the strategy_name placeholder.
-2. Write the filled template to `.auto/prompt.md` (create `.auto/` if needed). Write it even though `.auto/` is gitignored.
-3. Replace every placeholder with concrete values. Leave no `<PLACEHOLDER>` tokens in the written file.
-4. Keep this skill free of experiment findings, prior-run metrics, and run logs so it remains reusable.
+1. Ask for the strategy to fill in for `<STRATEGY_NAME>` and the .
+2. Infer from the given strategy or ask for every `<PLACEHOLDER>` in the template below for the strategy and benchmark being studied, unless they can be infered by the strategy_name placeholder.
+3. Write the filled template to `.auto/prompt.md` (create `.auto/` if needed). Write it even though `.auto/` is gitignored.
+4. Replace every placeholder with concrete values. Leave no `<PLACEHOLDER>` tokens in the written file.
+5. Keep this skill free of experiment findings, prior-run metrics, and run logs so it remains reusable.
 
 Do not run the experiment loop here. After `prompt.md` is written, Autoresearch uses that file.
 
