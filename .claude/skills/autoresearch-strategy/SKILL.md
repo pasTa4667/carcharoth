@@ -1,41 +1,48 @@
 ---
 name: autoresearch-strategy
-summary: Run a disciplined autoresearch loop to improve a strategy implementation against a fixed quicktest benchmark.
-description: Use when asked to autonomously experiment on a trading strategy, find a robust strategy edge, or run strategy autoresearch.
+summary: Write a filled Autoresearch prompt.md for a strategy against a fixed quicktest benchmark.
+description: Use when asked to set up Autoresearch, write .auto/prompt.md, autonomously experiment on a trading strategy, find a robust strategy edge, or run strategy autoresearch.
 disable-model-invocation: true
 ---
 
-# Autoresearch: improve a strategy with a robust edge
+# Autoresearch: write `.auto/prompt.md`
 
-> Before starting, replace every `<PLACEHOLDER>` below for the strategy and benchmark being studied. Keep this file free of experiment findings, prior-run metrics, and run logs so it remains reusable.
+Autoresearch reads `.auto/prompt.md`. This skill's job is to create that file.
+
+1. Infer or ask for every `<PLACEHOLDER>` in the template below for the strategy and benchmark being studied, unless they can be infered by the strategy_name placeholder.
+2. Write the filled template to `.auto/prompt.md` (create `.auto/` if needed). Write it even though `.auto/` is gitignored.
+3. Replace every placeholder with concrete values. Leave no `<PLACEHOLDER>` tokens in the written file.
+4. Keep this skill free of experiment findings, prior-run metrics, and run logs so it remains reusable.
+
+Do not run the experiment loop here. After `prompt.md` is written, Autoresearch uses that file.
+
+## Prompt template
+
+Copy the content below into `.auto/prompt.md`, with placeholders filled:
+
+# Autoresearch: improve a strategy with a robust edge
 
 ## Objective
 Redesign the **logic** of `<STRATEGY_NAME>` so it has a stable, positive edge across `<UNIVERSE_DESCRIPTION>`. Optimize for a robust, consistent edge rather than peak profit on one period or symbol.
 
-The workload is `<MEASURE_COMMAND>`: `<WORKLOAD_DESCRIPTION>`. Fills, capital allocation, and metric definitions are fixed by the benchmark configuration. Do not change them during the loop.
+Create any shell scripts needed to measure the strategy. Fills, capital allocation, and metric definitions are fixed by the benchmark configuration. Do not change them during the loop.
 
 Success target:
-- Primary objective: `<PRIMARY_METRIC>` must improve and reach `<PRIMARY_SUCCESS_CRITERION>`.
+- Primary objective: `fitness_default` must improve and reach `<PRIMARY_SUCCESS_CRITERION>`.
 - Robustness: `<ROBUSTNESS_CRITERION>`, such as positive results in each sub-window and broad per-symbol support.
-- Trade/exposure floor: `<MIN_TRADES_OR_EXPOSURE>`.
-- Risk ceiling: `<MAX_DRAWDOWN_OR_RISK_LIMIT>`.
+- Trade/exposure floor: `num_trades` at or above 250.
+- Risk ceiling: `max_drawdown` at or below 0.50.
 
 ## Metrics
-- **Primary:** `<PRIMARY_METRIC>` (higher is better), defined in `<OBJECTIVE_CONFIG_PATH>`.
-- **Secondary constraint:** `<TRADE_OR_EXPOSURE_METRIC>` must remain at or above `<MINIMUM_VALUE>`.
-- **Risk constraint:** `<RISK_METRIC>` must remain at or below `<MAXIMUM_VALUE>`.
-- **Diagnostic metrics:** `<DIAGNOSTIC_METRICS>`, for example Sharpe, total return, drawdown, win rate, profit factor, and per-symbol results.
+- **Primary:** `fitness_default` (higher is better).
+- **Secondary constraint:** `num_trades` must remain at or above 250.
+- **Risk constraint:** `max_drawdown` must remain at or below 0.50.
+- **Diagnostic metrics:** Sharpe, total return, drawdown, win rate, profit factor, and per-symbol results.
 
 Inspect `<RESULTS_PATH>` after promising runs to verify that improvement is broad rather than driven by a small number of symbols, trades, or outliers.
 
 ## How to measure
-Run:
-
-```sh
-<MEASURE_COMMAND>
-```
-
-It must emit machine-readable `METRIC name=value` lines. Record the baseline before making changes. Treat repeated results as comparable only when the data, window, configuration, and command remain fixed.
+Create the shell scripts needed to run the benchmark and capture metrics. Scripts must emit machine-readable `METRIC name=value` lines. Record the baseline before making changes. Treat repeated results as comparable only when the data, window, configuration, and measurement remain fixed.
 
 If the measurement has robustness sub-windows, require all of these to remain healthy:
 - `<SUBWINDOW_METRIC_1>` — `<SUBWINDOW_1_DESCRIPTION>`
@@ -68,7 +75,7 @@ Preserve the strategy interface and configuration compatibility. New parameters 
 1. Read the current implementation, benchmark configuration, and metric definition. Measure and record a baseline.
 2. Form one falsifiable hypothesis about market behavior or a strategy failure mode.
 3. Make one coherent, minimal implementation change that tests that hypothesis.
-4. Run the measurement command and capture all reported metrics.
+4. Run the measurement scripts and capture all reported metrics.
 5. Reject and revert changes that fail the primary metric, constraints, or robustness checks. Keep only improvements that are explainable and robust.
 6. For promising changes, inspect per-symbol results and sub-windows. Check that gains are not concentrated in a few names, a handful of trades, or one sub-period.
 7. Repeat. Do not combine unrelated changes in one experiment; preserve a clean best-known implementation throughout.
