@@ -184,6 +184,18 @@ const QUICKTEST_FIELDS: &[Field] = &[
         "run a permutation test around the quicktest",
     ),
     Field::text(
+        "start",
+        "start date",
+        "--start",
+        "YYYY-MM-DD; overrides data.start",
+    ),
+    Field::text(
+        "end",
+        "end date",
+        "--end",
+        "YYYY-MM-DD, inclusive; overrides data.end",
+    ),
+    Field::text(
         "workers",
         "workers",
         "--workers",
@@ -194,6 +206,18 @@ const QUICKTEST_FIELDS: &[Field] = &[
 
 const OPTIMIZE_FIELDS: &[Field] = &[
     PROFILE_FIELD,
+    Field::text(
+        "start",
+        "start date",
+        "--start",
+        "YYYY-MM-DD; overrides data.start",
+    ),
+    Field::text(
+        "end",
+        "end date",
+        "--end",
+        "YYYY-MM-DD, inclusive; overrides data.end",
+    ),
     Field::text(
         "n-trials",
         "trials",

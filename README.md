@@ -207,14 +207,15 @@ Typical iteration loop:
 
 ```bash
 # 1. Fast signal check — one strategy, no regime/risk, per-symbol capital
-uv run carcharoth quicktest
+uv run carcharoth quicktest --start 2025-01-01 --end 2025-06-30
 
 # 2. Full engine replay with regime detection and risk manager
 uv run carcharoth backtest --start 2025-01-01 --end 2025-06-30
-# omit --start/--end to use the profile's data window
 
 # 3. Parameter search (each trial is a persisted backtest run)
-uv run carcharoth optimize --n-trials 20 --workers 2
+uv run carcharoth optimize --start 2025-01-01 --end 2025-06-30 --n-trials 20 --workers 2
+
+# omit --start/--end anywhere to use the profile's data window
 
 # 4. Inspect results
 uv run carcharoth analyze --run-id <uuid>
@@ -229,6 +230,11 @@ broker. By default it skips high-volume tables (`strategy_decisions`, `positions
 **Quicktest** bypasses the engine entirely: bars go straight into one strategy with fixed
 position sizing and per-symbol independent portfolios, so cash contention does not mask
 per-symbol edge. Summary YAML: `logs/quicktest/<run_id>.yaml`.
+
+**Data window flags** — `backtest`, `quicktest`, and `optimize` all accept `--start YYYY-MM-DD`
+and `--end YYYY-MM-DD` (UTC, `--end` inclusive). They are applied as `data.start` / `data.end`
+config overrides, so they appear in the run's provenance and are exactly replayable. For
+`optimize` the window applies to every trial in the study.
 
 **Permutation test** (`carcharoth quicktest --permute [METHOD]`) checks whether the quicktest's
 fitness beats luck: the baseline quicktest runs as usual, then its bars are permuted and

@@ -1110,6 +1110,22 @@ def _add_profile_args(parser: argparse.ArgumentParser, default_profile: str) -> 
     )
 
 
+def _add_window_args(parser: argparse.ArgumentParser) -> None:
+    """``--start/--end`` sugar for the data window (overrides data.start/data.end)."""
+    parser.add_argument(
+        "--start",
+        type=_parse_date,
+        default=None,
+        help="YYYY-MM-DD (UTC); overrides data.start",
+    )
+    parser.add_argument(
+        "--end",
+        type=_parse_date,
+        default=None,
+        help="YYYY-MM-DD, inclusive; overrides data.end",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="carcharoth", description="Algorithmic trading bot")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1119,18 +1135,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     backtest = subparsers.add_parser("backtest", help="replay historical data through the engine")
     _add_profile_args(backtest, DEFAULT_PROFILES["backtest"])
-    backtest.add_argument(
-        "--start",
-        type=_parse_date,
-        default=None,
-        help="YYYY-MM-DD (UTC); overrides data.start",
-    )
-    backtest.add_argument(
-        "--end",
-        type=_parse_date,
-        default=None,
-        help="YYYY-MM-DD, inclusive; overrides data.end",
-    )
+    _add_window_args(backtest)
     backtest.add_argument(
         "--symbols",
         type=lambda s: s.split(","),
@@ -1165,6 +1170,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "optimize", help="optimize config parameters over backtests (Optuna)"
     )
     _add_profile_args(optimize, DEFAULT_PROFILES["optimize"])
+    _add_window_args(optimize)
     optimize.add_argument(
         "--n-trials", type=int, default=None, help="override optimization.study.n_trials"
     )
@@ -1195,6 +1201,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "quicktest", help="isolated strategy quick test (no engine, no regime, no risk)"
     )
     _add_profile_args(quicktest, DEFAULT_PROFILES["quicktest"])
+    _add_window_args(quicktest)
     quicktest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
     quicktest.add_argument(
         "--permute",
@@ -1278,11 +1285,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         overrides = _parse_set(args.set)
         # CLI sugar flags are implemented as overrides so they show up in
         # the run's provenance and are exactly replayable.
+        if getattr(args, "start", None) is not None:
+            overrides["data.start"] = args.start.date()
+        if getattr(args, "end", None) is not None:
+            overrides["data.end"] = args.end.date()
         if args.command == "backtest":
-            if args.start is not None:
-                overrides["data.start"] = args.start.date()
-            if args.end is not None:
-                overrides["data.end"] = args.end.date()
             if args.symbols is not None:
                 overrides["symbols"] = args.symbols
         elif args.command == "optimize":
