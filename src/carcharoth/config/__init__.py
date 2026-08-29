@@ -4,6 +4,7 @@ from carcharoth.config.app_config import (
     RiskConfig,
     StrategyConfig,
 )
+from carcharoth.config.directional import DirectionalConfig
 from carcharoth.config.loader import (
     CONFIG_DIR,
     ConfigError,
@@ -18,6 +19,7 @@ from carcharoth.config.settings import Settings
 __all__ = [
     "CONFIG_DIR",
     "ConfigError",
+    "DirectionalConfig",
     "EngineConfig",
     "ObjectiveConfig",
     "ResolvedConfig",

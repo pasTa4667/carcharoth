@@ -108,7 +108,7 @@ def test_decision_repository_buffers_full_row() -> None:
                     "timestamp": AS_OF,
                     "symbol": "AAPL",
                     "strategy": "mean_reversion",
-                    "signal": "buy",
+                    "signal": "open_long",
                     "reason": "z below entry",
                     "indicators": {"zscore": -2.5},
                     "risk_approved": True,

@@ -38,8 +38,7 @@ class InSampleBarsPermutation:
         if ctx.simulate is None or ctx.start is None:
             raise ValueError("in_sample_bars needs a bars context (simulate + start)")
         permuted = {
-            symbol: permute_symbol_bars(bars, ctx.start, rng)
-            for symbol, bars in ctx.bars.items()
+            symbol: permute_symbol_bars(bars, ctx.start, rng) for symbol, bars in ctx.bars.items()
         }
         return ctx.simulate(permuted)
 

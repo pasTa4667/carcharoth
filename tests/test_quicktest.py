@@ -25,6 +25,7 @@ from carcharoth.domain.models import (
     SignalAction,
     Timeframe,
     TimeframeUnit,
+    TradeIntent,
 )
 from carcharoth.interfaces.strategy import Strategy
 from carcharoth.persistence.orm import Base, EquitySnapshotRow, TradeRow
@@ -105,6 +106,30 @@ def test_buy_sell_fill_math_and_cash() -> None:
     trips = match_round_trips(result.trades)
     assert len(trips) == 1
     assert trips[0].pnl == pytest.approx((sell_fill - buy_fill) * buy.qty)
+
+
+def test_short_fill_mark_and_cover_math() -> None:
+    settings = SimulationSettings(
+        capital=10_000.0,
+        position_size_pct=0.10,
+        spread_pct=0.0,
+        slippage_pct=0.0,
+    )
+    bars = make_bars([100.0, 90.0, 90.0], start=SESSION_TIME)
+    strategy = scripted(bars, {0: TradeIntent.OPEN_SHORT, 1: TradeIntent.CLOSE_SHORT})
+
+    result = simulate_symbol(strategy, "AAPL", bars, START, END_EXCLUSIVE, settings)
+
+    opened, covered = result.trades
+    assert opened.side is Side.SELL and opened.intent is TradeIntent.OPEN_SHORT
+    assert covered.side is Side.BUY and covered.intent is TradeIntent.CLOSE_SHORT
+    assert opened.qty == pytest.approx(10.0)
+    assert result.equity[-1].equity == pytest.approx(10_100.0)
+    assert strategy.positions[1] is not None
+    assert strategy.positions[1].qty == pytest.approx(-10.0)
+    trips = match_round_trips(result.trades)
+    assert len(trips) == 1
+    assert trips[0].pnl == pytest.approx(100.0)
 
 
 def test_one_position_per_symbol_and_sell_when_flat_ignored() -> None:

@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from carcharoth.domain.models import SignalAction, Timeframe
+from carcharoth.strategies import indicators
 from carcharoth.strategies.mean_reversion import MeanReversionStrategy
 from carcharoth.strategies.registry import build_strategy
 from tests.factories import make_bars, make_position, make_quote
@@ -61,6 +62,36 @@ def test_deep_dip_without_position_buys() -> None:
     assert signal.action is SignalAction.BUY
     assert signal.indicators["zscore"] <= -2.0
     assert "below" in signal.reason
+
+
+def test_positive_dislocation_opens_short_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(indicators, "ema", lambda bars, period: 120.0)
+    monkeypatch.setattr(indicators, "rsi", lambda bars, period: 80.0)
+    prices = [110, 108, 106, 104, 102, 100, 98, 96, 94, 92, 100, 108, 106]
+    strategy = make_strategy(
+        lookback=5,
+        trend_ema_period=5,
+        rsi_period=2,
+        atr_period=2,
+        shorting_enabled=True,
+        short_entry_z=0.5,
+        short_exit_z=0.0,
+        short_rsi_entry_min=70.0,
+        min_rally_pct=0.0,
+    )
+
+    signal = strategy.evaluate("AAPL", make_bars(prices), make_quote(106.0), position=None)
+
+    assert signal.action.value == "open_short"
+    assert signal.indicators["short_score"] >= 0.5
+
+
+def test_short_reversion_covers() -> None:
+    strategy = make_strategy(shorting_enabled=True, short_exit_z=0.5)
+    signal = strategy.evaluate(
+        "AAPL", make_bars(STABLE), make_quote(100.0), position=make_position(qty=-10)
+    )
+    assert signal.action.value == "close_short"
 
 
 def test_reversion_with_position_sells() -> None:

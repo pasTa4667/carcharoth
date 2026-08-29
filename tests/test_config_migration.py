@@ -47,9 +47,15 @@ def test_backtest_profile_matches_legacy_config_yaml() -> None:
 
     assert new.symbols == old["watchlist"]["symbols"]
     assert new.engine == EngineConfig.model_validate(old["engine"])
-    assert new.strategies == {
+    old_strategies = {
         name: StrategyConfig.model_validate(cfg) for name, cfg in old["strategies"].items()
     }
+    assert new.strategies.keys() == old_strategies.keys()
+    for name, old_strategy in old_strategies.items():
+        assert new.strategies[name].active == old_strategy.active
+        assert {
+            key: new.strategies[name].params[key] for key in old_strategy.params
+        } == old_strategy.params
     assert new.regime == RegimeConfig.model_validate(old["regime"])
     assert new.backtest == BacktestConfig.model_validate(old["backtest"])
     assert new.cache == CacheConfig.model_validate(old["cache"])
@@ -69,7 +75,10 @@ def test_paper_profile_matches_legacy_config_yaml() -> None:
 def test_quicktest_profile_matches_legacy_quicktest_yaml() -> None:
     old = QuickTestConfig.model_validate(legacy("quicktest.yaml"))
     new = load_profile("quicktest", config_dir=CONFIG_DIR).config.quicktest_view()
-    assert new == old
+    # New two-sided strategy parameters extend the old long-only parameter
+    # map; all legacy values and non-strategy settings remain unchanged.
+    assert new.model_copy(update={"strategy": old.strategy}) == old
+    assert {key: new.strategy.params[key] for key in old.strategy.params} == old.strategy.params
 
 
 def test_optimization_profile_matches_legacy_optimize_yaml() -> None:

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from carcharoth.domain.models import PositionDirection
 from carcharoth.strategies.filters import AtrBracket, EndOfDayFilter, VolumeFilter
 from tests.factories import make_bars
 
@@ -87,6 +88,17 @@ def test_bracket_take_profit_exits() -> None:
     assert result.passed
     assert "take profit" in result.reason
     assert result.indicators["take_profit_price"] == pytest.approx(104.0)
+
+
+def test_short_bracket_mirrors_stop_and_take_profit() -> None:
+    bracket = AtrBracket(atr_period=5, stop_multiplier=1.0, take_profit_multiplier=2.0)
+    stopped = bracket.check(BRACKET_BARS, 100.0, 103.0, PositionDirection.SHORT)
+    profitable = bracket.check(BRACKET_BARS, 100.0, 95.0, PositionDirection.SHORT)
+
+    assert stopped.passed and "stop loss" in stopped.reason
+    assert stopped.indicators["stop_price"] == pytest.approx(102.0)
+    assert profitable.passed and "take profit" in profitable.reason
+    assert profitable.indicators["take_profit_price"] == pytest.approx(96.0)
 
 
 def test_bracket_inside_holds() -> None:

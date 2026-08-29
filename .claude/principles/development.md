@@ -20,6 +20,11 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
   toggles regime-driven mode. When `regime.active: false` the single `active` strategy trades
   everything; when `true` the detector picks per symbol via `regime.regimes` (which reference
   strategies by name — params still come from `strategies:`)
+- **Directional trading**: `directional.shorting_enabled` is false in the base layer.
+  While flat, the regime-selected strategy family compares normalized long/short setup
+  scores and abstains below `min_entry_score` or within `min_score_margin`. Risk caps gross
+  and short exposure separately. Simulations configure `margin_leverage` and
+  `short_borrow_apr`; Alpaca sell-to-open additionally requires the asset to be shortable.
 - **Regime detectors**: `regime.detector: score | hmm` selects the implementation; each has
   its own nested section (`regime.score:` — lookback, winsorize_sigma, features;
   `regime.hmm:` — training_window, refit_interval_bars, min_confidence, seed, feature
@@ -54,8 +59,8 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
 **Tables:**
 - `runs` — one row per app start or backtest (`run_type` PAPER | BACKTEST); all data tables
   below carry a `run_id` FK with cascade delete
-- `trades` — order fills and execution records
-- `orders` — order submissions and status history
+- `trades` — order fills with broker side, explicit open/close intent and fees
+- `orders` — order submissions/status with explicit open/close intent
 - `positions_snapshot` — point-in-time portfolio state
 - `equity_snapshots` — total equity/cash/buying power per tick (the equity curve)
 - `strategy_decisions` — decision log with JSONB indicator values
@@ -63,8 +68,9 @@ uv run pytest -xvs tests/test_engine.py  # single file with output
 - `regime_evaluations` — market regime classifications (JSONB feature evidence; the HMM
   detector also fills the nullable JSONB `probabilities` column with the full posterior)
 - `strategy_assignments` — which regime → strategy assignment was active
+- `round_trips` — FIFO-matched long/short positions with direction, fees and context
 - `backtest_metrics` — analyzer results per backtest run (key/value rows, optional symbol),
-  including one `fitness_<objective>` row per named objective
+  including long/short attribution and one `fitness_<objective>` row per named objective
 
 **Optuna** (`carcharoth optimize`) keeps its own tables (`studies`, `trials`, ...) in a
 dedicated `optuna` schema of the same Postgres (created automatically; Optuna's internal

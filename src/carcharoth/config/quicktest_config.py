@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
+from carcharoth.config.directional import DirectionalConfig
 from carcharoth.config.strict import StrictModel
 from carcharoth.permutation.registry import PERMUTATION_METHODS
 from carcharoth.strategies.registry import STRATEGIES
@@ -64,6 +65,7 @@ class QuickTestConfig(StrictModel):
     #: inclusive, like the backtest CLI's --end
     end: date
     strategy: QuickTestStrategyConfig
+    directional: DirectionalConfig = DirectionalConfig()
     #: starting capital per symbol (each symbol is simulated independently)
     capital: float = Field(default=10_000.0, gt=0)
     #: buy notional as a fraction of `capital`
@@ -72,6 +74,8 @@ class QuickTestConfig(StrictModel):
     spread_pct: float = Field(default=0.0, ge=0)
     #: fills execute this fraction worse than the quoted side; 0 = frictionless
     slippage_pct: float = Field(default=0.0, ge=0)
+    margin_leverage: float = Field(default=1.0, ge=1.0)
+    short_borrow_apr: float = Field(default=0.0, ge=0)
     #: named objective from the base config's `objectives:` used for fitness
     objective: str = "default"
     #: permutation-test settings; only consulted when `--permute` is given

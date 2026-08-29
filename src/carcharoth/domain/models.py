@@ -27,10 +27,62 @@ class RunType(StrEnum):
     QUICKTEST = "QUICKTEST"
 
 
-class SignalAction(StrEnum):
-    BUY = "buy"
-    SELL = "sell"
+class PositionDirection(StrEnum):
+    LONG = "long"
+    SHORT = "short"
+
+
+class TradeIntent(StrEnum):
+    """Unambiguous trading intent, independent of the broker order side."""
+
+    OPEN_LONG = "open_long"
+    CLOSE_LONG = "close_long"
+    OPEN_SHORT = "open_short"
+    CLOSE_SHORT = "close_short"
     HOLD = "hold"
+
+    # Legacy source aliases for callers/tests written before explicit intent;
+    # their serialized values remain the unambiguous forms above.
+    BUY = OPEN_LONG
+    SELL = CLOSE_LONG
+
+    @classmethod
+    def from_stored(cls, value: str) -> TradeIntent:
+        """Read current intent values and legacy long-only BUY/SELL rows."""
+        if value == "buy":
+            return cls.OPEN_LONG
+        if value == "sell":
+            return cls.CLOSE_LONG
+        return cls(value)
+
+    @property
+    def order_side(self) -> Side | None:
+        if self in (TradeIntent.OPEN_LONG, TradeIntent.CLOSE_SHORT):
+            return Side.BUY
+        if self in (TradeIntent.OPEN_SHORT, TradeIntent.CLOSE_LONG):
+            return Side.SELL
+        return None
+
+    @property
+    def direction(self) -> PositionDirection | None:
+        if self in (TradeIntent.OPEN_LONG, TradeIntent.CLOSE_LONG):
+            return PositionDirection.LONG
+        if self in (TradeIntent.OPEN_SHORT, TradeIntent.CLOSE_SHORT):
+            return PositionDirection.SHORT
+        return None
+
+    @property
+    def opens_position(self) -> bool:
+        return self in (TradeIntent.OPEN_LONG, TradeIntent.OPEN_SHORT)
+
+    @property
+    def closes_position(self) -> bool:
+        return self in (TradeIntent.CLOSE_LONG, TradeIntent.CLOSE_SHORT)
+
+
+# Backwards-compatible import name; the values now describe intent rather
+# than merely a BUY/SELL broker side.
+SignalAction = TradeIntent
 
 
 class OrderStatus(StrEnum):
@@ -132,6 +184,18 @@ class Position:
     unrealized_pnl: float
     current_price: float
 
+    @property
+    def direction(self) -> PositionDirection:
+        if self.qty > 0:
+            return PositionDirection.LONG
+        if self.qty < 0:
+            return PositionDirection.SHORT
+        raise ValueError("an open position cannot have zero quantity")
+
+    @property
+    def abs_qty(self) -> float:
+        return abs(self.qty)
+
 
 @dataclass(frozen=True, slots=True)
 class AccountState:
@@ -146,11 +210,25 @@ class AccountState:
 @dataclass(frozen=True, slots=True)
 class Signal:
     symbol: str
-    action: SignalAction
+    action: TradeIntent
     strategy: str
     reason: str
     indicators: dict[str, float] = field(default_factory=dict)
     timestamp: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EntryCandidate:
+    """One strategy family's comparable opportunity for a direction.
+
+    Scores are heuristic strengths in [0, 1]. The arbiter treats invalid
+    values as ineligible so malformed strategy output can never place an order.
+    """
+
+    direction: PositionDirection
+    score: float
+    reason: str
+    indicators: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,11 +242,18 @@ class RiskDecision:
 @dataclass(frozen=True, slots=True)
 class OrderRequest:
     symbol: str
-    side: Side
+    intent: TradeIntent
     qty: float
     order_type: Literal["market"] = "market"
     time_in_force: Literal["day"] = "day"
     client_order_id: str | None = None
+
+    @property
+    def side(self) -> Side:
+        side = self.intent.order_side
+        if side is None:
+            raise ValueError("a HOLD intent cannot become an order request")
+        return side
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +290,8 @@ class TradeRecord:
     qty: float
     price: float
     timestamp: datetime
+    intent: TradeIntent | None = None
+    fees: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +299,7 @@ class DecisionRecord:
     """A strategy decision row, as read back for round-trip enrichment."""
 
     symbol: str
-    side: Side
+    action: TradeIntent
     timestamp: datetime
     reason: str
     indicators: dict[str, float]
@@ -291,3 +378,4 @@ class OrderResult:
     filled_avg_price: float | None
     submitted_at: datetime
     filled_at: datetime | None
+    fees: float = 0.0

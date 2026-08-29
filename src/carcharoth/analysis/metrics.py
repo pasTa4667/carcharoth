@@ -19,8 +19,10 @@ from carcharoth.domain.models import (
     DecisionRecord,
     EquityPoint,
     MetricValue,
+    PositionDirection,
     PositionSnapshot,
     Side,
+    TradeIntent,
     TradeRecord,
 )
 
@@ -41,6 +43,8 @@ class RoundTrip:
     pnl: float
     opened_at: datetime
     closed_at: datetime
+    direction: PositionDirection = PositionDirection.LONG
+    fees: float = 0.0
     exit_reason: str = ""
     strategy: str = ""
     regime: str | None = None
@@ -57,6 +61,7 @@ class _Lot:
     qty: float
     price: float
     opened_at: datetime
+    fee_per_share: float = 0.0
 
 
 def _find_earlier[T](records: list[T], timestamps: list[datetime], ts: datetime) -> T | None:
@@ -70,66 +75,92 @@ def match_round_trips(
     decisions: Sequence[DecisionRecord] | None = None,
     assignments: Sequence[AssignmentRecord] | None = None,
 ) -> list[RoundTrip]:
-    """FIFO-match sells against buys per symbol. Sells without a matching
-    open lot (e.g. positions predating the run) are skipped.
-
-    When decisions and assignments are provided, each round trip is enriched
-    with the nearest-earlier strategy decision indicators and the regime that
-    was active when the position was opened.
-    """
-    # Build per-symbol decision lookups (sorted by timestamp).
-    buy_decs: dict[str, list[DecisionRecord]] = defaultdict(list)
-    sell_decs: dict[str, list[DecisionRecord]] = defaultdict(list)
+    """FIFO-match explicit long and short opens/closes per symbol."""
+    decisions_by_key: dict[tuple[str, TradeIntent], list[DecisionRecord]] = defaultdict(list)
     if decisions:
-        for d in sorted(decisions, key=lambda d: d.timestamp):
-            if d.side is Side.BUY:
-                buy_decs[d.symbol].append(d)
-            elif d.side is Side.SELL:
-                sell_decs[d.symbol].append(d)
-    buy_ts = {s: [d.timestamp for d in ds] for s, ds in buy_decs.items()}
-    sell_ts = {s: [d.timestamp for d in ds] for s, ds in sell_decs.items()}
+        for decision in sorted(decisions, key=lambda item: item.timestamp):
+            decisions_by_key[(decision.symbol, decision.action)].append(decision)
+    decision_ts = {
+        key: [decision.timestamp for decision in records]
+        for key, records in decisions_by_key.items()
+    }
 
-    # Build per-symbol assignment lookup (sorted by since).
     asgn_by_sym: dict[str, list[AssignmentRecord]] = defaultdict(list)
     if assignments:
-        for a in sorted(assignments, key=lambda a: a.since):
-            asgn_by_sym[a.symbol].append(a)
-    asgn_ts = {s: [a.since for a in al] for s, al in asgn_by_sym.items()}
+        for assignment in sorted(assignments, key=lambda item: item.since):
+            asgn_by_sym[assignment.symbol].append(assignment)
+    asgn_ts = {symbol: [item.since for item in records] for symbol, records in asgn_by_sym.items()}
 
-    lots: dict[str, deque[_Lot]] = defaultdict(deque)
+    lots: dict[tuple[str, PositionDirection], deque[_Lot]] = defaultdict(deque)
     round_trips: list[RoundTrip] = []
     for trade in trades:
-        if trade.side is Side.BUY:
-            lots[trade.symbol].append(_Lot(trade.qty, trade.price, trade.timestamp))
+        intent = trade.intent or (
+            TradeIntent.OPEN_LONG if trade.side is Side.BUY else TradeIntent.CLOSE_LONG
+        )
+        direction = intent.direction
+        if direction is None:
             continue
+        key = (trade.symbol, direction)
+        if intent.opens_position:
+            fee_per_share = trade.fees / trade.qty if trade.qty > 0 else 0.0
+            lots[key].append(_Lot(trade.qty, trade.price, trade.timestamp, fee_per_share))
+            continue
+        if not intent.closes_position:
+            continue
+
         remaining = trade.qty
-        open_lots = lots[trade.symbol]
-        sym = trade.symbol
-        sell_dec = _find_earlier(sell_decs.get(sym, []), sell_ts.get(sym, []), trade.timestamp)
+        open_lots = lots[key]
+        exit_fee_per_share = trade.fees / trade.qty if trade.qty > 0 else 0.0
+        exit_decisions = decisions_by_key.get((trade.symbol, intent), [])
+        exit_decision = _find_earlier(
+            exit_decisions,
+            decision_ts.get((trade.symbol, intent), []),
+            trade.timestamp,
+        )
+        open_intent = (
+            TradeIntent.OPEN_LONG if direction is PositionDirection.LONG else TradeIntent.OPEN_SHORT
+        )
         while remaining > 0 and open_lots:
             lot = open_lots[0]
             matched = min(remaining, lot.qty)
-            buy_dec = _find_earlier(buy_decs.get(sym, []), buy_ts.get(sym, []), lot.opened_at)
-            asgn = _find_earlier(asgn_by_sym.get(sym, []), asgn_ts.get(sym, []), lot.opened_at)
+            entry_decisions = decisions_by_key.get((trade.symbol, open_intent), [])
+            entry_decision = _find_earlier(
+                entry_decisions,
+                decision_ts.get((trade.symbol, open_intent), []),
+                lot.opened_at,
+            )
+            matched_assignment = _find_earlier(
+                asgn_by_sym.get(trade.symbol, []),
+                asgn_ts.get(trade.symbol, []),
+                lot.opened_at,
+            )
+            gross_pnl = (
+                (trade.price - lot.price) * matched
+                if direction is PositionDirection.LONG
+                else (lot.price - trade.price) * matched
+            )
+            fees = (lot.fee_per_share + exit_fee_per_share) * matched
             round_trips.append(
                 RoundTrip(
                     symbol=trade.symbol,
                     qty=matched,
                     entry_price=lot.price,
                     exit_price=trade.price,
-                    pnl=(trade.price - lot.price) * matched,
+                    pnl=gross_pnl - fees,
                     opened_at=lot.opened_at,
                     closed_at=trade.timestamp,
-                    exit_reason=sell_dec.reason if sell_dec else "",
-                    strategy=buy_dec.strategy if buy_dec else "",
-                    regime=asgn.regime if asgn else None,
-                    entry_indicators=dict(buy_dec.indicators) if buy_dec else {},
-                    exit_indicators=dict(sell_dec.indicators) if sell_dec else {},
+                    direction=direction,
+                    fees=fees,
+                    exit_reason=exit_decision.reason if exit_decision else "",
+                    strategy=entry_decision.strategy if entry_decision else "",
+                    regime=matched_assignment.regime if matched_assignment else None,
+                    entry_indicators=(dict(entry_decision.indicators) if entry_decision else {}),
+                    exit_indicators=dict(exit_decision.indicators) if exit_decision else {},
                 )
             )
             lot.qty -= matched
             remaining -= matched
-            if lot.qty == 0:
+            if lot.qty <= 0:
                 open_lots.popleft()
     return round_trips
 
@@ -162,7 +193,7 @@ def enrich_with_excursions(
         if not window:
             result.append(trip)
             continue
-        entry_value = trip.entry_price * trip.qty
+        entry_value = abs(trip.entry_price * trip.qty)
         if entry_value == 0:
             result.append(trip)
             continue
@@ -177,6 +208,8 @@ def enrich_with_excursions(
                 pnl=trip.pnl,
                 opened_at=trip.opened_at,
                 closed_at=trip.closed_at,
+                direction=trip.direction,
+                fees=trip.fees,
                 exit_reason=trip.exit_reason,
                 strategy=trip.strategy,
                 regime=trip.regime,
@@ -202,6 +235,7 @@ def compute_metrics(
     metrics.append(MetricValue("num_trades", float(len(round_trips))))
     if round_trips:
         metrics.extend(_trade_metrics(round_trips))
+        metrics.extend(_direction_metrics(round_trips))
         metrics.extend(_symbol_pnl(round_trips))
     return metrics
 
@@ -273,6 +307,27 @@ def _trade_metrics(round_trips: Sequence[RoundTrip]) -> list[MetricValue]:
         metrics.append(MetricValue("avg_mae", fmean(maes)))
     if mfes:
         metrics.append(MetricValue("avg_mfe", fmean(mfes)))
+    return metrics
+
+
+def _direction_metrics(round_trips: Sequence[RoundTrip]) -> list[MetricValue]:
+    metrics: list[MetricValue] = []
+    for direction in PositionDirection:
+        trips = [trip for trip in round_trips if trip.direction is direction]
+        if not trips:
+            continue
+        prefix = direction.value
+        wins = [trip.pnl for trip in trips if trip.pnl > 0]
+        losses = [trip.pnl for trip in trips if trip.pnl < 0]
+        metrics.extend(
+            [
+                MetricValue(f"{prefix}_num_trades", float(len(trips))),
+                MetricValue(f"{prefix}_pnl", sum(trip.pnl for trip in trips)),
+                MetricValue(f"{prefix}_win_rate", len(wins) / len(trips)),
+            ]
+        )
+        if losses:
+            metrics.append(MetricValue(f"{prefix}_profit_factor", sum(wins) / -sum(losses)))
     return metrics
 
 

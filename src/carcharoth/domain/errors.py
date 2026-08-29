@@ -24,3 +24,7 @@ class BrokerError(ServiceError):
 class OrderConflictError(BrokerError):
     """Broker rejected the order because an opposite-side order is already
     open for the symbol (Alpaca wash-trade protection, code 40310000)."""
+
+
+class ShortUnavailableError(BrokerError):
+    """A sell-to-open cannot proceed because the asset is not shortable."""

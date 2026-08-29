@@ -24,6 +24,11 @@ data:
 engine:
   tick_interval_seconds: 60
 
+directional:
+  shorting_enabled: false    # opt in only after short rules pass research gates
+  min_entry_score: 0.5       # absolute normalized setup-strength threshold
+  min_score_margin: 0.1      # abstain when long/short strengths are too close
+
 # Strategies are defined ONCE here, keyed by strategy name, each with its
 # params — quicktests, backtests and the optimizer all read from this map.
 # `active` marks the one strategy that trades in single-strategy mode
@@ -45,6 +50,12 @@ strategies:
       entry_delay_minutes: 15   # no new entries within this many minutes of the open
       entry_cutoff_minutes: 30  # no new entries within this many minutes of the close
       flatten_minutes: 15       # force-exit open positions within this window before close
+      entry_score_full_z_excess: 1.0
+      short_entry_z: 1.1
+      short_exit_z: 0.5
+      short_stop_z: 2.5
+      short_rsi_entry_min: 70.0
+      min_rally_pct: 0.0043
   ema_vwap:
     active: false
     params:
@@ -58,6 +69,8 @@ strategies:
       entry_delay_minutes: 15         # no new entries within this many minutes of the open
       entry_cutoff_minutes: 30        # no new entries within this many minutes of the close
       flatten_minutes: 15             # force-exit open positions within this window before close
+      ema_score_full_atr: 1.0
+      vwap_score_full_atr: 1.0
 
 # Regime-driven mode: a per-symbol market regime detector decides which of
 # the mapped strategies trades each symbol. Two detector implementations
@@ -122,6 +135,8 @@ regime:
 # Simulation parameters used by `carcharoth backtest` (ignored in live mode).
 backtest:
   initial_capital: 100000.0  # starting cash of the simulated account
+  margin_leverage: 1.0       # gross exposure capacity / marked equity
+  short_borrow_apr: 0.0      # annualized simulated short borrow fee
   spread_pct: 0.0005         # synthetic quote spread around the bar close
   slippage_pct: 0.0005       # fills execute this fraction worse than the quote
   # Open slot: monte carlo trade analysis, only used with `backtest --permute`.
@@ -139,6 +154,8 @@ quicktest:
   position_size_pct: 0.10  # buy notional = capital * position_size_pct
   spread_pct: 0.0005       # 0 = frictionless; >0 matches the full backtest
   slippage_pct: 0.0005
+  margin_leverage: 1.0
+  short_borrow_apr: 0.0
   objective: default       # named objective from `objectives:`
   # Permutation-test settings, only used with `quicktest --permute`.
   permutation:
@@ -190,7 +207,8 @@ objectives:
 risk:
   max_position_notional: 1000.0   # hard cap per position, in account currency
   max_position_pct_equity: 0.11634802340974812   # per-position cap as fraction of equity
-  max_total_exposure_pct: 0.50    # cap on sum of all position values vs equity
+  max_total_exposure_pct: 0.50    # cap on sum of absolute position values vs equity
+  max_short_exposure_pct: 0.25    # cap on absolute short market value vs equity
   max_open_positions: 8
   buying_power_buffer: 0.95       # only ever use this fraction of buying power
   slippage_buffer: 0.02           # assume fills up to this much worse than quote

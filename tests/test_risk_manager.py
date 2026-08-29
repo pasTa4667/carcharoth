@@ -1,5 +1,6 @@
 from carcharoth.config.app_config import RiskConfig
-from carcharoth.domain.models import Signal, SignalAction
+from carcharoth.config.directional import DirectionalConfig
+from carcharoth.domain.models import Signal, SignalAction, TradeIntent
 from carcharoth.risk.basic import BasicRiskManager
 from tests.factories import make_account, make_position, make_quote
 
@@ -14,6 +15,14 @@ def sell_signal(symbol: str = "AAPL") -> Signal:
 
 def hold_signal(symbol: str = "AAPL") -> Signal:
     return Signal(symbol=symbol, action=SignalAction.HOLD, strategy="test", reason="test")
+
+
+def short_signal(symbol: str = "AAPL") -> Signal:
+    return Signal(symbol=symbol, action=TradeIntent.OPEN_SHORT, strategy="test", reason="test")
+
+
+def cover_signal(symbol: str = "AAPL") -> Signal:
+    return Signal(symbol=symbol, action=TradeIntent.CLOSE_SHORT, strategy="test", reason="test")
 
 
 def manager(**overrides: float | int) -> BasicRiskManager:
@@ -120,3 +129,50 @@ def test_sell_without_position_rejected() -> None:
     decision = manager().assess(sell_signal("AAPL"), make_account(), make_quote(100.0))
     assert not decision.approved
     assert "no position" in decision.reason
+
+
+def test_short_open_requires_enablement_and_sizes_from_bid() -> None:
+    disabled = manager().assess(short_signal(), make_account(), make_quote(100.0))
+    enabled_manager = BasicRiskManager(
+        RiskConfig(max_position_notional=1_000.0), DirectionalConfig(shorting_enabled=True)
+    )
+    enabled = enabled_manager.assess(short_signal(), make_account(), make_quote(100.0))
+
+    assert not disabled.approved
+    assert "disabled" in disabled.reason
+    assert enabled.approved
+    assert enabled.qty == 10
+
+
+def test_cover_closes_absolute_short_quantity_despite_entry_limits() -> None:
+    account = make_account(
+        equity=90_000.0,
+        last_equity=100_000.0,
+        buying_power=0.0,
+        positions={"AAPL": make_position("AAPL", qty=-12)},
+    )
+    decision = manager(max_daily_loss_pct=0.03).assess(cover_signal(), account, make_quote(100.0))
+    assert decision.approved
+    assert decision.qty == 12
+
+
+def test_wrong_close_direction_is_rejected() -> None:
+    account = make_account(positions={"AAPL": make_position("AAPL", qty=-5)})
+    decision = manager().assess(sell_signal(), account, make_quote(100.0))
+    assert not decision.approved
+    assert "position is short" in decision.reason
+
+
+def test_gross_and_short_exposure_use_absolute_market_values() -> None:
+    risk = RiskConfig(
+        max_position_notional=1_000.0,
+        max_total_exposure_pct=0.5,
+        max_short_exposure_pct=0.1,
+    )
+    enabled = BasicRiskManager(risk, DirectionalConfig(shorting_enabled=True))
+    positions = {"MSFT": make_position("MSFT", qty=-10, market_value=-9_500.0)}
+    decision = enabled.assess(
+        short_signal(), make_account(equity=100_000.0, positions=positions), make_quote(100.0)
+    )
+    assert not decision.approved
+    assert "short exposure" in decision.reason

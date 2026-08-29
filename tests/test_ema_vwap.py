@@ -11,6 +11,21 @@ from tests.factories import make_bars, make_position, make_quote
 # A decline followed by a sharp two-bar rally: the fast EMA crosses above the
 # slow EMA on the final bar, so an entry evaluated here sees a fresh cross.
 FRESH_CROSS = [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0, 90.0, 96.0, 100.0]
+FRESH_BEARISH_CROSS = [
+    100.0,
+    101.0,
+    102.0,
+    103.0,
+    104.0,
+    105.0,
+    106.0,
+    107.0,
+    108.0,
+    109.0,
+    110.0,
+    104.0,
+    100.0,
+]
 
 # A steady rise: the fast EMA has been above the slow EMA for many bars, so
 # any cross is stale by the final bar.
@@ -45,6 +60,24 @@ def test_fresh_cross_above_vwap_buys() -> None:
     assert "fresh cross" in signal.reason
     assert signal.indicators["ema_fast"] > signal.indicators["ema_slow"]
     assert signal.indicators["price"] > signal.indicators["vwap"]
+
+
+def test_fresh_bearish_cross_below_vwap_opens_short_when_enabled() -> None:
+    strategy = make_strategy(shorting_enabled=True)
+    signal = strategy.evaluate(
+        "AAPL", make_bars(FRESH_BEARISH_CROSS), make_quote(100.0), position=None
+    )
+    assert signal.action.value == "open_short"
+    assert signal.indicators["short_score"] >= 0.5
+    assert signal.indicators["ema_fast"] < signal.indicators["ema_slow"]
+
+
+def test_short_position_uses_cover_exit_not_long_sell() -> None:
+    strategy = make_strategy(shorting_enabled=True)
+    signal = strategy.evaluate(
+        "AAPL", make_bars(FRESH_CROSS), make_quote(100.0), make_position(qty=-10)
+    )
+    assert signal.action.value == "close_short"
 
 
 def test_price_below_vwap_blocks_entry() -> None:

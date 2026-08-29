@@ -28,7 +28,7 @@ from carcharoth.analysis.objective import (
 )
 from carcharoth.config.app_config import ObjectiveConfig
 from carcharoth.config.quicktest_config import QuickTestConfig
-from carcharoth.domain.models import Bar, MetricValue, RunType
+from carcharoth.domain.models import Bar, MetricValue, RunType, Side, TradeIntent
 from carcharoth.interfaces.optimization import BarsFetcher
 from carcharoth.persistence.buffered import FlushFn, WriteBuffer
 from carcharoth.persistence.orm import EquitySnapshotRow, TradeRow
@@ -43,6 +43,12 @@ from carcharoth.services.alpaca.historical import warmup_window
 from carcharoth.strategies.registry import build_strategy
 
 logger = logging.getLogger(__name__)
+
+
+def _legacy_intent(side: Side) -> TradeIntent:
+    """Old scripted quicktests without intent are long-only."""
+    return TradeIntent.OPEN_LONG if side is Side.BUY else TradeIntent.CLOSE_LONG
+
 
 #: Seam for future permutation testing: bars in, (permuted) bars out.
 BarsTransform = Callable[[dict[str, list[Bar]]], dict[str, list[Bar]]]
@@ -59,12 +65,10 @@ class QuickTestOutcome:
     metrics: list[MetricValue]
 
 
-def fetch_quicktest_bars(
-    config: QuickTestConfig, fetch_bars: BarsFetcher
-) -> dict[str, list[Bar]]:
+def fetch_quicktest_bars(config: QuickTestConfig, fetch_bars: BarsFetcher) -> dict[str, list[Bar]]:
     """Fetch the run's bars once (warm-up included) so callers — e.g. the
     permutation runner — can reuse them across many simulations."""
-    strategy = build_strategy(config.strategy.name, config.strategy.params)
+    strategy = build_strategy(config.strategy.name, config.strategy.params, config.directional)
     spec = strategy.required_bars()
     return fetch_bars(
         config.symbols,
@@ -80,6 +84,8 @@ def simulation_settings(config: QuickTestConfig) -> SimulationSettings:
         position_size_pct=config.position_size_pct,
         spread_pct=config.spread_pct,
         slippage_pct=config.slippage_pct,
+        margin_leverage=config.margin_leverage,
+        short_borrow_apr=config.short_borrow_apr,
     )
 
 
@@ -91,7 +97,7 @@ def simulate_and_analyze(
     """The pure in-memory core of one quick test over pre-fetched bars:
     simulate every symbol independently (fresh strategy — strategies are
     stateful), then compute round trips and metrics. No I/O."""
-    strategy = build_strategy(config.strategy.name, config.strategy.params)
+    strategy = build_strategy(config.strategy.name, config.strategy.params, config.directional)
     start, end_exclusive = config.start_dt, config.end_exclusive_dt
     settings = simulation_settings(config)
     result = QuickTestResult(capital_per_symbol=config.capital)
@@ -216,8 +222,10 @@ def persist_quicktest(
                 "broker_order_id": uuid4().hex,
                 "symbol": trade.symbol,
                 "side": trade.side.value,
+                "intent": (trade.intent or _legacy_intent(trade.side)).value,
                 "qty": Decimal(str(trade.qty)),
                 "price": Decimal(str(trade.price)),
+                "fees": Decimal(str(trade.fees)),
                 "timestamp": trade.timestamp,
             },
         )

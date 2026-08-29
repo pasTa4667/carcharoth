@@ -12,7 +12,7 @@
 | Live (paper) | Backtest |
 |---|---|
 | `AlpacaMarketDataService` | `HistoricalMarketDataService` — preloaded bars behind a movable cursor; quotes synthesized from the newest close ± half the configured spread |
-| `AlpacaAccountService` + `AlpacaOrderExecutor` | `SimulatedBroker` — tracks cash/positions from an initial capital; market orders fill at close ± spread/slippage |
+| `AlpacaAccountService` + `AlpacaOrderExecutor` | `SimulatedBroker` — tracks signed long/short holdings, cash, margin buying power and borrow fees; market orders fill at close ± spread/slippage |
 | `Scheduler` (minute ticks, market-hours gated) | `BacktestRunner` (one tick per session bar) |
 | `AlpacaMarketClock` | not needed — the runner walks the bar grid |
 
@@ -25,6 +25,14 @@ The subtlety that makes reuse of the live engine possible: `SimulatedBroker.subm
 returns **ACCEPTED** (while filling internally), and `get_order()` then reports
 **FILLED**. So the engine's normal step-0 reconcile records the trade on the
 following tick — exactly as in live trading.
+
+## Short simulation
+
+Sell-to-open creates a negative holding and credits proceeds; buy-to-cover
+returns it toward zero. Orders may not cross zero or pyramid. Equity is cash
+plus signed marked value, while buying power subtracts gross exposure so short
+proceeds cannot create artificial capacity. Borrow APR is accrued pro-rata and
+attributed to the covering fill/round trip.
 
 ## Bars cache
 

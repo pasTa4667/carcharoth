@@ -35,9 +35,7 @@ class MonteCarloTradesPermutation:
 
     def __init__(self, sampling: str = "resample") -> None:
         if sampling not in ("resample", "shuffle"):
-            raise ValueError(
-                f"unknown sampling {sampling!r}; expected 'resample' or 'shuffle'"
-            )
+            raise ValueError(f"unknown sampling {sampling!r}; expected 'resample' or 'shuffle'")
         self.sampling = sampling
 
     def permute(self, ctx: PermutationContext, rng: np.random.Generator) -> PermutedOutcome:

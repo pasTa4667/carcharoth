@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from carcharoth.domain.errors import BrokerError
-from carcharoth.domain.models import OrderRequest, OrderStatus, Side
+from carcharoth.domain.models import OrderRequest, OrderStatus, Side, TradeIntent
 from carcharoth.services.backtest.broker import SimulatedBroker
 from tests.factories import BASE_TIME
 
@@ -22,7 +22,7 @@ def make_broker(
 
 
 def buy(broker: SimulatedBroker, symbol: str = "AAPL", qty: float = 10) -> str:
-    result = broker.submit(OrderRequest(symbol=symbol, side=Side.BUY, qty=qty))
+    result = broker.submit(OrderRequest(symbol=symbol, intent=TradeIntent.OPEN_LONG, qty=qty))
     return result.broker_order_id
 
 
@@ -41,7 +41,7 @@ def test_sell_fills_at_bid_minus_slippage_and_credits_cash() -> None:
     buy(broker, qty=10)
     cash_before = broker.get_account_state().cash
 
-    result = broker.submit(OrderRequest(symbol="AAPL", side=Side.SELL, qty=10))
+    result = broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.CLOSE_LONG, qty=10))
     fill = broker.get_order(result.broker_order_id)
 
     expected_price = 100.0 * (1 - SPREAD / 2) * (1 - SLIPPAGE)
@@ -52,7 +52,7 @@ def test_sell_fills_at_bid_minus_slippage_and_credits_cash() -> None:
 
 def test_submit_returns_accepted_then_get_order_reports_filled() -> None:
     broker = make_broker()
-    result = broker.submit(OrderRequest(symbol="AAPL", side=Side.BUY, qty=5))
+    result = broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.OPEN_LONG, qty=5))
 
     assert result.status is OrderStatus.ACCEPTED
     assert result.filled_qty == 0
@@ -66,29 +66,74 @@ def test_submit_returns_accepted_then_get_order_reports_filled() -> None:
     assert fill.filled_at == BASE_TIME
 
 
-def test_buy_adds_compute_weighted_average_entry() -> None:
+def test_pyramiding_is_rejected() -> None:
     broker = make_broker(spread=0.0, slippage=0.0)
-    buy(broker, qty=10)  # @100
-    broker.mark_to_market(BASE_TIME + timedelta(minutes=5), {"AAPL": 110.0})
-    buy(broker, qty=10)  # @110
-
-    position = broker.get_account_state().positions["AAPL"]
-    assert position.qty == 20
-    assert position.avg_entry_price == pytest.approx(105.0)
+    buy(broker, qty=10)
+    with pytest.raises(BrokerError, match="no pyramiding"):
+        buy(broker, qty=10)
 
 
 def test_oversell_and_overspend_raise() -> None:
     broker = make_broker(capital=500.0, spread=0.0, slippage=0.0)
-    with pytest.raises(BrokerError, match="cannot sell"):
-        broker.submit(OrderRequest(symbol="AAPL", side=Side.SELL, qty=1))
-    with pytest.raises(BrokerError, match="insufficient cash"):
-        broker.submit(OrderRequest(symbol="AAPL", side=Side.BUY, qty=10))  # 1000 > 500
+    with pytest.raises(BrokerError, match="cannot close long"):
+        broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.CLOSE_LONG, qty=1))
+    with pytest.raises(BrokerError, match="insufficient buying power"):
+        broker.submit(
+            OrderRequest(symbol="AAPL", intent=TradeIntent.OPEN_LONG, qty=10)
+        )  # 1000 > 500
+
+
+def test_short_open_mark_and_cover_lifecycle() -> None:
+    broker = make_broker(spread=0.0, slippage=0.0)
+    opened = broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.OPEN_SHORT, qty=10))
+    assert broker.get_order(opened.broker_order_id).side is Side.SELL
+    state = broker.get_account_state()
+    assert state.positions["AAPL"].qty == -10
+    assert state.positions["AAPL"].market_value == -1_000
+    assert state.cash == 101_000
+    assert state.equity == 100_000
+
+    broker.mark_to_market(BASE_TIME + timedelta(minutes=5), {"AAPL": 90.0})
+    state = broker.get_account_state()
+    assert state.positions["AAPL"].unrealized_pnl == pytest.approx(100.0)
+    assert state.equity == pytest.approx(100_100.0)
+
+    covered = broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.CLOSE_SHORT, qty=10))
+    assert broker.get_order(covered.broker_order_id).side is Side.BUY
+    assert "AAPL" not in broker.get_account_state().positions
+    assert broker.get_account_state().cash == pytest.approx(100_100.0)
+
+
+def test_short_borrow_fee_reduces_cash_and_is_attached_to_cover() -> None:
+    broker = SimulatedBroker(
+        initial_capital=100_000.0,
+        spread_pct=0.0,
+        slippage_pct=0.0,
+        short_borrow_apr=0.365,
+    )
+    broker.mark_to_market(BASE_TIME, {"AAPL": 100.0})
+    broker.submit(OrderRequest("AAPL", TradeIntent.OPEN_SHORT, 10))
+    broker.mark_to_market(BASE_TIME + timedelta(days=1), {"AAPL": 100.0})
+    cover = broker.submit(OrderRequest("AAPL", TradeIntent.CLOSE_SHORT, 10))
+    fill = broker.get_order(cover.broker_order_id)
+
+    assert fill.fees == pytest.approx(1.0)
+    assert broker.get_account_state().cash == pytest.approx(100_000.0 - 1.0)
+
+
+def test_orders_cannot_cross_position_through_zero() -> None:
+    broker = make_broker(spread=0.0, slippage=0.0)
+    broker.submit(OrderRequest("AAPL", TradeIntent.OPEN_SHORT, 5))
+    with pytest.raises(BrokerError, match="cannot cover"):
+        broker.submit(OrderRequest("AAPL", TradeIntent.CLOSE_SHORT, 6))
+    with pytest.raises(BrokerError, match="no pyramiding"):
+        broker.submit(OrderRequest("AAPL", TradeIntent.OPEN_LONG, 1))
 
 
 def test_submit_without_price_raises() -> None:
     broker = make_broker()
     with pytest.raises(BrokerError, match="no price"):
-        broker.submit(OrderRequest(symbol="UNKNOWN", side=Side.BUY, qty=1))
+        broker.submit(OrderRequest(symbol="UNKNOWN", intent=TradeIntent.OPEN_LONG, qty=1))
 
 
 def test_mark_to_market_updates_position_and_equity() -> None:
@@ -133,14 +178,14 @@ def test_get_order_unknown_id_raises() -> None:
 def test_submit_before_mark_to_market_raises() -> None:
     broker = SimulatedBroker(initial_capital=1000.0, spread_pct=0.0, slippage_pct=0.0)
     with pytest.raises(BrokerError, match="clock not set"):
-        broker.submit(OrderRequest(symbol="AAPL", side=Side.BUY, qty=1))
+        broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.OPEN_LONG, qty=1))
 
 
 def test_timestamps_are_simulated_not_wall_clock() -> None:
     historical = datetime(2020, 3, 2, 15, 0, tzinfo=UTC)
     broker = SimulatedBroker(initial_capital=1000.0, spread_pct=0.0, slippage_pct=0.0)
     broker.mark_to_market(historical, {"AAPL": 10.0})
-    result = broker.submit(OrderRequest(symbol="AAPL", side=Side.BUY, qty=1))
+    result = broker.submit(OrderRequest(symbol="AAPL", intent=TradeIntent.OPEN_LONG, qty=1))
     fill = broker.get_order(result.broker_order_id)
     assert result.submitted_at == historical
     assert fill.filled_at == historical

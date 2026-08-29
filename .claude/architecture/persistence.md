@@ -18,6 +18,9 @@ bulk-inserts high-volume rows.
 
 - **Domain ↔ ORM translation lives in the repositories.** The engine and
   analyzer only ever pass `domain/models.py` types.
+- Orders and fills persist both broker `side` and semantic `intent`; round
+  trips persist `direction` and net fees. Legacy long-only BUY/SELL rows are
+  backfilled/read as open-long/close-long.
 - **`buffered.py` is wired only on the backtest path**, where per-tick row
   volume is high; live trading writes directly.
 

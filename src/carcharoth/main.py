@@ -76,6 +76,7 @@ from carcharoth.persistence.buffered import (
 )
 from carcharoth.persistence.db import build_engine, build_session_factory
 from carcharoth.persistence.repositories import (
+    PositionSnapshotRepository,
     RegimeEvaluationRepository,
     RunRepository,
     SqlAlchemyAnalysisReader,
@@ -90,6 +91,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyStrategyAssignmentRepository,
     SqlAlchemyStrategyDecisionRepository,
     SqlAlchemyTradeRepository,
+    StrategyDecisionRepository,
 )
 from carcharoth.quicktest.runner import run_quicktest_once
 from carcharoth.regime.detectors import build_detector
@@ -145,11 +147,13 @@ def build_strategy_provider(
 ) -> StrategyProvider:
     if config.regime is None or not config.regime.active:
         name, sc = _active_strategy(config)  # exactly one, guaranteed by validation
-        return SingleStrategyProvider(build_strategy(name, sc.params))
+        return SingleStrategyProvider(build_strategy(name, sc.params, config.directional))
     return RegimeStrategyProvider(
         detector=build_detector(config.regime, hmm_fit_store=hmm_store),
         strategies={
-            Regime(name): build_strategy(rc.strategy, config.strategies[rc.strategy].params)
+            Regime(name): build_strategy(
+                rc.strategy, config.strategies[rc.strategy].params, config.directional
+            )
             for name, rc in config.regime.regimes.items()
         },
         evaluations_repo=evaluations_repo
@@ -239,7 +243,7 @@ def _run_live(resolved: ResolvedConfig) -> None:
         market_data=AlpacaMarketDataService(data_client, cache=NoOpCache()),
         account=AlpacaAccountService(trading_client),
         strategies=build_strategy_provider(config, session_factory, run_id),
-        risk=BasicRiskManager(config.risk),
+        risk=BasicRiskManager(config.risk, config.directional),
         executor=AlpacaOrderExecutor(trading_client),
         decisions_repo=SqlAlchemyStrategyDecisionRepository(session_factory, run_id),
         orders_repo=SqlAlchemyOrderRepository(session_factory, run_id),
@@ -313,6 +317,10 @@ def run_backtest_once(
     # and trades are read back every tick and stay on per-call repositories.
     buffer = WriteBuffer(sqlalchemy_flush(session_factory))
 
+    evaluations_repo: RegimeEvaluationRepository
+    decisions_repo: StrategyDecisionRepository
+    snapshots_repo: PositionSnapshotRepository
+
     # Slim mode (default) skips the three high-volume audit tables that grow
     # to GBs over long backtests or many optimization trials, while keeping
     # the equity curve, round trips, and metrics needed for analysis.
@@ -344,6 +352,8 @@ def run_backtest_once(
         initial_capital=config.backtest.initial_capital,
         spread_pct=config.backtest.spread_pct,
         slippage_pct=config.backtest.slippage_pct,
+        margin_leverage=config.backtest.margin_leverage,
+        short_borrow_apr=config.backtest.short_borrow_apr,
     )
     orders_repo = SqlAlchemyOrderRepository(session_factory, run_id)
     trades_repo = SqlAlchemyTradeRepository(session_factory, run_id)
@@ -351,7 +361,7 @@ def run_backtest_once(
         market_data=market_data,
         account=broker,
         strategies=provider,
-        risk=BasicRiskManager(config.risk),
+        risk=BasicRiskManager(config.risk, config.directional),
         executor=broker,
         decisions_repo=decisions_repo,
         orders_repo=orders_repo,
@@ -835,6 +845,7 @@ def _run_delete(run_id: UUID | None, all_backtests: bool, all_quicktests: bool =
         elif all_quicktests:
             run_ids = runs_repo.list_run_ids(RunType.QUICKTEST)
         else:
+            assert run_id is not None
             run_ids = [run_id]
         deleted = 0
         for target in run_ids:

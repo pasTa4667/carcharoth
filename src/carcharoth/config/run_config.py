@@ -27,6 +27,7 @@ from carcharoth.config.app_config import (
     RiskConfig,
     StrategyConfig,
 )
+from carcharoth.config.directional import DirectionalConfig
 from carcharoth.config.optimize_config import (
     BacktestWindowConfig,
     ConstraintConfig,
@@ -79,6 +80,8 @@ class QuickTestSectionConfig(StrictModel):
     spread_pct: float = Field(default=0.0, ge=0)
     #: fills execute this fraction worse than the quoted side; 0 = frictionless
     slippage_pct: float = Field(default=0.0, ge=0)
+    margin_leverage: float = Field(default=1.0, ge=1.0)
+    short_borrow_apr: float = Field(default=0.0, ge=0)
     #: named objective from ``objectives:`` used for fitness
     objective: str = "default"
     #: permutation-test settings; only consulted when ``--permute`` is given
@@ -103,6 +106,7 @@ class RunConfig(StrictModel):
     symbols: list[str] = Field(min_length=1)
     data: DataConfig
     engine: EngineConfig = EngineConfig()
+    directional: DirectionalConfig = DirectionalConfig()
     #: strategies keyed by strategy name; each carries its params once
     strategies: dict[str, StrategyConfig] = Field(min_length=1)
     regime: RegimeConfig | None = None
@@ -153,10 +157,13 @@ class RunConfig(StrictModel):
             start=self.data.start,
             end=self.data.end,
             strategy=QuickTestStrategyConfig(name=name, params=self.strategies[name].params),
+            directional=self.directional,
             capital=self.quicktest.capital,
             position_size_pct=self.quicktest.position_size_pct,
             spread_pct=self.quicktest.spread_pct,
             slippage_pct=self.quicktest.slippage_pct,
+            margin_leverage=self.quicktest.margin_leverage,
+            short_borrow_apr=self.quicktest.short_borrow_apr,
             objective=self.quicktest.objective,
             permutation=self.quicktest.permutation,
         )

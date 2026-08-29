@@ -5,7 +5,15 @@ from datetime import timedelta
 import pytest
 
 from carcharoth.analysis.metrics import compute_metrics, enrich_with_excursions, match_round_trips
-from carcharoth.domain.models import EquityPoint, MetricValue, PositionSnapshot, Side, TradeRecord
+from carcharoth.domain.models import (
+    EquityPoint,
+    MetricValue,
+    PositionDirection,
+    PositionSnapshot,
+    Side,
+    TradeIntent,
+    TradeRecord,
+)
 from tests.factories import BASE_TIME
 
 
@@ -59,6 +67,48 @@ def test_sell_without_matching_lot_is_skipped() -> None:
     assert match_round_trips([trade(Side.SELL, 5, 100.0, minute=0)]) == []
 
 
+def test_short_fifo_matching_uses_sell_open_buy_cover_and_net_fees() -> None:
+    trips = match_round_trips(
+        [
+            TradeRecord(
+                "AAPL",
+                Side.SELL,
+                10,
+                100.0,
+                BASE_TIME,
+                intent=TradeIntent.OPEN_SHORT,
+            ),
+            TradeRecord(
+                "AAPL",
+                Side.BUY,
+                10,
+                90.0,
+                BASE_TIME + timedelta(minutes=5),
+                intent=TradeIntent.CLOSE_SHORT,
+                fees=1.0,
+            ),
+        ]
+    )
+    assert len(trips) == 1
+    assert trips[0].direction is PositionDirection.SHORT
+    assert trips[0].fees == pytest.approx(1.0)
+    assert trips[0].pnl == pytest.approx(99.0)
+
+
+def test_buy_to_cover_without_short_lot_does_not_open_long() -> None:
+    trades = [
+        TradeRecord(
+            "AAPL",
+            Side.BUY,
+            5,
+            90.0,
+            BASE_TIME,
+            intent=TradeIntent.CLOSE_SHORT,
+        )
+    ]
+    assert match_round_trips(trades) == []
+
+
 def test_round_trips_are_matched_per_symbol() -> None:
     trips = match_round_trips(
         [
@@ -106,6 +156,8 @@ def test_trade_metrics_win_rate_profit_factor_and_averages() -> None:
     assert metrics["avg_win"] == pytest.approx(150.0)
     assert metrics["avg_loss"] == pytest.approx(-50.0)
     assert metrics["profit_factor"] == pytest.approx(300.0 / 50.0)
+    assert metrics["long_num_trades"] == 3
+    assert metrics["long_pnl"] == pytest.approx(250.0)
 
 
 def test_symbol_pnl_breakdown() -> None:
@@ -140,12 +192,14 @@ def test_all_winning_trades_omit_loss_metrics() -> None:
 
 def test_excursions_computed_from_snapshots() -> None:
     # Buy 10 shares at $100 at minute 0, sell at minute 10
-    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 120.0, minute=10)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 120.0, minute=10)]
+    )
     assert len(trips) == 1
     snaps = [
-        snapshot("AAPL", minute=1, unrealized_pnl=50.0),   # +$50
+        snapshot("AAPL", minute=1, unrealized_pnl=50.0),  # +$50
         snapshot("AAPL", minute=5, unrealized_pnl=-30.0),  # -$30  ← worst (MAE)
-        snapshot("AAPL", minute=8, unrealized_pnl=80.0),   # +$80  ← best (MFE)
+        snapshot("AAPL", minute=8, unrealized_pnl=80.0),  # +$80  ← best (MFE)
     ]
     enriched = enrich_with_excursions(trips, snaps)
     assert len(enriched) == 1
@@ -157,7 +211,9 @@ def test_excursions_computed_from_snapshots() -> None:
 
 def test_excursions_all_positive_mae_is_zero() -> None:
     # Trade never went negative unrealized
-    trips = match_round_trips([trade(Side.BUY, 5, 200.0, minute=0), trade(Side.SELL, 5, 210.0, minute=5)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 5, 200.0, minute=0), trade(Side.SELL, 5, 210.0, minute=5)]
+    )
     snaps = [
         snapshot("AAPL", minute=1, unrealized_pnl=10.0),
         snapshot("AAPL", minute=3, unrealized_pnl=25.0),
@@ -168,17 +224,21 @@ def test_excursions_all_positive_mae_is_zero() -> None:
 
 
 def test_excursions_no_snapshots_yields_none() -> None:
-    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 110.0, minute=5)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 110.0, minute=5)]
+    )
     enriched = enrich_with_excursions(trips, [])
     assert enriched[0].mae_pct is None
     assert enriched[0].mfe_pct is None
 
 
 def test_excursions_snapshots_outside_window_are_ignored() -> None:
-    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=5), trade(Side.SELL, 10, 110.0, minute=10)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 10, 100.0, minute=5), trade(Side.SELL, 10, 110.0, minute=10)]
+    )
     snaps = [
-        snapshot("AAPL", minute=2, unrealized_pnl=-999.0),   # before trade
-        snapshot("AAPL", minute=7, unrealized_pnl=-20.0),    # during trade
+        snapshot("AAPL", minute=2, unrealized_pnl=-999.0),  # before trade
+        snapshot("AAPL", minute=7, unrealized_pnl=-20.0),  # during trade
         snapshot("AAPL", minute=15, unrealized_pnl=-999.0),  # after trade
     ]
     enriched = enrich_with_excursions(trips, snaps)

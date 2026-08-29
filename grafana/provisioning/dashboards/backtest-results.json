@@ -1201,7 +1201,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS strategy,\n  ROUND(SUM(pnl)::numeric, 2) AS pnl\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY pnl DESC",
+          "rawSql": "SELECT\n  COALESCE(NULLIF(strategy, ''), '(unknown)') || ' / ' || direction AS strategy_direction,\n  ROUND(SUM(pnl)::numeric, 2) AS pnl\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY pnl DESC",
           "refId": "A"
         }
       ]
@@ -1333,7 +1333,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS strategy,\n  COUNT(*) AS trades,\n  ROUND(SUM(pnl)::numeric, 2) AS total_pnl,\n  ROUND(AVG(pnl)::numeric, 2) AS avg_pnl,\n  ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 4) AS win_rate,\n  ROUND(SUM(pnl) FILTER (WHERE pnl > 0)::numeric / NULLIF(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0), 2) AS profit_factor,\n  ROUND(AVG(holding_seconds) / 3600.0, 1) AS avg_holding_h,\n  COUNT(DISTINCT symbol) AS symbols\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY total_pnl DESC",
+          "rawSql": "SELECT\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS strategy,\n  direction,\n  COUNT(*) AS trades,\n  ROUND(SUM(pnl)::numeric, 2) AS total_pnl,\n  ROUND(SUM(fees)::numeric, 2) AS fees,\n  ROUND(AVG(pnl)::numeric, 2) AS avg_pnl,\n  ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 4) AS win_rate,\n  ROUND(SUM(pnl) FILTER (WHERE pnl > 0)::numeric / NULLIF(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0), 2) AS profit_factor,\n  ROUND(AVG(holding_seconds) / 3600.0, 1) AS avg_holding_h,\n  COUNT(DISTINCT symbol) AS symbols\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1, 2\nORDER BY total_pnl DESC",
           "refId": "A"
         }
       ]
@@ -1404,7 +1404,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  exit_time AS time,\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS metric,\n  SUM(pnl) OVER (\n    PARTITION BY COALESCE(NULLIF(strategy, ''), '(unknown)')\n    ORDER BY exit_time\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS value\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY 1",
+          "rawSql": "SELECT\n  exit_time AS time,\n  COALESCE(NULLIF(strategy, ''), '(unknown)') || ' / ' || direction AS metric,\n  SUM(pnl) OVER (\n    PARTITION BY COALESCE(NULLIF(strategy, ''), '(unknown)'), direction\n    ORDER BY exit_time\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS value\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY 1",
           "refId": "A"
         }
       ]
@@ -1728,7 +1728,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  ROUND(mae_pct * 100, 2) AS mae_pct,\n  ROUND(mfe_pct * 100, 2) AS mfe_pct,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
+          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  direction,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  ROUND(fees, 2) AS fees,\n  ROUND(mae_pct * 100, 2) AS mae_pct,\n  ROUND(mfe_pct * 100, 2) AS mfe_pct,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
           "refId": "A"
         }
       ]

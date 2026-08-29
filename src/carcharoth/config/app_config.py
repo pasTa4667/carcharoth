@@ -109,7 +109,9 @@ class RegimeConfig(StrictModel):
 class RiskConfig(StrictModel):
     max_position_notional: float = Field(default=1000.0, gt=0)
     max_position_pct_equity: float = Field(default=0.10, gt=0, le=1)
+    #: Gross exposure: sum(abs(position.market_value)) / equity.
     max_total_exposure_pct: float = Field(default=0.50, gt=0, le=1)
+    max_short_exposure_pct: float = Field(default=0.25, gt=0, le=1)
     max_open_positions: int = Field(default=5, gt=0)
     buying_power_buffer: float = Field(default=0.95, gt=0, le=1)
     slippage_buffer: float = Field(default=0.02, ge=0)
@@ -118,6 +120,10 @@ class RiskConfig(StrictModel):
 
 class BacktestConfig(StrictModel):
     initial_capital: float = Field(default=100_000.0, gt=0)
+    #: Simulated gross-exposure capacity as a multiple of marked equity.
+    margin_leverage: float = Field(default=1.0, ge=1.0)
+    #: Annualized fee charged pro-rata against marked short notional.
+    short_borrow_apr: float = Field(default=0.0, ge=0)
     #: synthetic quote spread: bid/ask = close * (1 -/+ spread_pct / 2)
     spread_pct: float = Field(default=0.0005, ge=0)
     #: fills execute this fraction worse than the quoted side

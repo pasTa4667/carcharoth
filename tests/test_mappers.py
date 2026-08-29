@@ -3,9 +3,11 @@ from uuid import uuid4
 
 from alpaca.trading.enums import (
     AssetClass,
+    AssetExchange,
     OrderClass,
     OrderSide,
     OrderType,
+    PositionSide,
 )
 from alpaca.trading.enums import (
     OrderStatus as AlpacaOrderStatus,
@@ -14,9 +16,10 @@ from alpaca.trading.enums import (
     TimeInForce as AlpacaTimeInForce,
 )
 from alpaca.trading.models import Order as AlpacaOrder
+from alpaca.trading.models import Position as AlpacaPosition
 
-from carcharoth.domain.models import OrderStatus, Side
-from carcharoth.services.alpaca.mappers import to_order_result, to_order_status
+from carcharoth.domain.models import OrderStatus, PositionDirection, Side
+from carcharoth.services.alpaca.mappers import to_order_result, to_order_status, to_position
 
 NOW = datetime(2026, 7, 1, 15, 0, tzinfo=UTC)
 
@@ -90,6 +93,33 @@ def test_filled_order_maps() -> None:
 def test_unknown_status_maps_to_non_terminal() -> None:
     assert to_order_status(AlpacaOrderStatus.PENDING_REVIEW) is OrderStatus.ACCEPTED
     assert to_order_status(AlpacaOrderStatus.DONE_FOR_DAY) is OrderStatus.ACCEPTED
+
+
+def test_short_position_side_is_normalized_to_signed_domain_values() -> None:
+    position = AlpacaPosition(
+        asset_id=uuid4(),
+        symbol="AAPL",
+        exchange=AssetExchange.NASDAQ,
+        asset_class=AssetClass.US_EQUITY,
+        asset_marginable=True,
+        avg_entry_price="100",
+        qty="5",
+        side=PositionSide.SHORT,
+        market_value="500",  # normalize even if provider sends an absolute value
+        cost_basis="500",
+        unrealized_pl="10",
+        unrealized_plpc="0.02",
+        unrealized_intraday_pl="0",
+        unrealized_intraday_plpc="0",
+        current_price="98",
+        lastday_price="99",
+        change_today="0",
+    )
+    mapped = to_position(position)
+    assert mapped.qty == -5
+    assert mapped.market_value == -500
+    assert mapped.direction is PositionDirection.SHORT
+    assert mapped.unrealized_pnl == 10
 
 
 def test_terminal_statuses_map_directly() -> None:

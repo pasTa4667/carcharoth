@@ -38,6 +38,7 @@ from carcharoth.domain.models import (
     RunType,
     Side,
     Signal,
+    TradeIntent,
     TradeRecord,
 )
 from carcharoth.persistence.orm import (
@@ -245,6 +246,7 @@ class SqlAlchemyOrderRepository(OrderRepository):
                     client_order_id=result.client_order_id,
                     symbol=result.symbol,
                     side=result.side.value,
+                    intent=request.intent.value,
                     qty=Decimal(str(result.qty)),
                     status=result.status.value,
                     created_at=result.submitted_at,
@@ -301,14 +303,22 @@ class SqlAlchemyTradeRepository(TradeRepository):
 
     def save_fill(self, result: OrderResult) -> None:
         with self._session_factory.begin() as session:
+            order = session.scalars(
+                select(OrderRow).where(
+                    OrderRow.run_id == self._run_id,
+                    OrderRow.broker_order_id == result.broker_order_id,
+                )
+            ).one()
             session.add(
                 TradeRow(
                     run_id=self._run_id,
                     broker_order_id=result.broker_order_id,
                     symbol=result.symbol,
                     side=result.side.value,
+                    intent=order.intent,
                     qty=Decimal(str(result.filled_qty)),
                     price=Decimal(str(result.filled_avg_price or 0)),
+                    fees=Decimal(str(result.fees)),
                     timestamp=result.filled_at or result.submitted_at,
                 )
             )
@@ -511,12 +521,14 @@ class SqlAlchemyRoundTripRepository(RoundTripRepository):
                     RoundTripRow(
                         run_id=run_id,
                         symbol=trip.symbol,
+                        direction=trip.direction.value,
                         qty=Decimal(str(trip.qty)),
                         entry_time=trip.opened_at,
                         exit_time=trip.closed_at,
                         entry_price=Decimal(str(trip.entry_price)),
                         exit_price=Decimal(str(trip.exit_price)),
                         pnl=Decimal(str(trip.pnl)),
+                        fees=Decimal(str(trip.fees)),
                         holding_seconds=holding,
                         strategy=trip.strategy,
                         exit_reason=trip.exit_reason,
@@ -545,6 +557,8 @@ class SqlAlchemyAnalysisReader(AnalysisReader):
                     qty=float(row.qty),
                     price=float(row.price),
                     timestamp=row.timestamp,
+                    intent=TradeIntent.from_stored(row.intent),
+                    fees=float(row.fees),
                 )
                 for row in rows
             ]
@@ -564,14 +578,23 @@ class SqlAlchemyAnalysisReader(AnalysisReader):
                 select(StrategyDecisionRow)
                 .where(
                     StrategyDecisionRow.run_id == run_id,
-                    StrategyDecisionRow.signal.in_(["buy", "sell"]),
+                    StrategyDecisionRow.signal.in_(
+                        [
+                            "buy",
+                            "sell",
+                            TradeIntent.OPEN_LONG.value,
+                            TradeIntent.CLOSE_LONG.value,
+                            TradeIntent.OPEN_SHORT.value,
+                            TradeIntent.CLOSE_SHORT.value,
+                        ]
+                    ),
                 )
                 .order_by(StrategyDecisionRow.timestamp)
             )
             return [
                 DecisionRecord(
                     symbol=row.symbol,
-                    side=Side(row.signal),
+                    action=TradeIntent.from_stored(row.signal),
                     timestamp=row.timestamp,
                     reason=row.reason,
                     indicators={k: float(v) for k, v in row.indicators.items()},

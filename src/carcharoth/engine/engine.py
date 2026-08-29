@@ -8,14 +8,19 @@ never here. Swapping any component requires no change to this file.
 import logging
 from uuid import uuid4
 
-from carcharoth.domain.errors import BrokerError, MarketDataError, OrderConflictError
+from carcharoth.domain.errors import (
+    BrokerError,
+    MarketDataError,
+    OrderConflictError,
+    ShortUnavailableError,
+)
 from carcharoth.domain.models import (
     AccountState,
     MarketSnapshot,
     OrderRequest,
     OrderStatus,
     Side,
-    SignalAction,
+    TradeIntent,
 )
 from carcharoth.interfaces import (
     AccountService,
@@ -35,8 +40,6 @@ from carcharoth.persistence.repositories import (
 logger = logging.getLogger(__name__)
 trades_log = logging.getLogger(TRADES_LOGGER)
 decisions_log = logging.getLogger(DECISIONS_LOGGER)
-
-_SIGNAL_TO_SIDE = {SignalAction.BUY: Side.BUY, SignalAction.SELL: Side.SELL}
 
 
 class TradingEngine:
@@ -101,7 +104,7 @@ class TradingEngine:
             signal.indicators,
         )
 
-        if signal.action is SignalAction.HOLD or quote is None:
+        if signal.action is TradeIntent.HOLD or quote is None:
             self._decisions_repo.save(signal, None, snapshot.as_of)
             return
 
@@ -113,13 +116,15 @@ class TradingEngine:
         if not decision.approved:
             return
 
-        side = _SIGNAL_TO_SIDE[signal.action]
+        side = signal.action.order_side
+        if side is None:
+            raise ValueError(f"non-actionable trade intent {signal.action}")
         if not self._clear_conflicting_orders(symbol, side):
             return
 
         request = OrderRequest(
             symbol=symbol,
-            side=side,
+            intent=signal.action,
             qty=decision.qty,
             client_order_id=uuid4().hex,
         )
@@ -127,6 +132,9 @@ class TradingEngine:
             result = self._executor.submit(request)
         except OrderConflictError as exc:
             trades_log.warning("%s: broker wash-trade rejection, skipping tick: %s", symbol, exc)
+            return
+        except ShortUnavailableError as exc:
+            trades_log.warning("%s: short unavailable, skipping order: %s", symbol, exc)
             return
         self._orders_repo.save_submitted(request, result)
         trades_log.info(

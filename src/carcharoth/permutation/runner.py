@@ -129,7 +129,7 @@ def build_permutation_context(
     core (no MAE/MFE enrichment, no per-symbol metrics) and scores it."""
 
     def simulate(permuted_bars: Mapping[str, list[Bar]]) -> PermutedOutcome:
-        strategy = build_strategy(config.strategy.name, config.strategy.params)
+        strategy = build_strategy(config.strategy.name, config.strategy.params, config.directional)
         settings = simulation_settings(config)
         result = QuickTestResult(capital_per_symbol=config.capital)
         for symbol in config.symbols:

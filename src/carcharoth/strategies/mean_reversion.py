@@ -21,14 +21,18 @@ import pandas as pd
 from carcharoth.domain.models import (
     Bar,
     BarSpec,
+    EntryCandidate,
     Position,
+    PositionDirection,
     Quote,
     Signal,
     SignalAction,
     Timeframe,
+    TradeIntent,
 )
 from carcharoth.interfaces.strategy import Strategy
 from carcharoth.strategies import indicators
+from carcharoth.strategies.arbitration import DirectionalArbiter
 from carcharoth.strategies.filters import AtrBracket, EndOfDayFilter
 from carcharoth.strategies.session import minutes_since_open
 
@@ -80,6 +84,15 @@ class MeanReversionStrategy(Strategy):
         dip_vr_slope: float = 0.0015,
         dip_er_ref: float = 0.3,
         dip_er_slope: float = 0.008,
+        shorting_enabled: bool = False,
+        min_entry_score: float = 0.5,
+        min_score_margin: float = 0.1,
+        entry_score_full_z_excess: float = 1.0,
+        short_entry_z: float = 1.1,
+        short_exit_z: float = 0.5,
+        short_stop_z: float = 2.5,
+        short_rsi_entry_min: float = 70.0,
+        min_rally_pct: float = 0.0043,
     ) -> None:
         if lookback < 2:
             raise ValueError("lookback must be >= 2")
@@ -97,6 +110,12 @@ class MeanReversionStrategy(Strategy):
             raise ValueError("atr_period must be >= 1")
         if atr_stop_multiplier <= 0:
             raise ValueError("atr_stop_multiplier must be > 0")
+        if entry_score_full_z_excess <= 0:
+            raise ValueError("entry_score_full_z_excess must be > 0")
+        if short_entry_z <= short_exit_z:
+            raise ValueError("short_entry_z must be greater than short_exit_z")
+        if not 0 < short_rsi_entry_min < 100:
+            raise ValueError("short_rsi_entry_min must be between 0 and 100")
         self._lookback = lookback
         self._entry_z = entry_z
         self._exit_z = exit_z
@@ -140,6 +159,18 @@ class MeanReversionStrategy(Strategy):
         self._dip_vr_slope = dip_vr_slope
         self._dip_er_ref = dip_er_ref
         self._dip_er_slope = dip_er_slope
+        self._shorting_enabled = shorting_enabled
+        self._arbiter = DirectionalArbiter(
+            shorting_enabled=shorting_enabled,
+            min_entry_score=min_entry_score,
+            min_score_margin=min_score_margin,
+        )
+        self._entry_score_full_z_excess = entry_score_full_z_excess
+        self._short_entry_z = short_entry_z
+        self._short_exit_z = short_exit_z
+        self._short_stop_z = short_stop_z
+        self._short_rsi_entry_min = short_rsi_entry_min
+        self._min_rally_pct = min_rally_pct
 
     def required_bars(self) -> BarSpec:
         # TA-Lib's EMA is SMA-seeded, so at ~trend_ema_period bars the value is
@@ -184,12 +215,18 @@ class MeanReversionStrategy(Strategy):
         # the other signals.
         bracket_indicators: dict[str, float] = {}
         if position is not None:
-            bracket = self._bracket.check(bars, position.avg_entry_price, price)
+            direction = position.direction
+            close_intent = (
+                TradeIntent.CLOSE_LONG
+                if direction is PositionDirection.LONG
+                else TradeIntent.CLOSE_SHORT
+            )
+            bracket = self._bracket.check(bars, position.avg_entry_price, price, direction)
             bracket_indicators = bracket.indicators
             if bracket.passed:
                 return self._signal(
                     symbol,
-                    SignalAction.SELL,
+                    close_intent,
                     bracket.reason,
                     {"price": price, **bracket.indicators},
                     now,
@@ -198,7 +235,7 @@ class MeanReversionStrategy(Strategy):
             if flatten.passed:
                 return self._signal(
                     symbol,
-                    SignalAction.SELL,
+                    close_intent,
                     flatten.reason,
                     {"price": price, **bracket.indicators, **flatten.indicators},
                     now,
@@ -226,6 +263,20 @@ class MeanReversionStrategy(Strategy):
         indicator_values = {"zscore": zscore, "mean": mean, "std": std, "price": price}
         indicator_values.update(bracket_indicators)
 
+        if position is not None and position.direction is PositionDirection.SHORT:
+            if zscore <= self._short_exit_z:
+                action = TradeIntent.CLOSE_SHORT
+                reason = (
+                    f"short mean reverted (z={zscore:.2f} <= {self._short_exit_z:.2f}), covering"
+                )
+            elif zscore >= self._short_stop_z:
+                action = TradeIntent.CLOSE_SHORT
+                reason = f"short z-stop hit (z={zscore:.2f} >= {self._short_stop_z:.2f})"
+            else:
+                action = TradeIntent.HOLD
+                reason = f"short z={zscore:.2f} within thresholds"
+            return self._signal(symbol, action, reason, indicator_values, now)
+
         if position is not None:
             # Regime-adaptive exit target: choppy regimes (low ER) revert fast
             # and give back quickly, so take the quick exit; trending regimes
@@ -242,10 +293,10 @@ class MeanReversionStrategy(Strategy):
                         + self._exit_er_slope * max(0.0, er_exit - self._exit_er_ref),
                     )
             if zscore >= exit_target:
-                action = SignalAction.SELL
+                action = TradeIntent.CLOSE_LONG
                 reason = f"mean reverted (z={zscore:.2f} >= {exit_target:.2f}), exiting"
             elif zscore <= self._stop_z:
-                action = SignalAction.SELL
+                action = TradeIntent.CLOSE_LONG
                 reason = f"z-stop hit (z={zscore:.2f} <= {self._stop_z}), exiting"
             else:
                 action = SignalAction.HOLD
@@ -253,14 +304,47 @@ class MeanReversionStrategy(Strategy):
             return self._signal(symbol, action, reason, indicator_values, now)
 
         if zscore > self._entry_z:
-            return self._signal(
+            long_signal = self._signal(
                 symbol,
                 SignalAction.HOLD,
                 f"z={zscore:.2f} within thresholds",
                 indicator_values,
                 now,
             )
-        return self._evaluate_entry(symbol, bars, mean, zscore, indicator_values, now)
+        else:
+            long_signal = self._evaluate_entry(
+                symbol, bars, mean, zscore, dict(indicator_values), now
+            )
+        if not self._shorting_enabled:
+            return long_signal
+
+        short_signal = self._evaluate_short_entry(
+            symbol, bars, mean, zscore, dict(indicator_values), now
+        )
+        long_candidate = self._candidate(long_signal, PositionDirection.LONG, zscore)
+        short_candidate = self._candidate(short_signal, PositionDirection.SHORT, zscore)
+        arbitration = self._arbiter.select(long_candidate, short_candidate)
+        if arbitration.selected is None:
+            return self._signal(
+                symbol,
+                TradeIntent.HOLD,
+                arbitration.reason,
+                {**indicator_values, **arbitration.indicators},
+                now,
+            )
+        selected = arbitration.selected
+        intent = (
+            TradeIntent.OPEN_LONG
+            if selected.direction is PositionDirection.LONG
+            else TradeIntent.OPEN_SHORT
+        )
+        return self._signal(
+            symbol,
+            intent,
+            f"{selected.reason}; {arbitration.reason}",
+            {**selected.indicators, **arbitration.indicators},
+            now,
+        )
 
     def _evaluate_entry(
         self,
@@ -464,7 +548,7 @@ class MeanReversionStrategy(Strategy):
         # directional grind (trend). Measured as the drop from the highest close
         # in the last `sharp_drop_lookback` bars to the current price.
         if self._sharp_drop_lookback > 0 and self._sharp_drop_pct > 0:
-            window = bars[-self._sharp_drop_lookback:]
+            window = bars[-self._sharp_drop_lookback :]
             recent_high = max(b.close for b in window)
             drop = (recent_high - price) / recent_high if recent_high > 0 else 0.0
             indicator_values["recent_drop"] = drop
@@ -539,12 +623,152 @@ class MeanReversionStrategy(Strategy):
 
         return self._signal(
             symbol,
-            SignalAction.BUY,
+            TradeIntent.OPEN_LONG,
             f"price {zscore:.2f} std devs below {self._lookback}-bar mean,"
             f" uptrend (EMA{self._trend_ema_period}), RSI {rsi_value:.1f}",
             indicator_values,
             now,
         )
+
+    def _evaluate_short_entry(
+        self,
+        symbol: str,
+        bars: list[Bar],
+        mean: float,
+        zscore: float,
+        indicator_values: dict[str, float],
+        now: datetime,
+    ) -> Signal:
+        if zscore < self._short_entry_z:
+            return self._signal(
+                symbol,
+                TradeIntent.HOLD,
+                f"short z={zscore:.2f} below entry {self._short_entry_z:.2f}",
+                indicator_values,
+                now,
+            )
+        cutoff = self._eod.blocks_entry(bars[-1].timestamp)
+        indicator_values.update(cutoff.indicators)
+        if cutoff.passed:
+            return self._signal(
+                symbol,
+                TradeIntent.HOLD,
+                f"short entry blocked: {cutoff.reason}",
+                indicator_values,
+                now,
+            )
+        ema_value = indicators.ema(bars, self._trend_ema_period)
+        if ema_value is None:
+            return self._signal(
+                symbol, TradeIntent.HOLD, "short entry blocked: no trend EMA", indicator_values, now
+            )
+        indicator_values["trend_ema"] = ema_value
+        if mean >= ema_value:
+            return self._signal(
+                symbol,
+                TradeIntent.HOLD,
+                f"short entry blocked: mean {mean:.2f} not below EMA {ema_value:.2f}",
+                indicator_values,
+                now,
+            )
+        price = indicator_values["price"]
+        rally_pct = (price - mean) / mean if mean > 0 else 0.0
+        indicator_values["rally_pct"] = rally_pct
+        if rally_pct < self._min_rally_pct:
+            return self._signal(
+                symbol,
+                TradeIntent.HOLD,
+                f"short entry blocked: rally {rally_pct:.4f} < {self._min_rally_pct:.4f}",
+                indicator_values,
+                now,
+            )
+        if self._er_max < 1.0:
+            er_value = indicators.efficiency_ratio(bars, self._er_period)
+            if er_value is not None:
+                indicator_values["efficiency_ratio"] = er_value
+                if er_value > self._er_max:
+                    return self._signal(
+                        symbol,
+                        TradeIntent.HOLD,
+                        "short entry blocked: ER too high",
+                        indicator_values,
+                        now,
+                    )
+        if self._vr_max < 10.0:
+            vr_value = indicators.variance_ratio(bars, self._vr_k, self._vr_window)
+            if vr_value is not None:
+                indicator_values["variance_ratio"] = vr_value
+                if vr_value > self._vr_max:
+                    return self._signal(
+                        symbol,
+                        TradeIntent.HOLD,
+                        "short entry blocked: VR too high",
+                        indicator_values,
+                        now,
+                    )
+        if self._macro_trend_ema_period > 0:
+            macro_ema = indicators.ema(bars, self._macro_trend_ema_period)
+            if macro_ema is not None:
+                indicator_values["macro_ema"] = macro_ema
+                if mean >= macro_ema:
+                    return self._signal(
+                        symbol,
+                        TradeIntent.HOLD,
+                        "short entry blocked: no macro downtrend",
+                        indicator_values,
+                        now,
+                    )
+        rsi_value = indicators.rsi(bars, self._rsi_period)
+        if rsi_value is None:
+            return self._signal(
+                symbol, TradeIntent.HOLD, "short entry blocked: no RSI", indicator_values, now
+            )
+        indicator_values["rsi"] = rsi_value
+        if rsi_value <= self._short_rsi_entry_min:
+            return self._signal(
+                symbol,
+                TradeIntent.HOLD,
+                f"short entry blocked: RSI {rsi_value:.1f} <= {self._short_rsi_entry_min}",
+                indicator_values,
+                now,
+            )
+        if len(bars) >= self._lookback + 1:
+            previous = pd.Series([bar.close for bar in bars[-self._lookback - 1 : -1]])
+            prev_std = float(previous.std())
+            if prev_std >= _MIN_STD:
+                prev_z = (bars[-2].close - float(previous.mean())) / prev_std
+                indicator_values["prev_zscore"] = prev_z
+                if zscore >= prev_z:
+                    return self._signal(
+                        symbol,
+                        TradeIntent.HOLD,
+                        f"short entry blocked: z-score not falling ({zscore:.2f} >= {prev_z:.2f})",
+                        indicator_values,
+                        now,
+                    )
+        return self._signal(
+            symbol,
+            TradeIntent.OPEN_SHORT,
+            f"price {zscore:.2f} std devs above mean in downtrend, RSI {rsi_value:.1f}",
+            indicator_values,
+            now,
+        )
+
+    def _candidate(
+        self, signal: Signal, direction: PositionDirection, zscore: float
+    ) -> EntryCandidate | None:
+        expected = (
+            TradeIntent.OPEN_LONG if direction is PositionDirection.LONG else TradeIntent.OPEN_SHORT
+        )
+        if signal.action is not expected:
+            return None
+        excess = (
+            self._entry_z - zscore
+            if direction is PositionDirection.LONG
+            else zscore - self._short_entry_z
+        )
+        score = 0.5 + 0.5 * min(max(excess, 0.0) / self._entry_score_full_z_excess, 1.0)
+        return EntryCandidate(direction, score, signal.reason, dict(signal.indicators))
 
     def _signal(
         self,

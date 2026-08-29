@@ -1,8 +1,9 @@
 # TradingEngine Internals
 
 `engine/engine.py` is a deliberately "stupid" orchestrator: it sequences
-services and passes typed domain objects between them. No trading logic lives
-here. This diagram unpacks the two non-obvious internal behaviours —
+modules and passes typed domain objects between them. No trading logic lives
+here. Strategies already return one explicit open/close long/short intent; the
+engine only derives its broker side. This diagram unpacks two non-obvious behaviours —
 **fill reconciliation** and **conflicting-order clearing** — that the
 [tick sequence](tick-sequence.md) glosses over.
 
@@ -31,6 +32,9 @@ same symbol — which would trip the broker's wash-trade protection or
 double-execute.
 
 > **Diagram:** [`engine-clear-conflicting-orders.mmd`](diagrams/engine-clear-conflicting-orders.mmd) — render with `mmdc -i diagrams/engine-clear-conflicting-orders.mmd -o engine-clear-conflicting-orders.svg`
+
+Conflicts operate on broker side, regardless of whether buy means open-long or
+close-short (and sell means close-long or open-short).
 
 **Why return `False` even after only same-side orders?** A same-side open order
 means a duplicate is already working, so the new signal is redundant this tick.

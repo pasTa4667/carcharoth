@@ -8,7 +8,11 @@ class OrderExecutor(ABC):
 
     @abstractmethod
     def submit(self, request: OrderRequest) -> OrderResult:
-        """Submit an order. Raises BrokerError on failure."""
+        """Submit an intent-bearing order.
+
+        The request derives broker side from intent. OPEN_SHORT adapters may
+        reject with ShortUnavailableError before submission.
+        """
 
     @abstractmethod
     def get_order(self, broker_order_id: str) -> OrderResult:

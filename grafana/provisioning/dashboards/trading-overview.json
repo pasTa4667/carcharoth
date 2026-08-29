@@ -149,7 +149,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS value\nFROM positions_snapshot\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND timestamp = (SELECT MAX(timestamp) FROM positions_snapshot WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER'))\n  AND qty > 0",
+          "rawSql": "SELECT COUNT(*) AS value\nFROM positions_snapshot\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND timestamp = (SELECT MAX(timestamp) FROM positions_snapshot WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER'))\n  AND qty <> 0",
           "refId": "A"
         }
       ],
@@ -619,7 +619,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  symbol,\n  qty,\n  avg_price,\n  market_value,\n  unrealized_pnl,\n  timestamp AS last_updated\nFROM positions_snapshot\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND timestamp = (SELECT MAX(timestamp) FROM positions_snapshot WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER'))\n  AND qty > 0\nORDER BY symbol",
+          "rawSql": "SELECT\n  symbol,\n  CASE WHEN qty > 0 THEN 'long' ELSE 'short' END AS direction,\n  qty,\n  avg_price,\n  market_value,\n  unrealized_pnl,\n  timestamp AS last_updated\nFROM positions_snapshot\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND timestamp = (SELECT MAX(timestamp) FROM positions_snapshot WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER'))\n  AND qty <> 0\nORDER BY symbol",
           "refId": "A"
         }
       ],
@@ -1010,7 +1010,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp,\n  symbol,\n  side,\n  qty,\n  price,\n  fees\nFROM trades\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 50",
+          "rawSql": "SELECT\n  timestamp,\n  symbol,\n  side,\n  intent,\n  qty,\n  price,\n  fees\nFROM trades\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 50",
           "refId": "A"
         }
       ],
@@ -1096,7 +1096,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  symbol,\n  side,\n  qty,\n  status,\n  created_at,\n  filled_at,\n  filled_avg_price\nFROM orders\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND status NOT IN ('filled', 'canceled', 'cancelled', 'expired', 'rejected')\nORDER BY created_at DESC",
+          "rawSql": "SELECT\n  symbol,\n  side,\n  intent,\n  qty,\n  status,\n  created_at,\n  filled_at,\n  filled_avg_price\nFROM orders\nWHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND status NOT IN ('filled', 'canceled', 'cancelled', 'expired', 'rejected')\nORDER BY created_at DESC",
           "refId": "A"
         }
       ],
@@ -1216,7 +1216,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH latest_assignments AS (\n  SELECT DISTINCT ON (symbol) symbol, strategy, regime, since\n  FROM strategy_assignments\n  WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  ORDER BY symbol, since DESC\n)\nSELECT\n  la.symbol,\n  la.strategy,\n  la.regime,\n  la.since,\n  CASE\n    WHEN ps.qty > 0 THEN 'OPEN'\n    ELSE 'FLAT'\n  END AS position_status,\n  COALESCE(ps.unrealized_pnl, 0) AS position_pnl\nFROM latest_assignments la\nLEFT JOIN positions_snapshot ps ON la.symbol = ps.symbol \n  AND ps.run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND ps.timestamp = (SELECT MAX(timestamp) FROM positions_snapshot WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER'))\nORDER BY la.symbol",
+          "rawSql": "WITH latest_assignments AS (\n  SELECT DISTINCT ON (symbol) symbol, strategy, regime, since\n  FROM strategy_assignments\n  WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  ORDER BY symbol, since DESC\n)\nSELECT\n  la.symbol,\n  la.strategy,\n  la.regime,\n  la.since,\n  CASE\n    WHEN ps.qty > 0 THEN 'LONG'\n    WHEN ps.qty < 0 THEN 'SHORT'\n    ELSE 'FLAT'\n  END AS position_status,\n  COALESCE(ps.unrealized_pnl, 0) AS position_pnl\nFROM latest_assignments la\nLEFT JOIN positions_snapshot ps ON la.symbol = ps.symbol \n  AND ps.run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER')\n  AND ps.timestamp = (SELECT MAX(timestamp) FROM positions_snapshot WHERE run_id IN (SELECT run_id FROM runs WHERE run_type = 'PAPER'))\nORDER BY la.symbol",
           "refId": "A"
         }
       ],

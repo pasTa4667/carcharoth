@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from carcharoth.domain.models import Bar
+from carcharoth.domain.models import Bar, PositionDirection
 from carcharoth.strategies import indicators, session
 
 
@@ -72,9 +72,10 @@ class VolumeFilter:
 
 
 class AtrBracket:
-    """ATR-scaled exit bracket around an entry price: stop loss at
-    entry - stop_multiplier x ATR, optional take profit at
-    entry + take_profit_multiplier x ATR. `passed=True` means exit now.
+    """Direction-aware ATR-scaled exit bracket around an entry price.
+
+    Long levels are below/above entry; short levels are mirrored above/below.
+    `passed=True` means exit now.
 
     Levels use the current ATR, recomputed each check, so they breathe with
     volatility instead of being frozen at entry — strategies stay stateless.
@@ -100,7 +101,13 @@ class AtrBracket:
         """Bars needed for a verdict: what the ATR needs."""
         return self._atr_period + 1
 
-    def check(self, bars: Sequence[Bar], entry_price: float, price: float) -> FilterResult:
+    def check(
+        self,
+        bars: Sequence[Bar],
+        entry_price: float,
+        price: float,
+        direction: PositionDirection = PositionDirection.LONG,
+    ) -> FilterResult:
         atr_value = indicators.atr(bars, self._atr_period)
         if atr_value is None:
             return FilterResult(
@@ -108,23 +115,30 @@ class AtrBracket:
                 reason=f"insufficient history for ATR({self._atr_period})",
                 indicators={},
             )
-        stop_price = entry_price - self._stop_multiplier * atr_value
+        sign = 1.0 if direction is PositionDirection.LONG else -1.0
+        stop_price = entry_price - sign * self._stop_multiplier * atr_value
         indicator_values = {"atr": atr_value, "stop_price": stop_price}
         if self._take_profit_multiplier is not None:
-            take_profit_price = entry_price + self._take_profit_multiplier * atr_value
+            take_profit_price = entry_price + sign * self._take_profit_multiplier * atr_value
             indicator_values["take_profit_price"] = take_profit_price
-            if price >= take_profit_price:
+            take_profit_hit = (
+                price >= take_profit_price
+                if direction is PositionDirection.LONG
+                else price <= take_profit_price
+            )
+            if take_profit_hit:
+                operator = ">=" if direction is PositionDirection.LONG else "<="
                 return FilterResult(
                     passed=True,
-                    reason=f"take profit: price {price:.2f} >= entry {entry_price:.2f}"
-                    f" + {self._take_profit_multiplier} x ATR {atr_value:.2f}",
+                    reason=f"take profit: price {price:.2f} {operator} {take_profit_price:.2f}",
                     indicators=indicator_values,
                 )
-        if price < stop_price:
+        stop_hit = price < stop_price if direction is PositionDirection.LONG else price > stop_price
+        if stop_hit:
+            operator = "<" if direction is PositionDirection.LONG else ">"
             return FilterResult(
                 passed=True,
-                reason=f"stop loss: price {price:.2f} < entry {entry_price:.2f}"
-                f" - {self._stop_multiplier} x ATR {atr_value:.2f}",
+                reason=f"stop loss: price {price:.2f} {operator} {stop_price:.2f}",
                 indicators=indicator_values,
             )
         return FilterResult(passed=False, reason="inside bracket", indicators=indicator_values)

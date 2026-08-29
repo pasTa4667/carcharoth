@@ -7,6 +7,7 @@ alpaca-py types appear; nothing outside services/alpaca/ imports the SDK.
 from alpaca.data.models import Bar as AlpacaBar
 from alpaca.data.models import Quote as AlpacaQuote
 from alpaca.trading.enums import OrderStatus as AlpacaOrderStatus
+from alpaca.trading.enums import PositionSide as AlpacaPositionSide
 from alpaca.trading.models import Order as AlpacaOrder
 from alpaca.trading.models import Position as AlpacaPosition
 from alpaca.trading.models import TradeAccount
@@ -63,11 +64,12 @@ def to_quote(quote: AlpacaQuote) -> Quote:
 
 
 def to_position(position: AlpacaPosition) -> Position:
+    sign = -1.0 if position.side is AlpacaPositionSide.SHORT else 1.0
     return Position(
         symbol=position.symbol,
-        qty=float(position.qty),
+        qty=sign * abs(float(position.qty)),
         avg_entry_price=float(position.avg_entry_price),
-        market_value=float(position.market_value or 0),
+        market_value=sign * abs(float(position.market_value or 0)),
         unrealized_pnl=float(position.unrealized_pl or 0),
         current_price=float(position.current_price or 0),
     )

@@ -149,6 +149,28 @@ def test_regime_flip_holds_until_flat_with_open_position() -> None:
     assert [a.strategy for a in assignments.saved] == ["reversion_fake", "trend_fake"]
 
 
+def test_regime_flip_also_holds_entering_family_until_short_is_flat() -> None:
+    detector = FakeDetector(
+        {"AAPL": [make_assessment(Regime.MEAN_REVERTING), make_assessment(Regime.TRENDING)]}
+    )
+    provider, _, _, assignments, strategies = make_provider(detector)
+    short = make_position("AAPL", qty=-10)
+
+    assert provider.resolve("AAPL", BARS, short, AS_OF) is strategies[Regime.MEAN_REVERTING]
+    assert (
+        provider.resolve("AAPL", BARS, short, AS_OF + timedelta(minutes=1))
+        is strategies[Regime.MEAN_REVERTING]
+    )
+    assert (
+        provider.resolve("AAPL", BARS, None, AS_OF + timedelta(minutes=2))
+        is strategies[Regime.TRENDING]
+    )
+    assert [assignment.strategy for assignment in assignments.saved] == [
+        "reversion_fake",
+        "trend_fake",
+    ]
+
+
 def test_restart_resumes_persisted_assignment() -> None:
     seeded = InMemoryStrategyAssignmentRepository(
         {

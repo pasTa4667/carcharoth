@@ -86,7 +86,7 @@ def efficiency_ratio(bars: Sequence[Bar], period: int) -> float | None:
     """
     if period < 1 or len(bars) < period + 1:
         return None
-    closes = _closes(bars)[-(period + 1):]
+    closes = _closes(bars)[-(period + 1) :]
     direction = abs(closes[-1] - closes[0])
     volatility = float(np.abs(np.diff(closes)).sum())
     if volatility <= 0:
@@ -102,7 +102,7 @@ def variance_ratio(bars: Sequence[Bar], k: int, window: int) -> float | None:
     """
     if k < 2 or window < k + 2 or len(bars) < window + 1:
         return None
-    closes = _closes(bars)[-(window + 1):]
+    closes = _closes(bars)[-(window + 1) :]
     log_prices = np.log(closes)
     r1 = np.diff(log_prices)
     if r1.size < k + 1:

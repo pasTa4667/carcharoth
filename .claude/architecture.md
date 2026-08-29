@@ -16,7 +16,8 @@ structures described below:
 | [overview](architecture/overview.md) | Folder structure & responsibilities (this doc) |
 | [tick-sequence](architecture/tick-sequence.md) | Core Flows — live tick |
 | [engine](architecture/engine.md) | `src/carcharoth/engine/` internals |
-| [strategy-provider](architecture/strategy-provider.md) | Regime-driven strategy selection |
+| [strategy-provider](architecture/strategy-provider.md) | Regime-driven strategy-family selection |
+| [long-short](architecture/long-short.md) | Directional arbitration and signed lifecycle |
 | [regime-detection](architecture/regime-detection.md) | `src/carcharoth/regime/` |
 | [backtest](architecture/backtest.md) | Core Flows — backtest |
 | [optimize](architecture/optimize.md) | Core Flows — optimize |
@@ -30,7 +31,8 @@ The control flows are documented as Mermaid diagrams (linked below). In brief:
   hours. Each tick runs a fixed 5-step sequence (reconcile fills → market data → account
   state → strategy → risk → execute), passing **typed domain objects** between components.
   The engine is "stupid" — it only orchestrates; all logic lives in the components.
-  → [tick-sequence](architecture/tick-sequence.md), [engine internals](architecture/engine.md)
+  → [tick-sequence](architecture/tick-sequence.md), [engine internals](architecture/engine.md),
+  [long/short decisioning](architecture/long-short.md)
 - **Backtest** — the *same* `TradingEngine` replays historical bars via `BacktestRunner`
   (no scheduler; one tick per bar). Only the wiring differs: `HistoricalMarketDataService`
   and `SimulatedBroker` replace the Alpaca services in `main.py`.
@@ -124,8 +126,8 @@ All Alpaca SDK types stay inside `alpaca/`; external code works with domain mode
 ### `src/carcharoth/analysis/`
 **Post-Run Analysis**
 
-- `metrics.py` — pure metric computations: FIFO round-trip matching, total return, max
-  drawdown, annualized Sharpe, win rate, profit factor, per-symbol PnL
+- `metrics.py` — pure long/short FIFO round-trip matching and aggregate/directional
+  metrics: total return, drawdown, Sharpe, win rate, profit factor and per-symbol PnL
 - `objective.py` — pure fitness scoring: weighted composite over metrics per named
   objective (`objectives:` in config.yaml); persisted as `fitness_<name>` per run
 - `analyzer.py` — `BacktestAnalyzer` — reads a run's persisted trades/equity, computes
@@ -144,14 +146,19 @@ All Alpaca SDK types stay inside `alpaca/`; external code works with domain mode
 ### `src/carcharoth/strategies/`
 **Trading Strategies**
 
-Each strategy implements `Strategy.evaluate(market_data, account, positions) → Signal` (pure — no I/O).
+Each strategy implements `Strategy.evaluate(...) -> Signal` (pure, no I/O). A regime
+selects the strategy family; while flat the family compares normalized long/short
+candidates through `DirectionalArbiter`. While positioned it manages only that
+direction's exit.
 
-- `mean_reversion.py` — mean reversion strategy (uses moving averages, z-scores)
-- `ema_vwap.py` — EMA + VWAP combination strategy
-- `registry.py` — registry: `{"mean_reversion": MeanReversionStrategy, ...}`
-- `signals.py` — `Signal` enum (BUY, SELL, HOLD)
+- `mean_reversion.py` — two-sided z-score mean reversion
+- `ema_vwap.py` — two-sided EMA + VWAP trend strategy
+- `arbitration.py` — absolute-score and winner-margin abstention policy
+- `filters.py` — shared direction-aware ATR and session filters
+- `registry.py` — strategy registry/construction
 
-New strategies register here and are selected in `config/config.yaml`.
+Signals carry explicit open/close long/short intent. See
+[long/short decisioning](architecture/long-short.md).
 
 ### `src/carcharoth/regime/`
 **Market Regime Detection**

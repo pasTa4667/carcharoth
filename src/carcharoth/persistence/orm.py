@@ -56,6 +56,7 @@ class TradeRow(Base):
     broker_order_id: Mapped[str] = mapped_column(unique=True)
     symbol: Mapped[str]
     side: Mapped[str]
+    intent: Mapped[str]
     qty: Mapped[Decimal]
     price: Mapped[Decimal]
     fees: Mapped[Decimal] = mapped_column(default=Decimal(0))
@@ -106,6 +107,7 @@ class OrderRow(Base):
     client_order_id: Mapped[str | None]
     symbol: Mapped[str]
     side: Mapped[str]
+    intent: Mapped[str]
     qty: Mapped[Decimal]
     status: Mapped[str]
     created_at: Mapped[datetime]
@@ -184,7 +186,7 @@ class BacktestMetricRow(Base):
 
 
 class RoundTripRow(Base):
-    """One closed long position (FIFO-matched), enriched with strategy context."""
+    """One closed directional position (FIFO-matched), enriched with context."""
 
     __tablename__ = "round_trips"
     __table_args__ = (Index("ix_round_trips_run_entry", "run_id", "entry_time"),)
@@ -192,12 +194,14 @@ class RoundTripRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[uuid.UUID] = _run_id_column()
     symbol: Mapped[str]
+    direction: Mapped[str]
     qty: Mapped[Decimal]
     entry_time: Mapped[datetime]
     exit_time: Mapped[datetime]
     entry_price: Mapped[Decimal]
     exit_price: Mapped[Decimal]
     pnl: Mapped[Decimal]
+    fees: Mapped[Decimal] = mapped_column(default=Decimal(0))
     holding_seconds: Mapped[int]
     strategy: Mapped[str]
     exit_reason: Mapped[str] = mapped_column(Text)

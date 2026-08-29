@@ -4,7 +4,7 @@ title: _process_symbol() — strategy → risk → execution for one symbol
 flowchart TD
     S([symbol]):::entry --> RES["provider.resolve(symbol, bars,<br/>position, as_of)"]:::engine
     RES -- "None" --> SKIP([skip: no strategy<br/>for this regime]):::stop
-    RES -- Strategy --> EVAL["strategy.evaluate(…)<br/>→ Signal"]:::logic
+    RES -- Strategy --> EVAL["strategy.evaluate(…)<br/>flat: arbitrate candidates<br/>open: directional exit<br/>→ explicit intent"]:::logic
     EVAL --> HOLD{"HOLD or<br/>quote is None?"}:::decision
     HOLD -- yes --> SAVE1["save decision<br/><small>no order</small>"]:::db
     SAVE1 --> DONE([done]):::done
@@ -14,8 +14,8 @@ flowchart TD
     APP -- no --> DONE
     APP -- yes --> CLR["_clear_conflicting_orders()"]:::engine
     CLR -- "not clear" --> RETRY([retry next tick]):::stop
-    CLR -- clear --> SUB["executor.submit(OrderRequest)"]:::io
-    SUB -- "OrderConflictError" --> WASH([log wash-trade<br/>rejection, skip]):::stop
+    CLR -- clear --> SUB["executor.submit(OrderRequest)<br/><small>side derived from intent</small>"]:::io
+    SUB -- "OrderConflictError / ShortUnavailable" --> WASH([log rejection,<br/>skip symbol]):::stop
     SUB -- ok --> SAVE3["orders_repo.save_submitted()<br/>→ trades.log"]:::db
     SAVE3 --> DONE
 

@@ -20,7 +20,11 @@ class Strategy(ABC):
         quote: Quote | None,
         position: Position | None,
     ) -> Signal:
-        """Return a BUY/SELL/HOLD signal for one symbol."""
+        """Return one explicit open/close long/short intent or HOLD.
+
+        Position quantity is signed. Implementations arbitrate entries only
+        while flat and manage only the open position's direction otherwise.
+        """
 
     @abstractmethod
     def required_bars(self) -> BarSpec:

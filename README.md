@@ -27,8 +27,10 @@ Scheduler (1 min, market hours only)
 ```
 
 When `regime.active` is true, step 3 uses `RegimeStrategyProvider`: a per-symbol regime
-detector picks which registered strategy trades each symbol. Regime is re-assessed on a slower
-interval; open positions stay with the strategy that entered them until flat (hold-until-flat).
+detector picks which registered strategy family trades each symbol. While flat, that family
+compares normalized long/short candidates and may abstain when their scores are too close.
+Regime is re-assessed on a slower interval; open long or short positions stay with the entering
+family until flat (hold-until-flat and flatten-before-reverse).
 
 Every component is defined by an interface in `src/carcharoth/interfaces/` and wired together in
 exactly one place: `src/carcharoth/main.py` (the composition root). Swapping a component never
@@ -57,7 +59,8 @@ every live session, backtest, or quicktest creates a row in `runs`; all other ta
 it via `run_id` (cascade delete via `carcharoth delete-run`).
 
 Core tables: `trades`, `orders`, `positions_snapshot`, `strategy_decisions` (signals +
-indicators as JSONB), `equity_snapshots`, `round_trips` (FIFO closed positions with MAE/MFE),
+indicators as JSONB), `equity_snapshots`, `round_trips` (directional FIFO positions, fees,
+MAE/MFE),
 `backtest_metrics`, `configurations`, `regime_evaluations`, `strategy_assignments`,
 `permutation_tests` + `permutation_results` (permutation-test verdicts and score
 distributions, cascade-deleted with their baseline run).
@@ -183,6 +186,18 @@ uv run carcharoth config schema                            # JSON Schema (for to
 Every run persists its exact resolved config (`runs.config`) and writes a `config_hash` plus a
 `provenance` block (profile, layers, `--set` overrides) into its summary YAML — any result is
 replayable: `carcharoth config hash -p <profile> [--set ...]` must reproduce the hash.
+
+### Long/short trading
+
+`directional.shorting_enabled` defaults to `false`. Strategies emit explicit `open_long`,
+`close_long`, `open_short`, `close_short`, or `hold` intents; broker BUY/SELL side is derived
+only at execution. `min_entry_score` and `min_score_margin` control abstention. Risk uses gross
+exposure plus `max_short_exposure_pct`; simulations model signed holdings, margin leverage and
+borrow APR. Alpaca checks `tradable` and `shortable` before every sell-to-open.
+
+Enable shorting first in a research profile, validate both strategies out of sample, then
+explicitly promote the setting to paper trading. See
+[long/short architecture](.claude/architecture/long-short.md).
 
 ### Regime detection
 

@@ -15,7 +15,8 @@ without hunting through a large document.
 | [overview.md](overview.md) | System layers, dependency direction, composition root |
 | [tick-sequence.md](tick-sequence.md) | The engine's fixed 5-step tick (live + backtest) |
 | [engine.md](engine.md) | `TradingEngine` internals: per-symbol flow, order reconciliation, conflict clearing |
-| [strategy-provider.md](strategy-provider.md) | Regime-driven strategy selection (hold-until-flat) |
+| [strategy-provider.md](strategy-provider.md) | Regime-driven strategy-family selection (hold-until-flat) |
+| [long-short.md](long-short.md) | Directional candidates, explicit intent and signed positions |
 | [regime-detection.md](regime-detection.md) | Score vs. HMM detectors and the assessment pipeline |
 | [backtest.md](backtest.md) | Historical replay wiring and the simulated fill contract |
 | [optimize.md](optimize.md) | Optuna study loop over unchanged backtests |

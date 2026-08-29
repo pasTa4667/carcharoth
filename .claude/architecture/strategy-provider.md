@@ -1,7 +1,8 @@
 # Strategy Provider
 
-The `StrategyProvider` (`interfaces/strategy_provider.py`) decides *which*
-strategy handles a symbol on a given tick. Two implementations live in
+The `StrategyProvider` (`interfaces/strategy_provider.py`) decides *which strategy
+family* handles a symbol on a given tick. Long/short arbitration happens inside
+that selected family, not in this provider. Two implementations live in
 `engine/strategy_provider.py`.
 
 Two implementations sit behind the ABC (`required_bars()` +
@@ -13,9 +14,9 @@ Two implementations sit behind the ABC (`required_bars()` +
 ## RegimeStrategyProvider.resolve()
 
 The core idea is **hold-until-flat**: a regime switch does not yank a strategy
-out from under an open position. The entering strategy (which understands its
-own exit logic) keeps managing the position until the symbol is flat; only then
-does the new regime's strategy take over.
+out from under an open long or short. The entering family (which understands
+its direction-aware exit logic) keeps managing the position until the symbol is
+flat; only then does the new regime's family take over.
 
 > **Diagram:** [`strategy-provider-resolve.mmd`](diagrams/strategy-provider-resolve.mmd) — render with `mmdc -i diagrams/strategy-provider-resolve.mmd -o strategy-provider-resolve.svg`
 
