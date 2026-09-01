@@ -1,4 +1,4 @@
-"""In-memory fake implementations of every interface, for engine tests."""
+"""In-memory adapters shared by tests."""
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -10,12 +10,12 @@ from carcharoth.config.run_config import RunConfig
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
-    AssignmentRecord,
     BacktestResult,
-    Bar,
     BarSpec,
     DecisionRecord,
     EquityPoint,
+    ExposureIntent,
+    MarketDataRequirements,
     MarketSnapshot,
     MetricValue,
     OpenOrder,
@@ -28,8 +28,8 @@ from carcharoth.domain.models import (
     RiskDecision,
     RunInfo,
     RunType,
-    Signal,
-    SignalAction,
+    Side,
+    TargetExposure,
     Timeframe,
     TradeRecord,
 )
@@ -37,24 +37,20 @@ from carcharoth.interfaces import (
     AccountService,
     MarketClock,
     MarketDataService,
+    ModelSignalGenerator,
     OrderExecutor,
     RiskManager,
-    Strategy,
 )
-from carcharoth.interfaces.regime_detector import RegimeDetector
 from carcharoth.persistence.repositories import (
     AnalysisReader,
     BacktestMetricsRepository,
+    ModelDecisionRepository,
     OrderRepository,
     PositionSnapshotRepository,
-    RegimeEvaluationRepository,
     RoundTripRepository,
     RunRepository,
-    StrategyAssignmentRepository,
-    StrategyDecisionRepository,
     TradeRepository,
 )
-from carcharoth.regime.models import RegimeAssessment, StrategyAssignment
 
 
 class FakeMarketDataService(MarketDataService):
@@ -75,80 +71,65 @@ class FakeAccountService(AccountService):
         return self.state
 
 
-class FakeStrategy(Strategy):
-    name = "fake"
+class FakeModelSignalGenerator(ModelSignalGenerator):
+    def __init__(
+        self,
+        intents: Mapping[str, ExposureIntent],
+        lookback: int = 20,
+        context_symbols: frozenset[str] = frozenset({"SPY"}),
+    ) -> None:
+        self.intents = dict(intents)
+        self.requirements = MarketDataRequirements(
+            BarSpec(Timeframe.minutes(5), lookback), context_symbols
+        )
+        self.generated: list[str] = []
+        self.raise_for: set[str] = set()
 
-    def __init__(self, signals: dict[str, Signal], lookback: int = 20) -> None:
-        self._signals = signals
-        self._lookback = lookback
-        self.evaluated: list[str] = []
+    def market_requirements(self) -> MarketDataRequirements:
+        return self.requirements
 
-    def evaluate(
-        self, symbol: str, bars: list[Bar], quote: Quote | None, position: Position | None
-    ) -> Signal:
-        self.evaluated.append(symbol)
-        signal = self._signals.get(symbol)
-        if signal is None:
-            return Signal(symbol=symbol, action=SignalAction.HOLD, strategy=self.name, reason="")
-        return signal
-
-    def required_bars(self) -> BarSpec:
-        return BarSpec(Timeframe.minutes(5), self._lookback)
-
-
-class RaisingStrategy(FakeStrategy):
-    """Raises for the configured symbols, otherwise delegates to FakeStrategy."""
-
-    def __init__(self, signals: dict[str, Signal], raise_for: set[str]) -> None:
-        super().__init__(signals)
-        self._raise_for = raise_for
-
-    def evaluate(
-        self, symbol: str, bars: list[Bar], quote: Quote | None, position: Position | None
-    ) -> Signal:
-        if symbol in self._raise_for:
-            self.evaluated.append(symbol)
-            raise RuntimeError(f"boom on {symbol}")
-        return super().evaluate(symbol, bars, quote, position)
+    def generate(
+        self, symbol: str, snapshot: MarketSnapshot, position: Position | None
+    ) -> ExposureIntent:
+        self.generated.append(symbol)
+        if symbol in self.raise_for:
+            raise RuntimeError("boom")
+        return self.intents.get(
+            symbol,
+            ExposureIntent(symbol, TargetExposure.UNCHANGED, "fake", "schema", "test"),
+        )
 
 
 class FakeRiskManager(RiskManager):
     def __init__(self, approve: bool = True, qty: float = 1.0) -> None:
-        self._approve = approve
-        self._qty = qty
-        self.assessed: list[Signal] = []
+        self.approve = approve
+        self.qty = qty
+        self.assessed: list[ExposureIntent] = []
 
-    def assess(self, signal: Signal, account: AccountState, quote: Quote) -> RiskDecision:
-        self.assessed.append(signal)
+    def assess(self, intent: ExposureIntent, account: AccountState, quote: Quote) -> RiskDecision:
+        self.assessed.append(intent)
+        side = Side.BUY if intent.target is TargetExposure.LONG else Side.SELL
         return RiskDecision(
-            signal=signal,
-            approved=self._approve,
-            qty=self._qty if self._approve else 0,
-            reason="approved" if self._approve else "rejected: test",
+            intent=intent,
+            approved=self.approve,
+            qty=self.qty if self.approve else 0,
+            side=side if self.approve else None,
+            reason="approved" if self.approve else "rejected",
         )
 
 
 class FakeOrderExecutor(OrderExecutor):
-    def __init__(
-        self,
-        order_states: dict[str, OrderResult] | None = None,
-        submitted_at: datetime | None = None,
-    ) -> None:
-        self.submitted_at = submitted_at or datetime(2026, 7, 1, 15, 0, tzinfo=UTC)
+    def __init__(self) -> None:
         self.submitted: list[OrderRequest] = []
         self.canceled: list[str] = []
-        #: broker_order_id -> result returned by get_order (reconciliation)
-        self.order_states = order_states or {}
-        #: when set, submit raises it instead of accepting the order
+        self.order_states: dict[str, OrderResult] = {}
         self.submit_error: Exception | None = None
-        #: when set, cancel_order raises it
-        self.cancel_error: Exception | None = None
 
     def submit(self, request: OrderRequest) -> OrderResult:
         if self.submit_error is not None:
             raise self.submit_error
         self.submitted.append(request)
-        return OrderResult(
+        result = OrderResult(
             broker_order_id=uuid4().hex,
             client_order_id=request.client_order_id,
             symbol=request.symbol,
@@ -157,37 +138,33 @@ class FakeOrderExecutor(OrderExecutor):
             status=OrderStatus.ACCEPTED,
             filled_qty=0,
             filled_avg_price=None,
-            submitted_at=self.submitted_at,
+            submitted_at=datetime(2026, 7, 1, 15, 0, tzinfo=UTC),
             filled_at=None,
         )
+        self.order_states[result.broker_order_id] = result
+        return result
 
     def get_order(self, broker_order_id: str) -> OrderResult:
         return self.order_states[broker_order_id]
 
     def cancel_order(self, broker_order_id: str) -> None:
-        if self.cancel_error is not None:
-            raise self.cancel_error
         self.canceled.append(broker_order_id)
 
 
 class FakeClock(MarketClock):
-    def __init__(self, open_: bool = True, until_open: float = 0.0) -> None:
-        self._open = open_
-        self._until_open = until_open
-
     def is_open(self) -> bool:
-        return self._open
+        return True
 
     def seconds_until_open(self) -> float:
-        return self._until_open
+        return 0.0
 
 
-class InMemoryStrategyDecisionRepository(StrategyDecisionRepository):
+class InMemoryModelDecisionRepository(ModelDecisionRepository):
     def __init__(self) -> None:
-        self.saved: list[tuple[Signal, RiskDecision | None, datetime]] = []
+        self.saved: list[tuple[ExposureIntent, RiskDecision | None, datetime]] = []
 
-    def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None:
-        self.saved.append((signal, risk, timestamp))
+    def save(self, intent: ExposureIntent, risk: RiskDecision | None, timestamp: datetime) -> None:
+        self.saved.append((intent, risk, timestamp))
 
 
 class InMemoryOrderRepository(OrderRepository):
@@ -201,15 +178,11 @@ class InMemoryOrderRepository(OrderRepository):
         self.rows[result.broker_order_id] = result
 
     def find_open_broker_order_ids(self) -> list[str]:
-        return [
-            broker_id
-            for broker_id, row in self.rows.items()
-            if row.status not in TERMINAL_ORDER_STATUSES
-        ]
+        return [key for key, row in self.rows.items() if row.status not in TERMINAL_ORDER_STATUSES]
 
     def find_open_orders(self, symbol: str) -> list[OpenOrder]:
         return [
-            OpenOrder(broker_order_id=row.broker_order_id, symbol=row.symbol, side=row.side)
+            OpenOrder(row.broker_order_id, row.symbol, row.side)
             for row in self.rows.values()
             if row.symbol == symbol and row.status not in TERMINAL_ORDER_STATUSES
         ]
@@ -229,33 +202,9 @@ class InMemoryTradeRepository(TradeRepository):
 class InMemoryPositionSnapshotRepository(PositionSnapshotRepository):
     def __init__(self) -> None:
         self.snapshots: list[tuple[datetime, list[Position]]] = []
-        self.equity_points: list[EquityPoint] = []
 
     def save_snapshot(self, timestamp: datetime, state: AccountState) -> None:
         self.snapshots.append((timestamp, list(state.positions.values())))
-        self.equity_points.append(EquityPoint(timestamp=timestamp, equity=state.equity))
-
-
-class InMemoryRegimeEvaluationRepository(RegimeEvaluationRepository):
-    def __init__(self) -> None:
-        self.saved: list[tuple[RegimeAssessment, datetime]] = []
-
-    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
-        self.saved.append((assessment, timestamp))
-
-
-class InMemoryStrategyAssignmentRepository(StrategyAssignmentRepository):
-    def __init__(self, current: dict[str, StrategyAssignment] | None = None) -> None:
-        #: seeded "current" state returned by load_current (simulates restart)
-        self.current = dict(current or {})
-        self.saved: list[StrategyAssignment] = []
-
-    def save(self, assignment: StrategyAssignment) -> None:
-        self.saved.append(assignment)
-        self.current[assignment.symbol] = assignment
-
-    def load_current(self) -> dict[str, StrategyAssignment]:
-        return dict(self.current)
 
 
 class InMemoryRunRepository(RunRepository):
@@ -273,28 +222,21 @@ class InMemoryRunRepository(RunRepository):
     ) -> UUID:
         run_id = uuid4()
         self.runs[run_id] = RunInfo(
-            run_id=run_id,
-            run_type=run_type,
-            started_at=started_at,
-            finished_at=None,
-            symbols=list(symbols),
-            backtest_start=backtest_start,
-            backtest_end=backtest_end,
-            config=dict(config),
+            run_id, run_type, started_at, None, list(symbols), backtest_start, backtest_end, config
         )
         return run_id
 
     def finish(self, run_id: UUID, finished_at: datetime) -> None:
-        info = self.runs[run_id]
+        current = self.runs[run_id]
         self.runs[run_id] = RunInfo(
-            run_id=info.run_id,
-            run_type=info.run_type,
-            started_at=info.started_at,
-            finished_at=finished_at,
-            symbols=info.symbols,
-            backtest_start=info.backtest_start,
-            backtest_end=info.backtest_end,
-            config=info.config,
+            current.run_id,
+            current.run_type,
+            current.started_at,
+            finished_at,
+            current.symbols,
+            current.backtest_start,
+            current.backtest_end,
+            current.config,
         )
 
     def get(self, run_id: UUID) -> RunInfo | None:
@@ -302,9 +244,9 @@ class InMemoryRunRepository(RunRepository):
 
     def list_run_ids(self, run_type: RunType | None = None) -> list[UUID]:
         return [
-            run_id
-            for run_id, info in self.runs.items()
-            if run_type is None or info.run_type is run_type
+            key
+            for key, value in self.runs.items()
+            if run_type is None or value.run_type is run_type
         ]
 
     def delete(self, run_id: UUID) -> None:
@@ -325,13 +267,11 @@ class InMemoryAnalysisReader(AnalysisReader):
         trades: dict[UUID, list[TradeRecord]] | None = None,
         equity: dict[UUID, list[EquityPoint]] | None = None,
         decisions: dict[UUID, list[DecisionRecord]] | None = None,
-        assignments: dict[UUID, list[AssignmentRecord]] | None = None,
         position_snapshots: dict[UUID, list[PositionSnapshot]] | None = None,
     ) -> None:
         self.trades = trades or {}
         self.equity = equity or {}
         self.decisions = decisions or {}
-        self.assignments = assignments or {}
         self.position_snapshots = position_snapshots or {}
 
     def list_trades(self, run_id: UUID) -> list[TradeRecord]:
@@ -342,9 +282,6 @@ class InMemoryAnalysisReader(AnalysisReader):
 
     def list_decisions(self, run_id: UUID) -> list[DecisionRecord]:
         return list(self.decisions.get(run_id, []))
-
-    def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]:
-        return list(self.assignments.get(run_id, []))
 
     def list_position_snapshots(self, run_id: UUID) -> list[PositionSnapshot]:
         return list(self.position_snapshots.get(run_id, []))
@@ -359,10 +296,6 @@ class InMemoryRoundTripRepository(RoundTripRepository):
 
 
 class FakeBacktestFunc:
-    """Scripted BacktestFunc: returns one metrics list per call (the last
-    entry repeats once exhausted); an Exception entry is raised instead.
-    Records every received config and the run_ids it handed out."""
-
     def __init__(self, scripted: Sequence[Sequence[MetricValue] | Exception]) -> None:
         self.scripted = list(scripted)
         self.calls: list[RunConfig] = []
@@ -381,37 +314,10 @@ class FakeBacktestFunc:
             raise entry
         run_id = uuid4()
         self.run_ids.append(run_id)
-        return BacktestResult(run_id=run_id, metrics=list(entry))
-
-
-class FakeDetector(RegimeDetector):
-    """Returns a scripted sequence of assessments per symbol; the last one
-    sticks once the script is exhausted."""
-
-    def __init__(
-        self,
-        assessments: dict[str, list[RegimeAssessment | None]] | None = None,
-        lookback: int = 100,
-    ) -> None:
-        self._scripted = {s: list(seq) for s, seq in (assessments or {}).items()}
-        self._sticky: dict[str, RegimeAssessment | None] = {}
-        self._fake_lookback = lookback
-        self.calls: list[str] = []
-
-    def required_lookback(self) -> int:
-        return self._fake_lookback
-
-    def assess(self, symbol: str, bars: Sequence[Bar]) -> RegimeAssessment | None:
-        self.calls.append(symbol)
-        script = self._scripted.get(symbol)
-        if script:
-            self._sticky[symbol] = script.pop(0)
-        return self._sticky.get(symbol)
+        return BacktestResult(run_id, list(entry))
 
 
 class InMemoryByteStore:
-    """Dict-backed ByteStore; counts round trips for cache-behavior asserts."""
-
     def __init__(self) -> None:
         self.data: dict[str, bytes] = {}
         self.mget_calls = 0
@@ -432,21 +338,19 @@ class InMemoryByteStore:
         self.data.update(items)
 
     def count_prefix(self, prefix: str) -> int:
-        return sum(1 for key in self.data if key.startswith(prefix))
+        return sum(key.startswith(prefix) for key in self.data)
 
     def delete_prefix(self, prefix: str) -> int:
-        matches = [key for key in self.data if key.startswith(prefix)]
-        for key in matches:
+        keys = [key for key in self.data if key.startswith(prefix)]
+        for key in keys:
             del self.data[key]
-        return len(matches)
+        return len(keys)
 
     def used_memory_bytes(self) -> int | None:
-        return sum(len(value) for value in self.data.values())
+        return sum(map(len, self.data.values()))
 
 
 class RaisingByteStore:
-    """Every call raises, counting attempts — for ResilientByteStore tests."""
-
     def __init__(self) -> None:
         self.calls = 0
 

@@ -2,7 +2,7 @@
 
 Which parameters are searched is fully config-driven: each search-space key
 is a dot-path into the resolved run config (e.g.
-``strategies.mean_reversion.params.entry_z``), so changing what gets
+``model.decision.long_entry_threshold``), so changing what gets
 optimized never requires a code change.
 
 This model is no longer loaded from its own YAML file; it is derived from

@@ -1,7 +1,7 @@
 """Contract for regime evidence features.
 
 Features are pure functions over a log-returns array, mirroring
-strategies/indicators.py: no I/O, and None during warm-up. The detector
+the model features: no I/O, and None during warm-up. The detector
 converts bars to log returns once, so features stay numpy-only.
 """
 

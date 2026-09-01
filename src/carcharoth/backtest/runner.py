@@ -13,11 +13,11 @@ from tqdm import tqdm
 
 from carcharoth.domain.models import OrderStatus
 from carcharoth.engine.engine import TradingEngine
+from carcharoth.features.session import minutes_since_open, minutes_until_close
 from carcharoth.interfaces.execution import OrderExecutor
 from carcharoth.persistence.repositories import OrderRepository, TradeRepository
 from carcharoth.services.backtest.broker import SimulatedBroker
 from carcharoth.services.backtest.market_data import HistoricalMarketDataService
-from carcharoth.strategies.session import minutes_since_open, minutes_until_close
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +68,13 @@ class BacktestRunner:
         )
         for index, as_of in enumerate(iterable, start=1):
             self._market_data.advance_to(as_of)
-            self._broker.mark_to_market(as_of, self._market_data.latest_closes())
+            self._broker.mark_to_market(as_of, self._market_data.latest_bars())
             self._engine.tick()
             if not self._show_progress and (
                 index % _PROGRESS_EVERY_BARS == 0 or index == len(grid)
             ):
                 logger.info("backtest: bar %d/%d (%s)", index, len(grid), as_of)
+        self._broker.cancel_pending()
         self._reconcile_remaining()
 
     def _reconcile_remaining(self) -> None:

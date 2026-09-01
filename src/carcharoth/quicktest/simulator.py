@@ -1,12 +1,4 @@
-"""Per-symbol in-memory strategy simulation — no engine, no risk manager.
-
-One symbol at a time: walk its regular-session bars, keep a rolling lookback
-window, call ``strategy.evaluate()``, and fill BUY/SELL signals immediately
-at that bar's close adjusted by spread/slippage (same fill model as
-``SimulatedBroker``). BUY sizing is ``capital * position_size_pct`` notional;
-one open position per symbol (a BUY while long is ignored, a SELL closes the
-whole position) — matching the engine's behavior.
-"""
+"""Per-symbol fixed-model simulation with next-bar-open long/short fills."""
 
 import logging
 from dataclasses import dataclass
@@ -15,23 +7,22 @@ from datetime import datetime
 from carcharoth.domain.models import (
     Bar,
     EquityPoint,
+    MarketSnapshot,
     Position,
     PositionSnapshot,
     Side,
-    SignalAction,
+    TargetExposure,
     TradeRecord,
 )
-from carcharoth.interfaces.strategy import Strategy
+from carcharoth.features.session import is_regular_session
+from carcharoth.interfaces.model_signal import ModelSignalGenerator
 from carcharoth.quicktest.result import SymbolResult
-from carcharoth.strategies.session import minutes_since_open, minutes_until_close
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class SimulationSettings:
-    """Fill and sizing parameters of one quick-test run."""
-
     capital: float
     position_size_pct: float
     spread_pct: float = 0.0
@@ -45,71 +36,117 @@ class _Holding:
 
 
 def simulate_symbol(
-    strategy: Strategy,
+    model: ModelSignalGenerator,
     symbol: str,
     bars: list[Bar],
+    benchmark_bars: list[Bar],
     start: datetime,
     end_exclusive: datetime,
     settings: SimulationSettings,
 ) -> SymbolResult:
-    """Run one independent symbol simulation over [start, end_exclusive).
-
-    ``bars`` must include warm-up history before ``start`` (oldest first);
-    the strategy is only evaluated on regular-session bars inside the window,
-    but the rolling window it sees reaches back into the warm-up.
-    """
     result = SymbolResult(symbol=symbol)
-    lookback = strategy.required_bars().lookback
+    requirements = model.market_requirements()
+    lookback = requirements.bars.lookback
     cash = settings.capital
     holding: _Holding | None = None
+    pending: tuple[Side, float] | None = None
 
+    benchmark_regular = sorted(
+        [bar for bar in benchmark_bars if is_regular_session(bar.timestamp)],
+        key=lambda bar: bar.timestamp,
+    )
     for index, bar in enumerate(bars):
-        ts = bar.timestamp
-        if ts < start or ts >= end_exclusive:
-            continue
-        # Alpaca minute bars include pre-/after-hours; like the backtest
-        # runner, only regular-session bars are replayed.
-        if minutes_since_open(ts) < 0 or minutes_until_close(ts) <= 0:
+        timestamp = bar.timestamp
+        if not start <= timestamp < end_exclusive or not is_regular_session(timestamp):
             continue
 
-        window = bars[max(0, index + 1 - lookback) : index + 1]
+        if pending is not None:
+            side, qty = pending
+            fill_price = _fill_price(side, bar.open, settings)
+            cash, holding = _fill(symbol, side, qty, fill_price, timestamp, cash, holding, result)
+            pending = None
+
         position = _position(symbol, holding, bar.close) if holding else None
-        signal = strategy.evaluate(symbol, window, None, position)
-
-        if signal.action is SignalAction.BUY and holding is None:
-            fill_price = bar.close * (1 + settings.spread_pct / 2) * (1 + settings.slippage_pct)
-            notional = min(settings.capital * settings.position_size_pct, cash)
-            qty = notional / fill_price
-            if qty > 0:
-                cash -= fill_price * qty
-                holding = _Holding(qty=qty, entry_price=fill_price)
-                result.trades.append(TradeRecord(symbol, Side.BUY, qty, fill_price, ts))
-        elif signal.action is SignalAction.SELL and holding is not None:
-            fill_price = bar.close * (1 - settings.spread_pct / 2) * (1 - settings.slippage_pct)
-            cash += fill_price * holding.qty
-            result.trades.append(TradeRecord(symbol, Side.SELL, holding.qty, fill_price, ts))
-            holding = None
+        window = bars[max(0, index + 1 - lookback) : index + 1]
+        benchmark_window = [
+            candidate for candidate in benchmark_regular if candidate.timestamp <= timestamp
+        ][-lookback:]
+        context_symbol = next(iter(requirements.context_symbols), symbol)
+        snapshot_bars = {symbol: window}
+        if context_symbol != symbol:
+            snapshot_bars[context_symbol] = benchmark_window
+        snapshot = MarketSnapshot(bars=snapshot_bars, quotes={}, as_of=timestamp)
+        intent = model.generate(symbol, snapshot, position)
+        pending = _plan(intent.target, holding, bar.close, settings)
 
         if holding is not None:
             result.snapshots.append(
                 PositionSnapshot(
                     symbol=symbol,
-                    timestamp=ts,
+                    timestamp=timestamp,
                     unrealized_pnl=(bar.close - holding.entry_price) * holding.qty,
                 )
             )
         equity = cash + (holding.qty * bar.close if holding else 0.0)
-        result.equity.append(EquityPoint(timestamp=ts, equity=equity))
-        result.cash.append(EquityPoint(timestamp=ts, equity=cash))
+        result.equity.append(EquityPoint(timestamp=timestamp, equity=equity))
+        result.cash.append(EquityPoint(timestamp=timestamp, equity=cash))
 
     if holding is not None:
-        logger.info(
-            "%s: position of %.4f shares still open at end of window (counted in equity, "
-            "not in trade metrics)",
-            symbol,
-            holding.qty,
-        )
+        logger.info("%s: signed position %.4f remains open at window end", symbol, holding.qty)
     return result
+
+
+def _plan(
+    target: TargetExposure,
+    holding: _Holding | None,
+    close: float,
+    settings: SimulationSettings,
+) -> tuple[Side, float] | None:
+    if target is TargetExposure.UNCHANGED:
+        return None
+    if holding is not None:
+        current = TargetExposure.LONG if holding.qty > 0 else TargetExposure.SHORT
+        if target is current:
+            return None
+        return (Side.SELL if holding.qty > 0 else Side.BUY, abs(holding.qty))
+    if target is TargetExposure.FLAT or close <= 0:
+        return None
+    qty = settings.capital * settings.position_size_pct / close
+    return (Side.BUY if target is TargetExposure.LONG else Side.SELL, qty)
+
+
+def _fill_price(side: Side, open_price: float, settings: SimulationSettings) -> float:
+    if side is Side.BUY:
+        return open_price * (1 + settings.spread_pct / 2) * (1 + settings.slippage_pct)
+    return open_price * (1 - settings.spread_pct / 2) * (1 - settings.slippage_pct)
+
+
+def _fill(
+    symbol: str,
+    side: Side,
+    qty: float,
+    price: float,
+    timestamp: datetime,
+    cash: float,
+    holding: _Holding | None,
+    result: SymbolResult,
+) -> tuple[float, _Holding | None]:
+    delta = qty if side is Side.BUY else -qty
+    cash -= delta * price
+    result.trades.append(TradeRecord(symbol, side, qty, price, timestamp))
+    if holding is None:
+        return cash, _Holding(delta, price)
+    new_qty = holding.qty + delta
+    if abs(new_qty) < 1e-12:
+        return cash, None
+    if holding.qty * delta > 0:
+        holding.entry_price = (holding.entry_price * abs(holding.qty) + price * abs(delta)) / abs(
+            new_qty
+        )
+    elif holding.qty * new_qty < 0:
+        holding.entry_price = price
+    holding.qty = new_qty
+    return cash, holding
 
 
 def _position(symbol: str, holding: _Holding, price: float) -> Position:

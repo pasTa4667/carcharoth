@@ -1,11 +1,12 @@
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 
 from carcharoth.domain.errors import MarketDataError
-from carcharoth.domain.models import Bar, BarSpec, MarketSnapshot, Quote
+from carcharoth.domain.models import Bar, BarSpec, MarketSnapshot, Quote, TimeframeUnit
+from carcharoth.features.session import is_regular_session
 from carcharoth.interfaces.cache import Cache
 from carcharoth.interfaces.market_data import MarketDataService
 from carcharoth.services.alpaca.historical import to_alpaca_timeframe, warmup_window
@@ -46,8 +47,17 @@ class AlpacaMarketDataService(MarketDataService):
         )
         response = self._client.get_stock_bars(request)
         assert not isinstance(response, dict)  # raw feed is off by default
+        if timeframe.unit is TimeframeUnit.MINUTE:
+            completed_before = as_of - timedelta(minutes=timeframe.amount)
+        else:
+            completed_before = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
         bars = {
-            symbol: [to_bar(bar) for bar in symbol_bars][-spec.lookback :]
+            symbol: [
+                mapped
+                for raw in symbol_bars
+                if (mapped := to_bar(raw)).timestamp <= completed_before
+                and is_regular_session(mapped.timestamp)
+            ][-spec.lookback :]
             for symbol, symbol_bars in response.data.items()
         }
         # Symbols with no bars at all still get an (empty) entry.

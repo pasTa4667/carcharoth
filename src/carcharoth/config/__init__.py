@@ -1,8 +1,9 @@
 from carcharoth.config.app_config import (
     EngineConfig,
+    ModelConfig,
     ObjectiveConfig,
     RiskConfig,
-    StrategyConfig,
+    TrainingConfig,
 )
 from carcharoth.config.loader import (
     CONFIG_DIR,
@@ -19,12 +20,13 @@ __all__ = [
     "CONFIG_DIR",
     "ConfigError",
     "EngineConfig",
+    "ModelConfig",
     "ObjectiveConfig",
     "ResolvedConfig",
     "RiskConfig",
     "RunConfig",
     "Settings",
-    "StrategyConfig",
+    "TrainingConfig",
     "config_hash",
     "load_profile",
     "resolve_raw",

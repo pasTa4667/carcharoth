@@ -55,8 +55,20 @@ def test_fifo_matching_with_partial_lots() -> None:
     assert first.closed_at == BASE_TIME + timedelta(minutes=10)
 
 
-def test_sell_without_matching_lot_is_skipped() -> None:
+def test_unclosed_short_is_not_a_round_trip() -> None:
     assert match_round_trips([trade(Side.SELL, 5, 100.0, minute=0)]) == []
+
+
+def test_short_fifo_profit() -> None:
+    trips = match_round_trips(
+        [
+            trade(Side.SELL, 10, 100.0, minute=0),
+            trade(Side.BUY, 10, 90.0, minute=5),
+        ]
+    )
+    assert len(trips) == 1
+    assert trips[0].direction.value == "short"
+    assert trips[0].pnl == pytest.approx(100.0)
 
 
 def test_round_trips_are_matched_per_symbol() -> None:
@@ -140,12 +152,14 @@ def test_all_winning_trades_omit_loss_metrics() -> None:
 
 def test_excursions_computed_from_snapshots() -> None:
     # Buy 10 shares at $100 at minute 0, sell at minute 10
-    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 120.0, minute=10)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 120.0, minute=10)]
+    )
     assert len(trips) == 1
     snaps = [
-        snapshot("AAPL", minute=1, unrealized_pnl=50.0),   # +$50
+        snapshot("AAPL", minute=1, unrealized_pnl=50.0),  # +$50
         snapshot("AAPL", minute=5, unrealized_pnl=-30.0),  # -$30  ← worst (MAE)
-        snapshot("AAPL", minute=8, unrealized_pnl=80.0),   # +$80  ← best (MFE)
+        snapshot("AAPL", minute=8, unrealized_pnl=80.0),  # +$80  ← best (MFE)
     ]
     enriched = enrich_with_excursions(trips, snaps)
     assert len(enriched) == 1
@@ -157,7 +171,9 @@ def test_excursions_computed_from_snapshots() -> None:
 
 def test_excursions_all_positive_mae_is_zero() -> None:
     # Trade never went negative unrealized
-    trips = match_round_trips([trade(Side.BUY, 5, 200.0, minute=0), trade(Side.SELL, 5, 210.0, minute=5)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 5, 200.0, minute=0), trade(Side.SELL, 5, 210.0, minute=5)]
+    )
     snaps = [
         snapshot("AAPL", minute=1, unrealized_pnl=10.0),
         snapshot("AAPL", minute=3, unrealized_pnl=25.0),
@@ -168,17 +184,21 @@ def test_excursions_all_positive_mae_is_zero() -> None:
 
 
 def test_excursions_no_snapshots_yields_none() -> None:
-    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 110.0, minute=5)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 10, 100.0, minute=0), trade(Side.SELL, 10, 110.0, minute=5)]
+    )
     enriched = enrich_with_excursions(trips, [])
     assert enriched[0].mae_pct is None
     assert enriched[0].mfe_pct is None
 
 
 def test_excursions_snapshots_outside_window_are_ignored() -> None:
-    trips = match_round_trips([trade(Side.BUY, 10, 100.0, minute=5), trade(Side.SELL, 10, 110.0, minute=10)])
+    trips = match_round_trips(
+        [trade(Side.BUY, 10, 100.0, minute=5), trade(Side.SELL, 10, 110.0, minute=10)]
+    )
     snaps = [
-        snapshot("AAPL", minute=2, unrealized_pnl=-999.0),   # before trade
-        snapshot("AAPL", minute=7, unrealized_pnl=-20.0),    # during trade
+        snapshot("AAPL", minute=2, unrealized_pnl=-999.0),  # before trade
+        snapshot("AAPL", minute=7, unrealized_pnl=-20.0),  # during trade
         snapshot("AAPL", minute=15, unrealized_pnl=-999.0),  # after trade
     ]
     enriched = enrich_with_excursions(trips, snaps)

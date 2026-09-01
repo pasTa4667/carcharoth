@@ -34,9 +34,8 @@ class BacktestAnalyzer:
         trades = self._reader.list_trades(run_id)
         equity = self._reader.list_equity(run_id)
         decisions = self._reader.list_decisions(run_id)
-        assignments = self._reader.list_assignments(run_id)
 
-        round_trips = match_round_trips(trades, decisions, assignments)
+        round_trips = match_round_trips(trades, decisions)
         snapshots = self._reader.list_position_snapshots(run_id)
         round_trips = enrich_with_excursions(round_trips, snapshots)
         metrics = compute_metrics(equity, trades, round_trips=round_trips)

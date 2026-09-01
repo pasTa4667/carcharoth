@@ -38,6 +38,7 @@ from carcharoth.analysis.objective import (
 )
 from carcharoth.domain.models import EquityPoint
 from carcharoth.interfaces.permutation import PermutationContext, PermutedOutcome
+from carcharoth.modeling.signal_generator import build_signal_generator
 from carcharoth.permutation.registry import build_permutation_method
 from carcharoth.persistence.buffered import WriteBuffer
 from carcharoth.persistence.orm import PermutationResultRow
@@ -48,14 +49,14 @@ from carcharoth.quicktest.runner import (
     simulation_settings,
 )
 from carcharoth.quicktest.simulator import simulate_symbol
-from carcharoth.strategies.registry import build_strategy
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from uuid import UUID
 
     from carcharoth.config.app_config import ObjectiveConfig
-    from carcharoth.config.quicktest_config import PermutationConfig, QuickTestConfig
+    from carcharoth.config.permutation_config import PermutationConfig
+    from carcharoth.config.quicktest_config import QuickTestConfig
     from carcharoth.domain.models import Bar, MetricValue
     from carcharoth.interfaces.optimization import BarsFetcher
     from carcharoth.persistence.buffered import FlushFn
@@ -129,14 +130,16 @@ def build_permutation_context(
     core (no MAE/MFE enrichment, no per-symbol metrics) and scores it."""
 
     def simulate(permuted_bars: Mapping[str, list[Bar]]) -> PermutedOutcome:
-        strategy = build_strategy(config.strategy.name, config.strategy.params)
+        model = build_signal_generator(config.model, evaluation_start=config.start)
         settings = simulation_settings(config)
         result = QuickTestResult(capital_per_symbol=config.capital)
+        benchmark = permuted_bars.get(config.model.benchmark_symbol, [])
         for symbol in config.symbols:
             result.symbols[symbol] = simulate_symbol(
-                strategy,
+                model,
                 symbol,
                 permuted_bars.get(symbol, []),
+                benchmark,
                 config.start_dt,
                 config.end_exclusive_dt,
                 settings,

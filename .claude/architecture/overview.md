@@ -1,25 +1,21 @@
-# System Overview
+# Module Overview
 
-Carcharoth is interface-first: every component is defined by an ABC in
-`interfaces/`, implemented by concrete providers in `services/` (and friends),
-and wired together in exactly one place — `main.py` (the composition root).
-Dependencies point **inward**, toward the interfaces and pure domain models.
+```mermaid
+flowchart TB
+  MAIN[main.py composition root] --> ENG[engine]
+  ENG --> IF[interfaces + domain]
+  ENG --> MODEL[modeling]
+  MODEL --> FEAT[features]
+  MODEL --> XGB[services/xgboost]
+  ENG --> RISK[risk]
+  ENG --> BROKERS[services/alpaca + services/backtest]
+  ENG --> DB[persistence]
+  BACK[backtest / quicktest / permutation] --> ENG
+  OPT[services/optuna] --> BACK
+  REG[regime detectors retained, disconnected]:::off
+  classDef off stroke-dasharray: 5 5
+```
 
-## Layered dependency view
-
-> **Diagram:** [`overview-layers.mmd`](diagrams/overview-layers.mmd) — render with `mmdc -i diagrams/overview-layers.mmd -o overview-layers.svg`
-
-## Why this shape
-
-- **The engine never imports a provider.** It only touches `interfaces/` and
-  `domain/`, so swapping Alpaca for another broker changes `main.py` plus one
-  new `services/<provider>/` package — nothing in `engine/`.
-- **`main.py` is the only wiring seam.** It decides live vs. backtest, which
-  strategy/detector/risk policy runs, and injects everything.
-- **Domain models are the lingua franca.** Provider SDK types are converted to
-  `domain/models.py` at the boundary (e.g. `services/alpaca/mappers.py`) and
-  never leak inward.
-
-See [overview prose](../architecture.md#folder-structure--responsibilities) for
-the per-folder responsibilities.
-</content>
+Training and runtime share `FeaturePipeline`; runtime never builds labels and training never
+places orders. Provider SDK types stay in provider adapters. See `../architecture.md` for the
+complete contracts and invariants.

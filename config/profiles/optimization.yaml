@@ -1,5 +1,5 @@
-# Optuna study: `carcharoth optimize` (default profile).
-extends: [base, symbols/core51, strategies/mean_reversion, optimization/mean_reversion_full]
+# Optuna fixed-artifact threshold/risk study.
+extends: [base, symbols/core51, optimization/xgboost_thresholds]
 optimization:
   study:
-    name: hydra-quant-spta-26
+    name: xgboost-thresholds

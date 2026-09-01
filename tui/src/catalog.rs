@@ -134,6 +134,35 @@ const PROFILE_FIELD: Field = Field::text(
     "config profile; prefilled with the command's default",
 );
 
+const TRAIN_FIELDS: &[Field] = &[
+    PROFILE_FIELD,
+    Field::text(
+        "train-start",
+        "train start",
+        "--train-start",
+        "YYYY-MM-DD; overrides training.train_start",
+    ),
+    Field::text(
+        "train-end",
+        "train end",
+        "--train-end",
+        "YYYY-MM-DD; overrides training.train_end",
+    ),
+    Field::text(
+        "validation-start",
+        "validation start",
+        "--validation-start",
+        "YYYY-MM-DD; overrides training.validation_start",
+    ),
+    Field::text(
+        "validation-end",
+        "validation end",
+        "--validation-end",
+        "YYYY-MM-DD; overrides training.validation_end",
+    ),
+    Field::flag("--verbose", "verbose", "INFO console logging"),
+];
+
 const BACKTEST_FIELDS: &[Field] = &[
     PROFILE_FIELD,
     Field::text(
@@ -154,6 +183,12 @@ const BACKTEST_FIELDS: &[Field] = &[
         "--symbols",
         "comma-separated override of the symbol universe",
     ),
+    Field::text(
+        "artifact",
+        "artifact",
+        "--set",
+        "trained model artifact to run backtest on"
+    ),
     Field::choice(
         "permute",
         "permute",
@@ -162,11 +197,6 @@ const BACKTEST_FIELDS: &[Field] = &[
         "monte carlo the finished backtest's trades (trade-based methods only)",
     ),
     Field::flag("--verbose", "verbose", "INFO console logging"),
-    Field::flag(
-        "--no-hmm-cache",
-        "no HMM cache",
-        "disable the persistent HMM fit cache",
-    ),
     Field::flag(
         "--verbose-db",
         "verbose DB",
@@ -237,21 +267,11 @@ const OPTIMIZE_FIELDS: &[Field] = &[
         "overrides optimization.study.workers",
     ),
     Field::flag("--verbose", "verbose", "INFO console logging"),
-    Field::flag(
-        "--no-hmm-cache",
-        "no HMM cache",
-        "use when the study searches HMM params",
-    ),
 ];
 
 const RUN_ID_FIELDS: &[Field] = &[Field::required_text(
     "run-id", "run id", "--run-id", "run UUID",
 )];
-
-const CACHE_CLEAR_FIELDS: &[Field] = &[
-    Field::flag("--bars", "bars only", "clear only the bars cache"),
-    Field::flag("--hmm", "HMM only", "clear only the HMM fit cache"),
-];
 
 const CONFIG_RESOLVE_FIELDS: &[Field] = &[
     PROFILE_FIELD,
@@ -288,9 +308,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         fields: PROFILE_ONLY,
     },
     CommandSpec {
+        name: "train model",
+        args: &["train"],
+        help: "train and publish an immutable XGBoost artifact",
+        profiled: true,
+        default_profile: Some("training"),
+        confirm: None,
+        fields: TRAIN_FIELDS,
+    },
+    CommandSpec {
         name: "run backtest",
         args: &["backtest"],
-        help: "replay history through the full engine (regime + risk)",
+        help: "replay a fixed model artifact through the full engine and risk",
         profiled: true,
         default_profile: Some("backtest"),
         confirm: None,
@@ -299,7 +328,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "run quicktest",
         args: &["quicktest"],
-        help: "isolated strategy test — no engine, regime, or risk",
+        help: "fast fixed-artifact model test — no engine or portfolio risk",
         profiled: true,
         default_profile: Some("quicktest"),
         confirm: None,
@@ -308,7 +337,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "run optimize",
         args: &["optimize"],
-        help: "Optuna parameter search over backtests",
+        help: "Optuna fixed-artifact decision/risk search over backtests",
         profiled: true,
         default_profile: Some("optimization"),
         confirm: None,
@@ -362,11 +391,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "cache clear",
         args: &["cache", "clear"],
-        help: "delete cached entries (both caches by default)",
+        help: "delete cached historical bars",
         profiled: false,
         default_profile: None,
         confirm: Some("Clear the Redis cache?"),
-        fields: CACHE_CLEAR_FIELDS,
+        fields: NO_FIELDS,
     },
     CommandSpec {
         name: "config list",
@@ -471,6 +500,10 @@ impl Form {
         for (key, path) in [
             ("start", &["data", "start"][..]),
             ("end", &["data", "end"][..]),
+            ("train-start", &["training", "train_start"][..]),
+            ("train-end", &["training", "train_end"][..]),
+            ("validation-start", &["training", "validation_start"][..]),
+            ("validation-end", &["training", "validation_end"][..]),
             ("n-trials", &["optimization", "study", "n_trials"][..]),
             ("workers", &["optimization", "study", "workers"][..]),
             ("study-name", &["optimization", "study", "name"][..]),
@@ -616,6 +649,10 @@ mod tests {
             form("run backtest").args(&[]),
             vec!["backtest", "-p", "backtest"]
         );
+        assert_eq!(
+            form("train model").args(&[]),
+            vec!["train", "-p", "training"]
+        );
         assert_eq!(form("cache stats").args(&[]), vec!["cache", "stats"]);
     }
 
@@ -629,7 +666,6 @@ mod tests {
             "AAPL,MSFT".to_string(),
             "monte_carlo_trades".to_string(),
             "on".to_string(),
-            "off".to_string(),
             "off".to_string(),
         ];
         assert_eq!(
@@ -690,13 +726,22 @@ mod tests {
     fn prefill_fills_empty_fields_only() {
         let config = json!({
             "data": {"start": "2025-02-01", "end": "2025-03-01"},
-            "optimization": {"study": {"n_trials": 20, "workers": 2, "name": "default-study"}}
+            "optimization": {"study": {"n_trials": 20, "workers": 2, "name": "default-study"}},
+            "training": {
+                "train_start": "2023-01-01", "train_end": "2024-06-30",
+                "validation_start": "2024-07-01", "validation_end": "2024-12-31"
+            }
         });
         let mut backtest = form("run backtest");
         backtest.values[2] = "2025-05-05".to_string();
         backtest.prefill_from(&config);
         assert_eq!(backtest.field("start"), Some("2025-02-01"));
         assert_eq!(backtest.field("end"), Some("2025-05-05"));
+
+        let mut train = form("train model");
+        train.prefill_from(&config);
+        assert_eq!(train.field("train-start"), Some("2023-01-01"));
+        assert_eq!(train.field("validation-end"), Some("2024-12-31"));
 
         let mut optimize = form("run optimize");
         optimize.prefill_from(&config);

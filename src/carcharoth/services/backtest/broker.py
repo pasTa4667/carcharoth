@@ -1,16 +1,7 @@
-"""In-memory broker simulation: account state + instant market-order fills.
-
-Fill contract (mirrors how `TradingEngine._reconcile_fills` records trades):
-`submit()` mutates cash/positions immediately but returns ACCEPTED with no
-fill details; `get_order()` then reports the order FILLED at the simulated
-fill time. If `submit()` returned FILLED directly, the order would be stored
-terminal and the engine would never write a trade row.
-
-The backtest runner drives time: `mark_to_market(as_of, closes)` must be
-called before each tick so fills and valuations use that bar's prices.
-"""
+"""Signed-position broker with next-bar-open market fills."""
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import uuid4
@@ -18,15 +9,16 @@ from uuid import uuid4
 from carcharoth.domain.errors import BrokerError
 from carcharoth.domain.models import (
     AccountState,
+    Bar,
     OrderRequest,
     OrderResult,
     OrderStatus,
     Position,
     Side,
 )
+from carcharoth.features.session import MARKET_TZ
 from carcharoth.interfaces.account import AccountService
 from carcharoth.interfaces.execution import OrderExecutor
-from carcharoth.strategies.session import MARKET_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -38,67 +30,59 @@ class _Holding:
 
 
 class SimulatedBroker(AccountService, OrderExecutor):
-    def __init__(self, initial_capital: float, spread_pct: float, slippage_pct: float) -> None:
+    def __init__(
+        self,
+        initial_capital: float,
+        spread_pct: float,
+        slippage_pct: float,
+        margin_multiplier: float = 2.0,
+    ) -> None:
         self._cash = initial_capital
         self._spread_pct = spread_pct
         self._slippage_pct = slippage_pct
+        self._margin_multiplier = margin_multiplier
         self._holdings: dict[str, _Holding] = {}
         self._closes: dict[str, float] = {}
         self._as_of: datetime | None = None
         self._last_equity = initial_capital
         self._session_date: date | None = None
-        #: broker_order_id -> the completed fill reported by get_order()
-        self._fills: dict[str, OrderResult] = {}
+        self._orders: dict[str, OrderResult] = {}
+        self._pending: dict[str, OrderRequest] = {}
 
-    def mark_to_market(self, as_of: datetime, closes: dict[str, float]) -> None:
-        """Set the simulated time and current prices. Rolls `last_equity` at
-        each market-timezone session change so the risk manager's daily-loss
-        rule resets per session, as it does live."""
-        self._as_of = as_of
+    def mark_to_market(self, as_of: datetime, bars: Mapping[str, Bar]) -> None:
+        """Fill prior accepted orders at this bar's open, then mark at close."""
         session_date = as_of.astimezone(MARKET_TZ).date()
         if self._session_date is not None and session_date != self._session_date:
-            # equity at the previous session's last prices, like Alpaca's
-            # last_equity (previous end-of-day equity)
             self._last_equity = self._equity()
         self._session_date = session_date
-        self._closes.update(closes)
+        self._as_of = as_of
+        self._fill_pending(bars)
+        self._closes.update({symbol: bar.close for symbol, bar in bars.items()})
 
     def get_account_state(self) -> AccountState:
         positions = {symbol: self._position(symbol) for symbol in self._holdings}
+        equity = self._equity()
+        gross = sum(
+            abs(holding.qty) * self._price(symbol, holding)
+            for symbol, holding in self._holdings.items()
+        )
+        buying_power = max(0.0, equity * self._margin_multiplier - gross)
         return AccountState(
-            equity=self._equity(),
+            equity=equity,
             cash=self._cash,
-            buying_power=self._cash,  # cash account, no margin
+            buying_power=buying_power,
             last_equity=self._last_equity,
             positions=positions,
         )
 
     def submit(self, request: OrderRequest) -> OrderResult:
         as_of = self._require_time()
-        close = self._closes.get(request.symbol)
-        if close is None:
+        if request.qty <= 0:
+            raise BrokerError("order quantity must be positive")
+        if request.symbol not in self._closes:
             raise BrokerError(f"no price for {request.symbol} at {as_of}")
-        if request.side is Side.BUY:
-            fill_price = self._buy(request, close)
-        else:
-            fill_price = self._sell(request, close)
-
         broker_order_id = uuid4().hex
-        self._fills[broker_order_id] = OrderResult(
-            broker_order_id=broker_order_id,
-            client_order_id=request.client_order_id,
-            symbol=request.symbol,
-            side=request.side,
-            qty=request.qty,
-            status=OrderStatus.FILLED,
-            filled_qty=request.qty,
-            filled_avg_price=fill_price,
-            submitted_at=as_of,
-            filled_at=as_of,
-        )
-        # ACCEPTED, not FILLED: the engine records the trade when the next
-        # reconcile pass sees the order transition to FILLED (see module doc).
-        return OrderResult(
+        accepted = OrderResult(
             broker_order_id=broker_order_id,
             client_order_id=request.client_order_id,
             symbol=request.symbol,
@@ -110,51 +94,114 @@ class SimulatedBroker(AccountService, OrderExecutor):
             submitted_at=as_of,
             filled_at=None,
         )
+        self._orders[broker_order_id] = accepted
+        self._pending[broker_order_id] = request
+        return accepted
 
     def get_order(self, broker_order_id: str) -> OrderResult:
-        fill = self._fills.get(broker_order_id)
-        if fill is None:
-            raise BrokerError(f"unknown order {broker_order_id}")
-        return fill
+        try:
+            return self._orders[broker_order_id]
+        except KeyError:
+            raise BrokerError(f"unknown order {broker_order_id}") from None
 
     def cancel_order(self, broker_order_id: str) -> None:
-        # Simulated orders fill instantly; there is never anything to cancel.
-        logger.debug("cancel_order(%s) ignored: simulated fills are instant", broker_order_id)
+        current = self.get_order(broker_order_id)
+        if current.status is not OrderStatus.ACCEPTED:
+            return
+        self._pending.pop(broker_order_id, None)
+        self._orders[broker_order_id] = self._terminal(current, OrderStatus.CANCELED)
 
-    def _buy(self, request: OrderRequest, close: float) -> float:
-        fill_price = close * (1 + self._spread_pct / 2) * (1 + self._slippage_pct)
-        cost = fill_price * request.qty
-        if cost > self._cash:
-            raise BrokerError(
-                f"insufficient cash for {request.symbol}: need {cost:.2f}, have {self._cash:.2f}"
-            )
+    def cancel_pending(self) -> None:
+        """Cancel orders left without a next bar at the end of replay."""
+        for broker_order_id in list(self._pending):
+            self.cancel_order(broker_order_id)
+
+    def _fill_pending(self, bars: Mapping[str, Bar]) -> None:
+        as_of = self._require_time()
+        for broker_order_id, request in list(self._pending.items()):
+            bar = bars.get(request.symbol)
+            if bar is None:
+                continue
+            current = self._orders[broker_order_id]
+            try:
+                fill_price = self._fill_price(request.side, bar.open)
+                self._validate_buying_power(request, fill_price)
+                self._apply_fill(request, fill_price)
+            except BrokerError:
+                logger.exception("simulated order %s rejected at fill", broker_order_id)
+                self._orders[broker_order_id] = self._terminal(current, OrderStatus.REJECTED)
+            else:
+                self._orders[broker_order_id] = OrderResult(
+                    broker_order_id=broker_order_id,
+                    client_order_id=current.client_order_id,
+                    symbol=request.symbol,
+                    side=request.side,
+                    qty=request.qty,
+                    status=OrderStatus.FILLED,
+                    filled_qty=request.qty,
+                    filled_avg_price=fill_price,
+                    submitted_at=current.submitted_at,
+                    filled_at=as_of,
+                )
+            del self._pending[broker_order_id]
+
+    def _validate_buying_power(self, request: OrderRequest, price: float) -> None:
+        holding = self._holdings.get(request.symbol)
+        signed_delta = request.qty if request.side is Side.BUY else -request.qty
+        current_qty = holding.qty if holding else 0.0
+        # Reductions are always allowed; only an increase in absolute exposure
+        # consumes buying power.
+        if abs(current_qty + signed_delta) <= abs(current_qty):
+            return
+        if request.qty * price > self.get_account_state().buying_power:
+            raise BrokerError("insufficient simulated margin buying power")
+
+    def _apply_fill(self, request: OrderRequest, fill_price: float) -> None:
+        delta = request.qty if request.side is Side.BUY else -request.qty
+        self._cash -= delta * fill_price
         holding = self._holdings.get(request.symbol)
         if holding is None:
-            self._holdings[request.symbol] = _Holding(qty=request.qty, avg_entry_price=fill_price)
-        else:
-            total_qty = holding.qty + request.qty
-            holding.avg_entry_price = (
-                holding.avg_entry_price * holding.qty + fill_price * request.qty
-            ) / total_qty
-            holding.qty = total_qty
-        self._cash -= cost
-        return fill_price
-
-    def _sell(self, request: OrderRequest, close: float) -> float:
-        holding = self._holdings.get(request.symbol)
-        if holding is None or holding.qty < request.qty:
-            held = holding.qty if holding else 0
-            raise BrokerError(f"cannot sell {request.qty} {request.symbol}, holding {held}")
-        fill_price = close * (1 - self._spread_pct / 2) * (1 - self._slippage_pct)
-        self._cash += fill_price * request.qty
-        holding.qty -= request.qty
-        if holding.qty == 0:
+            self._holdings[request.symbol] = _Holding(delta, fill_price)
+            return
+        old_qty = holding.qty
+        new_qty = old_qty + delta
+        if new_qty == 0:
             del self._holdings[request.symbol]
-        return fill_price
+            return
+        if old_qty * delta > 0:
+            holding.avg_entry_price = (
+                holding.avg_entry_price * abs(old_qty) + fill_price * abs(delta)
+            ) / abs(new_qty)
+        elif old_qty * new_qty < 0:
+            # Defensive crossing support; the risk manager normally closes first.
+            holding.avg_entry_price = fill_price
+        holding.qty = new_qty
+
+    def _fill_price(self, side: Side, open_price: float) -> float:
+        if open_price <= 0:
+            raise BrokerError("invalid next-bar open")
+        if side is Side.BUY:
+            return open_price * (1 + self._spread_pct / 2) * (1 + self._slippage_pct)
+        return open_price * (1 - self._spread_pct / 2) * (1 - self._slippage_pct)
+
+    @staticmethod
+    def _terminal(current: OrderResult, status: OrderStatus) -> OrderResult:
+        return OrderResult(
+            broker_order_id=current.broker_order_id,
+            client_order_id=current.client_order_id,
+            symbol=current.symbol,
+            side=current.side,
+            qty=current.qty,
+            status=status,
+            filled_qty=0,
+            filled_avg_price=None,
+            submitted_at=current.submitted_at,
+            filled_at=None,
+        )
 
     def _position(self, symbol: str) -> Position:
         holding = self._holdings[symbol]
-        price = self._closes.get(symbol, holding.avg_entry_price)
+        price = self._price(symbol, holding)
         return Position(
             symbol=symbol,
             qty=holding.qty,
@@ -164,10 +211,12 @@ class SimulatedBroker(AccountService, OrderExecutor):
             current_price=price,
         )
 
+    def _price(self, symbol: str, holding: _Holding) -> float:
+        return self._closes.get(symbol, holding.avg_entry_price)
+
     def _equity(self) -> float:
         return self._cash + sum(
-            holding.qty * self._closes.get(symbol, holding.avg_entry_price)
-            for symbol, holding in self._holdings.items()
+            holding.qty * self._price(symbol, holding) for symbol, holding in self._holdings.items()
         )
 
     def _require_time(self) -> datetime:

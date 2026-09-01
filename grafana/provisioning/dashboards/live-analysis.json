@@ -703,7 +703,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "signal"
+              "options": "target"
             },
             "properties": [
               {
@@ -770,7 +770,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp, symbol, signal, risk_approved, reason FROM strategy_decisions WHERE run_id::text = '$run' AND $__timeFilter(timestamp) ORDER BY timestamp DESC LIMIT 50",
+          "rawSql": "SELECT timestamp, symbol, target, risk_approved, reason FROM model_decisions WHERE run_id::text = '$run' AND $__timeFilter(timestamp) ORDER BY timestamp DESC LIMIT 50",
           "refId": "A"
         }
       ]

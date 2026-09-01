@@ -841,7 +841,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "signal"
+              "options": "target"
             },
             "properties": [
               {
@@ -908,149 +908,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT timestamp, symbol, strategy, signal, risk_approved, risk_reason FROM strategy_decisions WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND signal != 'hold' ORDER BY timestamp DESC LIMIT 200",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "carcharoth-pg"
-      },
-      "id": 13,
-      "title": "Regime Scores Over Time",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 32
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "11.4.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "carcharoth-pg"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT timestamp AS time, symbol, score FROM regime_evaluations WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY 1",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "carcharoth-pg"
-      },
-      "id": 14,
-      "title": "Strategy Assignments",
-      "type": "table",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 32
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "since"
-          }
-        ]
-      },
-      "pluginVersion": "11.4.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "carcharoth-pg"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT since, symbol, strategy, regime FROM strategy_assignments WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') ORDER BY since DESC LIMIT 100",
+          "rawSql": "SELECT timestamp, symbol, model_id, target, risk_approved, risk_reason FROM model_decisions WHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}') AND target != 'unchanged' ORDER BY timestamp DESC LIMIT 200",
           "refId": "A"
         }
       ]
@@ -1115,7 +973,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE\n    WHEN exit_reason ILIKE 'stop%'        THEN 'Stop Loss'\n    WHEN exit_reason ILIKE 'take profit%' THEN 'Take Profit'\n    WHEN exit_reason ILIKE '%end of day%'\n      OR exit_reason ILIKE '%eod%'        THEN 'End of Day'\n    ELSE 'Mean Reversion'\n  END AS reason,\n  COUNT(*) AS count\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY count DESC",
+          "rawSql": "SELECT\n  CASE\n    WHEN exit_reason ILIKE 'stop%'        THEN 'Stop Loss'\n    WHEN exit_reason ILIKE 'take profit%' THEN 'Take Profit'\n    WHEN exit_reason ILIKE '%end of day%'\n      OR exit_reason ILIKE '%eod%'        THEN 'End of Day'\n    ELSE 'Model Decision'\n  END AS reason,\n  COUNT(*) AS count\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY count DESC",
           "refId": "A"
         }
       ],
@@ -1143,7 +1001,7 @@
         "uid": "carcharoth-pg"
       },
       "id": 17,
-      "title": "Per-Strategy Realized PnL",
+      "title": "Per-Model Realized PnL",
       "type": "barchart",
       "gridPos": {
         "h": 8,
@@ -1201,7 +1059,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS strategy,\n  ROUND(SUM(pnl)::numeric, 2) AS pnl\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY pnl DESC",
+          "rawSql": "SELECT\n  COALESCE(NULLIF(model_id, ''), '(unknown)') AS model_id,\n  ROUND(SUM(pnl)::numeric, 2) AS pnl\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY pnl DESC",
           "refId": "A"
         }
       ]
@@ -1212,7 +1070,7 @@
         "uid": "carcharoth-pg"
       },
       "id": 18,
-      "title": "Strategy Overview",
+      "title": "Model Overview",
       "type": "table",
       "gridPos": {
         "h": 7,
@@ -1333,7 +1191,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS strategy,\n  COUNT(*) AS trades,\n  ROUND(SUM(pnl)::numeric, 2) AS total_pnl,\n  ROUND(AVG(pnl)::numeric, 2) AS avg_pnl,\n  ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 4) AS win_rate,\n  ROUND(SUM(pnl) FILTER (WHERE pnl > 0)::numeric / NULLIF(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0), 2) AS profit_factor,\n  ROUND(AVG(holding_seconds) / 3600.0, 1) AS avg_holding_h,\n  COUNT(DISTINCT symbol) AS symbols\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY total_pnl DESC",
+          "rawSql": "SELECT\n  COALESCE(NULLIF(model_id, ''), '(unknown)') AS model_id,\n  COUNT(*) AS trades,\n  ROUND(SUM(pnl)::numeric, 2) AS total_pnl,\n  ROUND(AVG(pnl)::numeric, 2) AS avg_pnl,\n  ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 4) AS win_rate,\n  ROUND(SUM(pnl) FILTER (WHERE pnl > 0)::numeric / NULLIF(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0), 2) AS profit_factor,\n  ROUND(AVG(holding_seconds) / 3600.0, 1) AS avg_holding_h,\n  COUNT(DISTINCT symbol) AS symbols\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nGROUP BY 1\nORDER BY total_pnl DESC",
           "refId": "A"
         }
       ]
@@ -1344,7 +1202,7 @@
         "uid": "carcharoth-pg"
       },
       "id": 19,
-      "title": "Cumulative PnL by Strategy",
+      "title": "Cumulative PnL by Model",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -1404,7 +1262,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  exit_time AS time,\n  COALESCE(NULLIF(strategy, ''), '(unknown)') AS metric,\n  SUM(pnl) OVER (\n    PARTITION BY COALESCE(NULLIF(strategy, ''), '(unknown)')\n    ORDER BY exit_time\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS value\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY 1",
+          "rawSql": "SELECT\n  exit_time AS time,\n  COALESCE(NULLIF(model_id, ''), '(unknown)') AS metric,\n  SUM(pnl) OVER (\n    PARTITION BY COALESCE(NULLIF(model_id, ''), '(unknown)')\n    ORDER BY exit_time\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS value\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY 1",
           "refId": "A"
         }
       ]
@@ -1728,7 +1586,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  ROUND(mae_pct * 100, 2) AS mae_pct,\n  ROUND(mfe_pct * 100, 2) AS mfe_pct,\n  exit_reason,\n  regime,\n  strategy,\n  ROUND((entry_indicators->>'zscore')::numeric, 2) AS zscore,\n  ROUND((entry_indicators->>'rsi')::numeric, 1) AS rsi,\n  ROUND((entry_indicators->>'atr')::numeric, 4) AS atr,\n  ROUND((entry_indicators->>'trend_ema')::numeric, 2) AS trend_ema,\n  ROUND((exit_indicators->>'stop_price')::numeric, 2) AS stop_loss,\n  ROUND((exit_indicators->>'take_profit_price')::numeric, 2) AS take_profit\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
+          "rawSql": "SELECT\n  entry_time,\n  exit_time,\n  symbol,\n  ROUND(holding_seconds / 3600.0, 1) AS holding_h,\n  ROUND(entry_price, 2) AS entry_price,\n  ROUND(exit_price, 2) AS exit_price,\n  ROUND(pnl, 2) AS pnl,\n  ROUND(mae_pct * 100, 2) AS mae_pct,\n  ROUND(mfe_pct * 100, 2) AS mfe_pct,\n  exit_reason,\n  model_id,\n  ROUND((entry_prediction->>'expected_return')::numeric, 6) AS expected_return,\n  ROUND((entry_features->>'rsi_normalized_14')::numeric, 4) AS rsi_normalized,\n  ROUND((entry_features->>'atr_normalized_14')::numeric, 6) AS normalized_atr,\n  ROUND((entry_features->>'ema_distance_20')::numeric, 6) AS ema_distance_20,\n  ROUND((exit_prediction->>'expected_return')::numeric, 6) AS exit_expected_return\nFROM round_trips\nWHERE run_id::text = COALESCE(NULLIF(trim('${run_input}'), ''), '${run}')\nORDER BY entry_time DESC",
           "refId": "A"
         }
       ]

@@ -4,17 +4,13 @@ import optuna
 import pytest
 
 from carcharoth.config.app_config import ObjectiveConfig
+from carcharoth.config.loader import load_profile
 from carcharoth.config.optimize_config import OptimizeConfig
 from carcharoth.domain.models import MetricValue
 from carcharoth.services.optuna.optimizer import OptunaOptimizer
 from tests.fakes import FakeBacktestFunc
 
-RAW_CONFIG = {
-    "symbols": ["AAPL"],
-    "data": {"start": "2026-06-01", "end": "2026-06-30"},
-    "strategies": {"mean_reversion": {"active": True, "params": {"lookback": 20}}},
-    "objectives": {"default": {"weights": {"sharpe": 1.0}}},
-}
+RAW_CONFIG = load_profile("optimization").raw
 
 OBJECTIVE = ObjectiveConfig(weights={"sharpe": 1.0})
 
@@ -27,7 +23,11 @@ def optimize_config(n_trials: int = 3, **kwargs: object) -> OptimizeConfig:
             "study": {"name": "test-study", "n_trials": n_trials, "sampler_seed": 1},
             "backtest": {"start": "2026-06-01", "end": "2026-06-30"},
             "search_space": {
-                "strategies.mean_reversion.params.lookback": {"type": "int", "low": 10, "high": 60}
+                "model.decision.long_entry_threshold": {
+                    "type": "float",
+                    "low": 0.0001,
+                    "high": 0.003,
+                }
             },
             **kwargs,
         }
@@ -59,7 +59,7 @@ def test_best_trial_matches_scripted_fitness() -> None:
     assert result.best_score == pytest.approx(3.0)
     assert result.best_trial_number == 1
     assert result.best_run_id == fake.run_ids[1]
-    assert set(result.best_params) == {"strategies.mean_reversion.params.lookback"}
+    assert set(result.best_params) == {"model.decision.long_entry_threshold"}
 
 
 def test_every_trial_links_its_run_id() -> None:
@@ -78,9 +78,9 @@ def test_suggested_value_lands_in_received_config() -> None:
     optimizer.optimize()
 
     assert optimizer.last_study is not None
-    path = "strategies.mean_reversion.params.lookback"
+    path = "model.decision.long_entry_threshold"
     for config, trial in zip(fake.calls, optimizer.last_study.trials, strict=True):
-        assert config.strategies["mean_reversion"].params["lookback"] == trial.params[path]
+        assert config.model.decision.long_entry_threshold == trial.params[path]
 
 
 def test_backtest_error_fails_trial_but_study_continues() -> None:
@@ -122,7 +122,7 @@ def test_missing_fitness_metric_fails_trial() -> None:
 
 
 def test_invalid_search_space_path_fails_fast() -> None:
-    bad_path = "regime.regimes.trending.params.ema_fast"
+    bad_path = "model.nope.value"
     config = optimize_config(search_space={bad_path: {"type": "int", "low": 5, "high": 20}})
     fake = FakeBacktestFunc([run_metrics(1.0)])
     with pytest.raises(ValueError, match="invalid override path"):
@@ -131,7 +131,7 @@ def test_invalid_search_space_path_fails_fast() -> None:
 
 
 def test_sampler_seed_override_beats_config_seed() -> None:
-    def suggested_lookbacks(config_seed: int) -> list[float]:
+    def suggested_thresholds(config_seed: int) -> list[float]:
         fake = FakeBacktestFunc([run_metrics(1.0)])
         config = optimize_config(
             n_trials=5,
@@ -146,8 +146,8 @@ def test_sampler_seed_override_beats_config_seed() -> None:
             sampler_seed=42,
         ).optimize()
         assert config.study.sampler_seed == config_seed
-        return [call.strategies["mean_reversion"].params["lookback"] for call in fake.calls]
+        return [call.model.decision.long_entry_threshold for call in fake.calls]
 
     # Different config seeds, same override: identical suggestions prove the
     # override wins (parallel workers rely on this for per-worker seeds).
-    assert suggested_lookbacks(1) == suggested_lookbacks(2)
+    assert suggested_thresholds(1) == suggested_thresholds(2)

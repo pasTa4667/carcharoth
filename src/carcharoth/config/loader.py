@@ -43,7 +43,7 @@ MAX_EXTENDS_DEPTH = 8
 #: source label for CLI/TUI overrides in the provenance map
 OVERRIDES_SOURCE = "--set"
 #: mappings replaced wholesale on redefinition (their keys are free-form)
-ATOMIC_PATHS = frozenset({"optimization.search_space"})
+ATOMIC_PATHS = frozenset({"optimization.search_space", "model.target"})
 
 
 class ConfigError(Exception):

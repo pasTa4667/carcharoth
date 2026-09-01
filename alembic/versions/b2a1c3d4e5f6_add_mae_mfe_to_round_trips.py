@@ -21,8 +21,12 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column("round_trips", sa.Column("mae_pct", sa.Numeric(precision=18, scale=6), nullable=True))
-    op.add_column("round_trips", sa.Column("mfe_pct", sa.Numeric(precision=18, scale=6), nullable=True))
+    op.add_column(
+        "round_trips", sa.Column("mae_pct", sa.Numeric(precision=18, scale=6), nullable=True)
+    )
+    op.add_column(
+        "round_trips", sa.Column("mfe_pct", sa.Numeric(precision=18, scale=6), nullable=True)
+    )
 
 
 def downgrade() -> None:

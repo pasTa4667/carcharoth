@@ -1,0 +1,16 @@
+# Fixed-artifact search: no feature/target/model parameter may change.
+optimization:
+  constraints:
+    - {metric: num_trades, min: 20}
+    - {metric: max_drawdown, max: 0.30}
+  search_space:
+    model.decision.long_entry_threshold:
+      {type: float, low: 0.0001, high: 0.003, log: true}
+    model.decision.short_entry_threshold:
+      {type: float, low: -0.003, high: -0.0001}
+    model.decision.long_exit_threshold:
+      {type: float, low: -0.001, high: 0.0005}
+    model.decision.short_exit_threshold:
+      {type: float, low: -0.0005, high: 0.001}
+    risk.max_position_pct_equity:
+      {type: float, low: 0.02, high: 0.20, log: true}

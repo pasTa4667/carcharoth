@@ -79,21 +79,24 @@ class PositionSnapshotRow(Base):
     unrealized_pnl: Mapped[Decimal]
 
 
-class StrategyDecisionRow(Base):
-    __tablename__ = "strategy_decisions"
-    __table_args__ = (Index("ix_strategy_decisions_run_ts", "run_id", "timestamp"),)
+class ModelDecisionRow(Base):
+    __tablename__ = "model_decisions"
+    __table_args__ = (Index("ix_model_decisions_run_ts", "run_id", "timestamp"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[uuid.UUID] = _run_id_column()
     timestamp: Mapped[datetime]
     symbol: Mapped[str]
-    strategy: Mapped[str]
-    signal: Mapped[str]
+    model_id: Mapped[str]
+    schema_hash: Mapped[str]
+    target: Mapped[str]
     reason: Mapped[str] = mapped_column(Text)
-    indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    prediction: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    features: Mapped[dict[str, Any]] = mapped_column(default=dict)
     risk_approved: Mapped[bool | None]
     risk_reason: Mapped[str | None] = mapped_column(Text)
     risk_qty: Mapped[Decimal | None]
+    order_side: Mapped[str | None]
 
 
 class OrderRow(Base):
@@ -136,25 +139,6 @@ class RegimeEvaluationRow(Base):
     )
 
 
-class StrategyAssignmentRow(Base):
-    """Append-only history of which strategy trades a symbol; the newest row
-    per symbol is the current assignment (DISTINCT ON (symbol) ... ORDER BY
-    since DESC)."""
-
-    __tablename__ = "strategy_assignments"
-    __table_args__ = (
-        Index("ix_strategy_assignments_symbol_since", "symbol", "since"),
-        Index("ix_strategy_assignments_run_symbol", "run_id", "symbol"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[uuid.UUID] = _run_id_column()
-    symbol: Mapped[str]
-    strategy: Mapped[str]
-    regime: Mapped[str]
-    since: Mapped[datetime]
-
-
 class EquitySnapshotRow(Base):
     """Total account value per tick — the portfolio equity curve of a run."""
 
@@ -184,7 +168,7 @@ class BacktestMetricRow(Base):
 
 
 class RoundTripRow(Base):
-    """One closed long position (FIFO-matched), enriched with strategy context."""
+    """One closed signed position (FIFO-matched), enriched with model context."""
 
     __tablename__ = "round_trips"
     __table_args__ = (Index("ix_round_trips_run_entry", "run_id", "entry_time"),)
@@ -192,6 +176,7 @@ class RoundTripRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[uuid.UUID] = _run_id_column()
     symbol: Mapped[str]
+    direction: Mapped[str]
     qty: Mapped[Decimal]
     entry_time: Mapped[datetime]
     exit_time: Mapped[datetime]
@@ -199,11 +184,12 @@ class RoundTripRow(Base):
     exit_price: Mapped[Decimal]
     pnl: Mapped[Decimal]
     holding_seconds: Mapped[int]
-    strategy: Mapped[str]
+    model_id: Mapped[str]
     exit_reason: Mapped[str] = mapped_column(Text)
-    regime: Mapped[str | None]
-    entry_indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    exit_indicators: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    entry_features: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    exit_features: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    entry_prediction: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    exit_prediction: Mapped[dict[str, Any]] = mapped_column(default=dict)
     mae_pct: Mapped[Decimal | None]
     mfe_pct: Mapped[Decimal | None]
 

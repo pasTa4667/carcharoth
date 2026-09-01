@@ -1,6 +1,6 @@
 """Permutation method registry: maps config names to method factories.
 
-Mirrors ``strategies/registry.py``. Adding a variant (walk-forward bars,
+Adding a variant (walk-forward bars,
 monte-carlo trade shuffle, ...): implement the PermutationMethod protocol in a
 new module under ``permutation/methods/`` and add one entry here. Nothing else
 in the codebase changes.

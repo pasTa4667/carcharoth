@@ -1,13 +1,12 @@
 """Regime detector builders: config -> concrete detector.
 
-Mirrors strategies/registry.py. Adding a detector: implement the
+Adding a detector: implement the
 RegimeDetector ABC, add a config section in app_config.py, and add one
 builder here. Nothing else changes.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from carcharoth.regime.hmm import HmmRegimeDetector
@@ -21,9 +20,7 @@ if TYPE_CHECKING:
     from carcharoth.interfaces.cache import ByteStore
     from carcharoth.interfaces.regime_detector import RegimeDetector
 
-logger = logging.getLogger(__name__)
-
-#: which regimes each detector can emit (for config sanity warnings)
+#: which regimes each detector can emit (useful when adding it as model context)
 EMITTED_REGIMES: dict[str, frozenset[Regime]] = {
     "score": frozenset({Regime.TRENDING, Regime.MEAN_REVERTING}),
     "hmm": frozenset(
@@ -46,16 +43,6 @@ def build_detector(
     by the fit-relevant config fields — ``evaluate_interval_minutes`` and
     ``min_confidence`` are excluded because they don't affect fit output.
     """
-    mapped = {Regime(name) for name in config.regimes}
-    emitted = EMITTED_REGIMES[config.detector]
-    if not mapped & emitted:
-        logger.warning(
-            "no mapped regime (%s) can be emitted by the %r detector (%s); nothing will ever trade",
-            ", ".join(sorted(r.value for r in mapped)),
-            config.detector,
-            ", ".join(sorted(r.value for r in emitted)),
-        )
-
     if config.detector == "score":
         assert config.score is not None  # enforced by RegimeConfig's validator
         return ScoreRegimeDetector(

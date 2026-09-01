@@ -16,15 +16,24 @@ from datetime import datetime
 
 from carcharoth.domain.errors import MarketDataError
 from carcharoth.domain.models import Bar, BarSpec, MarketSnapshot, Quote
+from carcharoth.features.session import is_regular_session
 from carcharoth.interfaces.market_data import MarketDataService
 
 _SYNTHETIC_QUOTE_SIZE = 100.0
 
 
 class HistoricalMarketDataService(MarketDataService):
-    def __init__(self, bars: Mapping[str, list[Bar]], spread_pct: float) -> None:
+    def __init__(
+        self,
+        bars: Mapping[str, list[Bar]],
+        spread_pct: float,
+        tradable_symbols: Sequence[str] | None = None,
+    ) -> None:
         self._bars = {
-            symbol: sorted(symbol_bars, key=lambda bar: bar.timestamp)
+            symbol: sorted(
+                [bar for bar in symbol_bars if is_regular_session(bar.timestamp)],
+                key=lambda bar: bar.timestamp,
+            )
             for symbol, symbol_bars in bars.items()
         }
         self._timestamps = {
@@ -32,6 +41,7 @@ class HistoricalMarketDataService(MarketDataService):
             for symbol, symbol_bars in self._bars.items()
         }
         self._spread_pct = spread_pct
+        self._tradable_symbols = tuple(tradable_symbols or bars.keys())
         self._as_of: datetime | None = None
 
     def advance_to(self, as_of: datetime) -> None:
@@ -45,17 +55,30 @@ class HistoricalMarketDataService(MarketDataService):
         return sorted(
             {
                 ts
-                for timestamps in self._timestamps.values()
+                for symbol, timestamps in self._timestamps.items()
+                if symbol in self._tradable_symbols
                 for ts in timestamps
                 if start <= ts <= end
             }
         )
 
+    def latest_bars(self) -> dict[str, Bar]:
+        """Newest current-cursor bar per tradable symbol (fills at open, marks at close)."""
+        as_of = self._require_cursor()
+        latest: dict[str, Bar] = {}
+        for symbol in self._tradable_symbols:
+            timestamps = self._timestamps.get(symbol, [])
+            index = bisect_right(timestamps, as_of)
+            if index > 0 and self._bars[symbol][index - 1].timestamp == as_of:
+                latest[symbol] = self._bars[symbol][index - 1]
+        return latest
+
     def latest_closes(self) -> dict[str, float]:
-        """Newest close per symbol at or before the cursor (marks the broker)."""
+        """Newest close per symbol at or before the cursor."""
         as_of = self._require_cursor()
         closes: dict[str, float] = {}
-        for symbol, timestamps in self._timestamps.items():
+        for symbol in self._tradable_symbols:
+            timestamps = self._timestamps.get(symbol, [])
             index = bisect_right(timestamps, as_of)
             if index > 0:
                 closes[symbol] = self._bars[symbol][index - 1].close

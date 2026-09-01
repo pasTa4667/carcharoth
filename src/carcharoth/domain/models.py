@@ -20,17 +20,29 @@ class Side(StrEnum):
 
 class RunType(StrEnum):
     """What produced a run's data: a live paper-trading session, a backtest,
-    or an isolated strategy quick test."""
+    or a fixed-artifact quick test."""
 
     PAPER = "PAPER"
     BACKTEST = "BACKTEST"
     QUICKTEST = "QUICKTEST"
 
 
-class SignalAction(StrEnum):
-    BUY = "buy"
-    SELL = "sell"
-    HOLD = "hold"
+class ModelTask(StrEnum):
+    REGRESSION = "regression"
+    CLASSIFICATION = "classification"
+
+
+class TargetExposure(StrEnum):
+    """Desired position state emitted by the model decision pipeline.
+
+    UNCHANGED is operationally different from FLAT: it means inference was not
+    attempted or was unavailable, so an existing position must not be closed.
+    """
+
+    LONG = "long"
+    SHORT = "short"
+    FLAT = "flat"
+    UNCHANGED = "unchanged"
 
 
 class OrderStatus(StrEnum):
@@ -79,7 +91,7 @@ class Timeframe:
 
 @dataclass(frozen=True, slots=True)
 class BarSpec:
-    """A strategy's bar-data requirement: resolution plus how many bars."""
+    """A model feature pipeline's bar requirement: resolution plus lookback."""
 
     timeframe: Timeframe
     lookback: int
@@ -126,11 +138,24 @@ class MarketSnapshot:
 @dataclass(frozen=True, slots=True)
 class Position:
     symbol: str
+    #: Signed quantity: positive is long, negative is short.
     qty: float
     avg_entry_price: float
     market_value: float
     unrealized_pnl: float
     current_price: float
+
+    @property
+    def exposure(self) -> TargetExposure:
+        if self.qty > 0:
+            return TargetExposure.LONG
+        if self.qty < 0:
+            return TargetExposure.SHORT
+        return TargetExposure.FLAT
+
+    @property
+    def gross_market_value(self) -> float:
+        return abs(self.market_value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,20 +169,64 @@ class AccountState:
 
 
 @dataclass(frozen=True, slots=True)
-class Signal:
+class FeatureVector:
+    names: tuple[str, ...]
+    values: tuple[float, ...]
+    schema_hash: str
+    as_of: datetime
+
+    def __post_init__(self) -> None:
+        if len(self.names) != len(self.values):
+            raise ValueError("feature names and values must have equal length")
+        if len(set(self.names)) != len(self.names):
+            raise ValueError("feature names must be unique")
+
+    def as_dict(self) -> dict[str, float]:
+        return dict(zip(self.names, self.values, strict=True))
+
+
+@dataclass(frozen=True, slots=True)
+class Prediction:
+    task: ModelTask
+    expected_return: float | None = None
+    probabilities: dict[TargetExposure, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.task is ModelTask.REGRESSION and self.expected_return is None:
+            raise ValueError("regression prediction needs expected_return")
+        if self.task is ModelTask.CLASSIFICATION and not self.probabilities:
+            raise ValueError("classification prediction needs probabilities")
+
+    def as_dict(self) -> dict[str, float]:
+        if self.expected_return is not None:
+            return {"expected_return": self.expected_return}
+        return {target.value: value for target, value in self.probabilities.items()}
+
+
+@dataclass(frozen=True, slots=True)
+class ExposureIntent:
     symbol: str
-    action: SignalAction
-    strategy: str
+    target: TargetExposure
+    model_id: str
+    schema_hash: str
     reason: str
-    indicators: dict[str, float] = field(default_factory=dict)
+    prediction: Prediction | None = None
+    features: FeatureVector | None = None
     timestamp: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
+class MarketDataRequirements:
+    bars: BarSpec
+    context_symbols: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class RiskDecision:
-    signal: Signal
+    intent: ExposureIntent
     approved: bool
     qty: float
+    side: Side | None
     reason: str
 
 
@@ -209,24 +278,16 @@ class TradeRecord:
 
 @dataclass(frozen=True, slots=True)
 class DecisionRecord:
-    """A strategy decision row, as read back for round-trip enrichment."""
+    """A model decision row, as read back for round-trip enrichment."""
 
     symbol: str
-    side: Side
+    target: TargetExposure
     timestamp: datetime
     reason: str
-    indicators: dict[str, float]
-    strategy: str
-
-
-@dataclass(frozen=True, slots=True)
-class AssignmentRecord:
-    """A strategy assignment row, as read back for regime lookup."""
-
-    symbol: str
-    since: datetime
-    regime: str
-    strategy: str
+    features: dict[str, float]
+    prediction: dict[str, float]
+    model_id: str
+    order_side: Side | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,22 +23,17 @@ from uuid import UUID
 from sqlalchemy import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from carcharoth.domain.models import AccountState, RiskDecision, Signal
+from carcharoth.domain.models import AccountState, ExposureIntent, RiskDecision
 from carcharoth.persistence.orm import (
     Base,
     EquitySnapshotRow,
+    ModelDecisionRow,
     PositionSnapshotRow,
-    RegimeEvaluationRow,
-    StrategyDecisionRow,
 )
 from carcharoth.persistence.repositories import (
+    ModelDecisionRepository,
     PositionSnapshotRepository,
-    RegimeEvaluationRepository,
-    StrategyDecisionRepository,
-    evidence_payload,
-    probabilities_payload,
 )
-from carcharoth.regime.models import RegimeAssessment
 
 Row = dict[str, Any]
 FlushFn = Callable[[Mapping[type[Base], list[Row]]], None]
@@ -84,25 +79,28 @@ class WriteBuffer:
         self._flush_fn(pending)
 
 
-class BufferedStrategyDecisionRepository(StrategyDecisionRepository):
+class BufferedModelDecisionRepository(ModelDecisionRepository):
     def __init__(self, buffer: WriteBuffer, run_id: UUID) -> None:
         self._buffer = buffer
         self._run_id = run_id
 
-    def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None:
+    def save(self, intent: ExposureIntent, risk: RiskDecision | None, timestamp: datetime) -> None:
         self._buffer.add(
-            StrategyDecisionRow,
+            ModelDecisionRow,
             {
                 "run_id": self._run_id,
                 "timestamp": timestamp,
-                "symbol": signal.symbol,
-                "strategy": signal.strategy,
-                "signal": signal.action.value,
-                "reason": signal.reason,
-                "indicators": dict(signal.indicators),
+                "symbol": intent.symbol,
+                "model_id": intent.model_id,
+                "schema_hash": intent.schema_hash,
+                "target": intent.target.value,
+                "reason": intent.reason,
+                "prediction": intent.prediction.as_dict() if intent.prediction else {},
+                "features": intent.features.as_dict() if intent.features else {},
                 "risk_approved": risk.approved if risk else None,
                 "risk_reason": risk.reason if risk else None,
                 "risk_qty": Decimal(str(risk.qty)) if risk else None,
+                "order_side": risk.side.value if risk and risk.side else None,
             },
         )
 
@@ -138,31 +136,9 @@ class BufferedPositionSnapshotRepository(PositionSnapshotRepository):
         )
 
 
-class BufferedRegimeEvaluationRepository(RegimeEvaluationRepository):
-    def __init__(self, buffer: WriteBuffer, run_id: UUID) -> None:
-        self._buffer = buffer
-        self._run_id = run_id
-
-    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
-        self._buffer.add(
-            RegimeEvaluationRow,
-            {
-                "run_id": self._run_id,
-                "timestamp": timestamp,
-                "symbol": assessment.symbol,
-                "regime": assessment.regime.value,
-                "score": assessment.score,
-                "directional_score": assessment.directional_score,
-                "stability": assessment.stability,
-                "features": evidence_payload(assessment),
-                "probabilities": probabilities_payload(assessment),
-            },
-        )
-
-
 # Slim-mode repositories: used when --verbose-db is not set on the backtest
-# command. They drop the three high-volume audit tables (strategy_decisions,
-# positions_snapshot, regime_evaluations) while keeping the equity curve,
+# command. They drop high-volume model decisions and per-position snapshots
+# while keeping the equity curve,
 # round trips, and computed metrics needed for Grafana and post-run analysis.
 
 
@@ -186,11 +162,6 @@ class BufferedEquityOnlyRepository(PositionSnapshotRepository):
         )
 
 
-class NoOpStrategyDecisionRepository(StrategyDecisionRepository):
-    def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None:
-        pass
-
-
-class NoOpRegimeEvaluationRepository(RegimeEvaluationRepository):
-    def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None:
+class NoOpModelDecisionRepository(ModelDecisionRepository):
+    def save(self, intent: ExposureIntent, risk: RiskDecision | None, timestamp: datetime) -> None:
         pass

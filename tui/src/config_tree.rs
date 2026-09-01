@@ -225,7 +225,7 @@ mod tests {
         json!({
             "symbols": ["AAPL", "MSFT"],
             "risk": {"max_open_positions": 8, "buying_power_buffer": 0.95},
-            "regime": {"active": true, "regimes": {"range_bound": {"strategy": "mean_reversion"}}},
+            "model": {"artifact_path": null, "decision": {"long_entry_threshold": 0.001}},
             "backtest": {"permutation": null},
             "optimization": {"search_space": {}}
         })
@@ -237,7 +237,7 @@ mod tests {
         let paths: Vec<&str> = tree.rows.iter().map(|row| row.path.as_str()).collect();
         assert_eq!(
             paths,
-            vec!["backtest", "optimization", "regime", "risk", "symbols"]
+            vec!["backtest", "model", "optimization", "risk", "symbols"]
         );
         let symbols = tree.rows.iter().find(|row| row.path == "symbols").unwrap();
         assert!(symbols.is_leaf(), "a list is one editable value");
@@ -262,7 +262,7 @@ mod tests {
     fn empty_objects_are_leaves_not_branches() {
         let tree = Tree::new("backtest".into(), config(), "h".into());
         let mut tree = tree;
-        tree.cursor = 1; // optimization
+        tree.cursor = 2; // optimization
         tree.toggle();
         let row = tree
             .rows
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn values_render_as_the_cli_accepts_them() {
-        assert_eq!(render(&json!("mean_reversion")), "mean_reversion");
+        assert_eq!(render(&json!("artifacts/models/m1")), "artifacts/models/m1");
         assert_eq!(render(&json!(-1.1)), "-1.1");
         assert_eq!(render(&json!(true)), "true");
         assert_eq!(render(&json!(null)), "null");
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(parse("true").unwrap(), json!(true));
         assert_eq!(parse("null").unwrap(), json!(null));
         assert_eq!(parse("[AAPL, MSFT]").unwrap(), json!(["AAPL", "MSFT"]));
-        assert_eq!(parse("mean_reversion").unwrap(), json!("mean_reversion"));
+        assert_eq!(parse("regression").unwrap(), json!("regression"));
         assert!(parse("[unclosed").is_err());
     }
 
@@ -316,10 +316,7 @@ mod tests {
     fn flatten_treats_lists_and_empty_maps_as_leaves() {
         let flat = flatten(&config());
         assert_eq!(flat["symbols"], json!(["AAPL", "MSFT"]));
-        assert_eq!(
-            flat["regime.regimes.range_bound.strategy"],
-            json!("mean_reversion")
-        );
+        assert_eq!(flat["model.decision.long_entry_threshold"], json!(0.001));
         assert_eq!(flat["backtest.permutation"], json!(null));
         assert_eq!(flat["optimization.search_space"], json!({}));
     }

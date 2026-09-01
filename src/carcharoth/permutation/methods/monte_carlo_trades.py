@@ -1,6 +1,6 @@
 """Monte carlo trade shuffle: resample the baseline run's closed trades.
 
-The strategy runs once; each permutation draws a new trade-P&L sequence from
+The fixed model runs once; each permutation draws a new trade-P&L sequence from
 the baseline round trips and re-evaluates equity/metrics via the backend's
 ``evaluate_round_trips`` — no re-simulation. Two standard sampling modes:
 
@@ -35,9 +35,7 @@ class MonteCarloTradesPermutation:
 
     def __init__(self, sampling: str = "resample") -> None:
         if sampling not in ("resample", "shuffle"):
-            raise ValueError(
-                f"unknown sampling {sampling!r}; expected 'resample' or 'shuffle'"
-            )
+            raise ValueError(f"unknown sampling {sampling!r}; expected 'resample' or 'shuffle'")
         self.sampling = sampling
 
     def permute(self, ctx: PermutationContext, rng: np.random.Generator) -> PermutedOutcome:

@@ -23,6 +23,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "ta-lib>=0.6",
     "tqdm>=4.67",
+    "xgboost>=3.0",
 ]
 
 [project.scripts]

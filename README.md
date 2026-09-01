@@ -2,391 +2,159 @@
 
 # Carcharoth
 
-Algorithmic stock trading bot and research platform. Live trading runs against the **Alpaca
-paper trading API**; backtests, quicktests, and Optuna optimization replay history through the
-same engine (or a stripped-down simulator for quick iteration).
+Model-driven intraday stock trading and research platform. Live execution uses an Alpaca paper
+account; training, quicktests, backtests, permutation tests, and Optuna studies reuse the same
+feature schema and immutable XGBoost artifacts.
 
-> **Disclaimer:** This bot is wired to a paper trading account. It is a learning/experimentation
-> project, not financial advice. Do not point it at a live account without a serious review.
+> Paper trading and experimentation only. This is not financial advice.
 
 ## Architecture
 
-A scheduler triggers the **trading engine** every minute. The engine is a deliberately "stupid"
-orchestrator: it calls the services in a fixed sequence and passes typed domain objects between
-them — all trading logic lives inside the individual components.
-
-```
-Scheduler (1 min, market hours only)
-   └─> TradingEngine.tick()
-         0. Order Executor   — reconcile fills of open orders   -> trades table, trades.log
-         1. Market Data      — bars + quotes for the watchlist  (Alpaca / sim replay)
-         2. Account Service  — equity, buying power, positions  (Alpaca / sim broker)
-         3. StrategyProvider — resolve Strategy per symbol      (single or regime-driven)
-         4. Risk Manager     — approve/reject + position sizing
-         5. Order Executor   — submit approved orders           (Alpaca / sim broker)
+```text
+Scheduler / BacktestRunner
+  -> TradingEngine.tick()
+     0. reconcile fills
+     1. MarketDataService: completed bars + quotes for tradable symbols and SPY context
+     2. AccountService: equity, buying power, signed positions
+     3. ModelSignalGenerator
+          FeaturePipeline -> XGBoostPredictor -> DecisionPolicy
+          LONG | SHORT | FLAT | UNCHANGED
+     4. RiskManager: validate and size the target transition
+     5. OrderExecutor: submit the approved order
 ```
 
-When `regime.active` is true, step 3 uses `RegimeStrategyProvider`: a per-symbol regime
-detector picks which registered strategy trades each symbol. Regime is re-assessed on a slower
-interval; open positions stay with the strategy that entered them until flat (hold-until-flat).
+The engine only orchestrates typed modules. Live and replay differ through injected market-data,
+account, and execution adapters. An order decided from completed bar `t` fills at the next bar's
+open in replay; live submits a market order after the completed bar. Reversals close first and
+open the opposite direction only after the account confirms flat. Intraday safety always flattens
+before the close.
 
-Every component is defined by an interface in `src/carcharoth/interfaces/` and wired together in
-exactly one place: `src/carcharoth/main.py` (the composition root). Swapping a component never
-requires changes anywhere else.
+Offline training is deliberately separate:
 
-| Component | Interface | Implementation |
-|---|---|---|
-| Market data (live) | `MarketDataService` | `services/alpaca/market_data.py` |
-| Market data (backtest) | `MarketDataService` | `services/backtest/market_data.py` |
-| Account/portfolio (live) | `AccountService` | `services/alpaca/account.py` |
-| Execution (live) | `OrderExecutor` | `services/alpaca/execution.py` |
-| Sim broker (backtest) | `AccountService` + `OrderExecutor` | `services/backtest/broker.py` |
-| Strategy routing | `StrategyProvider` | `engine/strategy_provider.py` |
-| Strategy | `Strategy` | `strategies/mean_reversion.py`, `strategies/ema_vwap.py` |
-| Regime detection | `RegimeDetector` | `regime/score_detector.py`, `regime/hmm/detector.py` |
-| Risk | `RiskManager` | `risk/basic.py` |
-| Market hours | `MarketClock` | `services/alpaca/clock.py` |
-| Historical bars | `BarsFetcher` | `services/alpaca/historical.py` |
-| Bars/HMM cache | `ByteStore` | `services/cache/redis_store.py`, `services/cache/bars.py` |
-| Optimization | `ParameterOptimizer` | `services/optuna/optimizer.py` |
-| Permutation testing | `PermutationMethod` | `permutation/methods/in_sample_bars.py`, `permutation/methods/monte_carlo_trades.py` |
-| Persistence | repository ABCs | `persistence/repositories.py` (SQLAlchemy/Postgres) |
+```text
+Historical BarsFetcher (global universe + SPY)
+  -> shared FeaturePipeline
+  +  regression/classification TargetBuilder
+  -> chronological train/validation datasets
+  -> XGBoostTrainer
+  -> artifacts/models/<id>/{model.ubj,manifest.json,report.json}
+```
 
-Alpaca is the **source of truth** for live account state. PostgreSQL stores run-scoped history:
-every live session, backtest, or quicktest creates a row in `runs`; all other tables reference
-it via `run_id` (cascade delete via `carcharoth delete-run`).
+Artifacts are immutable and never activated automatically. Set `model.artifact_path` in a
+research profile, verify it out of sample, then promote that config leaf to `trading/paper`.
+The old rule-based strategies and regime routing do not exist. Regime-detector source remains
+disconnected under `src/carcharoth/regime/` for possible future model context.
 
-Core tables: `trades`, `orders`, `positions_snapshot`, `strategy_decisions` (signals +
-indicators as JSONB), `equity_snapshots`, `round_trips` (FIFO closed positions with MAE/MFE),
-`backtest_metrics`, `configurations`, `regime_evaluations`, `strategy_assignments`,
-`permutation_tests` + `permutation_results` (permutation-test verdicts and score
-distributions, cascade-deleted with their baseline run).
+## Initial features
+
+The ordered feature list lives in `config/base.yaml`; changing it changes the schema hash and
+requires retraining.
+
+- momentum: 1/5/20/60-bar log returns
+- trend: 20/60-bar EMA distance and ADX(14)
+- volatility: normalized ATR(14), 20/60-bar realized volatility
+- price position: normalized RSI(14), 20-bar range position, session VWAP distance
+- volume: same-time-of-day log-volume z-score over 20 prior sessions
+- context: SPY 5/20-bar returns and cyclical time-of-day
+
+Features are scale-free and do not include symbol IDs, regime, raw prices, or quote fields that
+cannot be reproduced from historical bars. `report.json` records constant/high-correlation
+checks and gain importance.
 
 ## Setup
 
-Requirements: [uv](https://docs.astral.sh/uv/), Docker.
+Requirements: [uv](https://docs.astral.sh/uv/), Docker, and on macOS the OpenMP runtime used by
+XGBoost.
 
 ```bash
-# 1. Install dependencies (uv manages Python 3.12 automatically)
+brew install libomp              # macOS only
 uv sync
-
-# 2. Configure secrets — fill in your Alpaca paper API key + secret
-cp .env.example .env
-
-# 3. Start PostgreSQL, Redis, and Grafana (and optionally the app container)
+cp .env.example .env             # add Alpaca paper credentials
 docker compose up -d
-
-# 4. Create the schema
 uv run alembic upgrade head
-
-# 5. Run the bot
-uv run carcharoth          # same as `uv run carcharoth run`
 ```
 
-The bot ticks every minute while the market is open (checked via Alpaca's market clock), sleeps
-while it is closed, and shuts down cleanly on Ctrl-C / SIGTERM.
+## Workflow
+
+```bash
+# 1. Train a global regression artifact. Date ranges come from the profile.
+uv run carcharoth train -p training
+
+# Optional date overrides; all are recorded in config provenance.
+uv run carcharoth train -p training \
+  --train-start 2023-01-01 --train-end 2024-06-30 \
+  --validation-start 2024-07-01 --validation-end 2024-12-31
+
+# 2. Explicitly select the printed artifact for an out-of-sample research run.
+uv run carcharoth quicktest --set model.artifact_path=artifacts/models/<id>
+uv run carcharoth backtest --set model.artifact_path=artifacts/models/<id>
+
+# 3. Optimize decision thresholds/risk without retraining the artifact.
+uv run carcharoth optimize --set model.artifact_path=artifacts/models/<id>
+
+# 4. After review, use the TUI Promote screen to promote model.artifact_path.
+cargo run -p carcharoth-tui
+uv run carcharoth run            # Alpaca paper trading
+```
+
+A backtest/quicktest window must start strictly after the artifact's validation window. Runtime
+rejects missing/corrupt artifacts, model hashes, task/schema/config mismatches, and in-sample
+windows.
 
 ## CLI
 
 | Command | Purpose |
 |---|---|
-| `carcharoth` / `carcharoth run` | Live paper trading |
-| `carcharoth backtest` | Replay history through the full engine (regime + risk) |
-| `carcharoth backtest --permute [METHOD]` | Backtest + monte carlo trade analysis (how path-lucky was the run?) |
-| `carcharoth quicktest` | Isolated strategy test — no engine, regime, or risk |
-| `carcharoth quicktest --permute [METHOD] [--workers N]` | Quicktest + permutation test (is the edge real or luck?) |
-| `carcharoth optimize` | Optuna parameter search over backtests |
-| `carcharoth analyze --run-id <uuid>` | Recompute metrics for a run |
-| `carcharoth delete-run --run-id \| --all-backtests \| --all-quicktests` | Delete a run and all data |
-| `carcharoth cache stats` / `cache clear [--bars\|--hmm]` | Inspect or clear the Redis cache |
+| `carcharoth train` | Build and publish an immutable global XGBoost artifact |
+| `carcharoth run` | Live Alpaca paper trading with an explicitly selected artifact |
+| `carcharoth quicktest` | Fast per-symbol, fixed-artifact long/short simulation |
+| `carcharoth backtest` | Replay the full engine, risk, signed broker, and next-open fills |
+| `carcharoth optimize` | Optuna search over fixed-artifact decision/risk settings |
+| `carcharoth quicktest --permute [METHOD]` | Bar permutation or trade Monte Carlo |
+| `carcharoth backtest --permute [METHOD]` | Trade-based Monte Carlo on a finished run |
+| `carcharoth analyze --run-id UUID` | Recompute metrics and signed FIFO round trips |
+| `carcharoth config ...` | List, resolve, validate, diff, hash, or emit schema |
+| `carcharoth cache stats\|clear` | Inspect or clear cached historical bars |
 
-Also works: `uv run python -m carcharoth`.
-
-## TUI
-
-`tui/` holds a small Rust terminal UI (`carcharoth-tui`) for driving the CLI and the layered
-config. It is a *front-end only*: every action shells out to `uv run carcharoth ...`, so the
-Python side stays the single source of truth for config resolution, validation and hashing.
-
-```bash
-cargo run -p carcharoth-tui     # must be started from the repository root
-```
-
-Four screens, switched with `Tab` / `Shift-Tab` (`F1` shows the full key list, `Ctrl-C` quits):
-
-| Screen | What it does |
-|---|---|
-| Commands | every CLI command under a short name (`run backtest`, `cache clear`, `config diff`), each with a small form; `/` filters, `Enter` opens the form and runs it |
-| Config | the resolved profile as a collapsible tree; edit a single value, drop overrides again |
-| Promote | leaf-level diff from a research profile to `trading/paper`, tick values and promote them |
-| Output | stdout/stderr of the running (or last) command, scrollable, `x` cancels |
-
-Command forms prefill what they can from the resolved profile — the backtest window from
-`data.start`/`data.end`, the study name, trial count and workers from `optimization.study` — and
-the exact command line is shown before it runs. Live paper trading, cache clearing, run deletion
-and promotion ask for confirmation first. Only one command runs at a time.
-
-Config edits are **temporary**: a value edited in the tree becomes a `--set path=value` override
-(validated through `carcharoth config validate --json`, so out-of-range or misspelled paths are
-rejected with the CLI's own error) and is passed to every profile-aware command you run. They
-live in the TUI session only — nothing on disk changes until you promote.
-
-Promotion is the one write: it diffs the source profile (plus temporary overrides) against
-`trading/paper`, and writes the values you tick to `config/generated/paper-promoted.yaml`, the
-last layer of `config/trading/paper.yaml`. Values promoted earlier are kept, the full candidate
-paper config is validated first, and the generated file is replaced atomically — a rejected
-candidate leaves it untouched. The hand-authored `trading/paper.yaml` is never rewritten.
+The Rust TUI is a front-end only. It invokes `uv run carcharoth ...`, edits temporary `--set`
+overrides, and promotes selected leaves into `config/generated/paper-promoted.yaml`.
 
 ## Configuration
 
-Secrets (`.env`, gitignored): Alpaca key/secret, database URL, optional `REDIS_URL` and
-`OPTUNA_DATABASE_URL`, Grafana credentials. See `.env.example`.
+`config/base.yaml` owns the strict structure. Profiles recursively extend layers; mappings
+merge, lists replace, and later layers win. `model.target` and `optimization.search_space` are
+atomic mappings. Every run stores the validated config, content hash, and provenance.
 
-Everything else is one **layered config system**. Every run command resolves a *profile* into a
-single validated `RunConfig` (pydantic, `extra="forbid"`):
+Important sections:
 
-```
-config/
-  base.yaml                 # THE structure: every key, with defaults (incl. all strategy params)
-  symbols/                  # symbol universes (core51, megacap, smoke)
-  strategies/               # strategy selection presets (mean_reversion, ema_vwap)
-  optimization/             # Optuna search spaces (atomic: replaced wholesale)
-  profiles/                 # quicktest, backtest, optimization, smoke
-  trading/paper.yaml        # protected paper-trading profile
-  generated/                # machine-written layers (TUI config promotion)
-```
+- `model`: artifact path, timeframe, benchmark, ordered features, regression/classification
+  target, decision thresholds/session policy, and XGBoost parameters
+- `training`: chronological train/validation dates, artifact root, seed, early stopping
+- `data`: out-of-sample quicktest/backtest/Optuna window
+- `risk`: symmetric position sizing, gross-exposure, buying-power, position-count, daily loss
+- `backtest`: initial capital, margin multiplier, synthetic spread/slippage
+- `optimization`: fixed-artifact threshold/risk search space and constraints
 
-A profile declares its stack: `extends: [base, symbols/core51, strategies/mean_reversion]`,
-then overrides values. Resolution order: `extends` chain (depth-first, in order) → profile body
-→ CLI `--set path=value`. Merge rules: **dicts merge recursively, lists replace wholesale,
-later layers win**. `base.yaml` owns the key structure — layers may only *override* existing
-values (typos fail with the offending file and path); `null`/`{}` base values are open slots,
-and `optimization.search_space` is replaced wholesale by whichever layer defines it.
+Optuna rejects search paths under features, target, timeframe, benchmark, XGBoost parameters,
+artifact path, or training config because those require a retrained artifact.
 
-Strategy params live **once** in the `strategies:` map; the quicktest and optimizer reference
-them by name, so a quicktest and a backtest of the same strategy always test identical params.
+## Persistence and monitoring
 
-Default profile per command (override with `-p`): `run` → `trading/paper`, `backtest` →
-`backtest`, `quicktest` → `quicktest`, `optimize` → `optimization`.
-
-```bash
-uv run carcharoth quicktest -p smoke                       # swap the whole profile
-uv run carcharoth backtest --set risk.max_open_positions=12
-uv run carcharoth config list                              # profiles, symbol sets, presets
-uv run carcharoth config resolve -p quicktest              # fully merged + validated config
-uv run carcharoth config validate -p backtest [--json]     # exit 1 + errors when invalid
-uv run carcharoth config diff -p smoke --against backtest  # leaf-level diff
-uv run carcharoth config hash -p optimization              # content hash of the resolved config
-uv run carcharoth config schema                            # JSON Schema (for tooling/TUIs)
-```
-
-Every run persists its exact resolved config (`runs.config`) and writes a `config_hash` plus a
-`provenance` block (profile, layers, `--set` overrides) into its summary YAML — any result is
-replayable: `carcharoth config hash -p <profile> [--set ...]` must reproduce the hash.
-
-### Regime detection
-
-Configured under `regime:` in `config/base.yaml`. Set `regime.active: true` to enable
-regime-driven strategy routing; set it to `false` and mark one strategy `active: true` for
-single-strategy mode.
-
-Two detectors (`regime.detector: score | hmm`):
-
-- **Score** — weighted evidence features (hurst, vol clustering, CUSUM, Wasserstein) on a
-  trending ↔ mean-reverting axis. Emits `trending`, `mean_reverting`.
-- **HMM** — per-symbol Gaussian HMM (hmmlearn) over log return, rolling log-volatility,
-  EMA-distance, and ADX. Emits `trending_up`, `trending_down`, `range_bound`, `high_volatility`
-  with posterior probabilities; uses `min_confidence` to avoid noisy switches.
-
-Map regimes to strategies under `regime.regimes`. Unmapped regimes do not open new positions.
-Implementation lives in `src/carcharoth/regime/`.
-
-## Research workflow
-
-Typical iteration loop:
-
-```bash
-# 1. Fast signal check — one strategy, no regime/risk, per-symbol capital
-uv run carcharoth quicktest --start 2025-01-01 --end 2025-06-30
-
-# 2. Full engine replay with regime detection and risk manager
-uv run carcharoth backtest --start 2025-01-01 --end 2025-06-30
-
-# 3. Parameter search (each trial is a persisted backtest run)
-uv run carcharoth optimize --start 2025-01-01 --end 2025-06-30 --n-trials 20 --workers 2
-
-# omit --start/--end anywhere to use the profile's data window
-
-# 4. Inspect results
-uv run carcharoth analyze --run-id <uuid>
-open http://localhost:3333   # Backtest Results dashboard
-```
-
-**Backtest** runs the same `TradingEngine` tick loop against simulated market data and a sim
-broker. By default it skips high-volume tables (`strategy_decisions`, `positions_snapshot`,
-`regime_evaluations`); pass `--verbose-db` to persist them. Summary YAML:
-`logs/backtests/<run_id>.yaml`.
-
-**Quicktest** bypasses the engine entirely: bars go straight into one strategy with fixed
-position sizing and per-symbol independent portfolios, so cash contention does not mask
-per-symbol edge. Summary YAML: `logs/quicktest/<run_id>.yaml`.
-
-**Data window flags** — `backtest`, `quicktest`, and `optimize` all accept `--start YYYY-MM-DD`
-and `--end YYYY-MM-DD` (UTC, `--end` inclusive). They are applied as `data.start` / `data.end`
-config overrides, so they appear in the run's provenance and are exactly replayable. For
-`optimize` the window applies to every trial in the study.
-
-**Permutation test** (`carcharoth quicktest --permute [METHOD]`) checks whether the quicktest's
-fitness beats luck: the baseline quicktest runs as usual, then its bars are permuted and
-re-simulated `n_permutations` times in parallel worker processes (in-memory; one batched DB
-write at the very end). The verdict is a right-tailed p-value of the observed score against the
-permuted-score distribution — PASS when `p_value <= significance`. Methods live in
-`src/carcharoth/permutation/methods/` behind the `PermutationMethod` interface and are
-registered in `permutation/registry.py` (currently `in_sample_bars`: shuffles gap + intrabar
-log-returns per symbol, preserving drift and OHLC shape while destroying serial structure).
-Results land in `permutation_tests` / `permutation_results` (Permutation Tests dashboard) and
-a summary YAML in `logs/permutation/<test_id>.yaml`.
-
-**Monte carlo trade analysis** (`monte_carlo_trades`, `kind="trades"`) is different: the
-strategy runs **once**, then its closed round trips are resampled `n_permutations` times and
-the equity path rebuilt from each sample — no re-simulation, so it runs in-process in seconds
-and works on top of **both** commands: `quicktest --permute monte_carlo_trades` and
-`backtest --permute [METHOD]` (backtests support only trade-based methods; settings come from
-the optional `backtest.permutation:` section of the resolved config). Two sampling modes via
-`params.sampling`: `resample` (default; bootstrap with replacement — total return, drawdown
-and profit factor all vary: does the edge rest on a few lucky trades?) and `shuffle` (reorder
-without replacement — the same trades, so only path-dependent metrics vary: how lucky was the
-trade ordering?). This is a path-risk analysis, not a significance test: instead of a PASS/FAIL
-verdict it reports percentile tables (p5…p99) per metric, the observed run's percentile rank
-within each distribution, and the probability of profit. Same tables/dashboard/summary paths;
-the verdict columns are stored as NULL.
-
-**Optimize** uses Optuna; study tables live in a dedicated `optuna` Postgres schema. Search
-space keys are dot-paths into the resolved config (see `config/optimization/*.yaml`). Use
-`--no-hmm-cache` when the study searches HMM parameters. Parallel workers re-resolve the same
-profile + overrides and refuse to start if the config hash no longer matches the parent's.
-Summary YAML: `logs/optimize/<study_name>.yaml`.
-
-Redis caches historical Alpaca bars and fitted HMM models for backtest/optimize runs. Live
-paper trading never uses the cache. Clear it after data or model changes:
-`uv run carcharoth cache clear`.
-
-## Logs
-
-Rotating application logs in `logs/` (10 MB × 5):
-
-| File | Content |
-|---|---|
-| `app.log` | application lifecycle, tick timing |
-| `errors.log` | every error/exception |
-| `trades.log` | order submissions and fills |
-| `decisions.log` | every signal + risk verdict incl. indicator values |
-
-Run summaries (backtest, quicktest, permutation, optimize) are written as YAML under
-`logs/backtests/`, `logs/quicktest/`, `logs/permutation/`, and `logs/optimize/` respectively.
-
-## Monitoring (Grafana)
-
-Grafana runs as a Docker service and reads trading history from PostgreSQL via SQL panels.
-The datasource and dashboards are provisioned from `grafana/provisioning/`.
-
-```bash
-# start the full stack (app, postgres, redis, grafana)
-docker compose up -d
-
-# if the postgres volume already existed before grafana was added, create the
-# read-only DB user once (password must match GRAFANA_DB_PASSWORD in .env)
-./scripts/sync-grafana-db-user.sh
-
-# open grafana
-open http://localhost:3333
-```
-
-Log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`. Provisioned dashboards
-under **Dashboards → Carcharoth**:
-
-| Dashboard | Use |
-|---|---|
-| Trading Overview | Live paper trading — positions, PnL, signals, trades, regime |
-| Live Analysis | Live session analytics |
-| Backtest Results | Backtest and optimize runs — equity, metrics, round trips |
-| Permutation Tests | Permutation tests — p-value/verdict (bar methods) or sampled-metric distributions vs. observed (monte carlo) |
-
-| `.env` variable | Purpose |
-|---|---|
-| `GRAFANA_ADMIN_USER` | Grafana UI login (default: `admin`) |
-| `GRAFANA_ADMIN_PASSWORD` | Grafana UI password — pick any strong value |
-| `GRAFANA_DB_PASSWORD` | Password for the `grafana_reader` Postgres role |
-
-Grafana connects as `grafana_reader`, a read-only Postgres user. On a **fresh** database volume
-the init script in `docker/postgres/init-grafana-reader.sql` creates that user automatically; on
-an **existing** volume run `./scripts/sync-grafana-db-user.sh` so the role and password match
-`.env`.
-
-To verify Postgres has data:
-
-```bash
-docker compose exec db psql -U carcharoth -d carcharoth -c "\dt"
-docker compose exec db psql -U carcharoth -d carcharoth -c \
-  "SELECT 'strategy_decisions' AS t, COUNT(*) FROM strategy_decisions;"
-```
-
-If panels show no data but the database has rows, test the datasource under
-**Connections → Data sources → Carcharoth Postgres → Save & test**, then re-run the sync script
-and restart grafana: `docker compose restart grafana`.
-
-Dashboard JSON lives in `grafana/provisioning/dashboards/`. Edit panels in the UI, then export
-and commit if you want changes versioned.
+PostgreSQL stores run-scoped `model_decisions`, orders, fills, signed position/equity snapshots,
+long/short `round_trips`, metrics, and permutation results. Slim backtests omit high-volume model
+features unless `--verbose-db` is used. Grafana dashboards live under
+`grafana/provisioning/dashboards/`.
 
 ## Development
 
 ```bash
-uv run pytest              # unit tests (no network, no DB needed)
-uv run ruff check          # lint
-uv run ruff format         # format
-uv run mypy src            # strict type check
-```
-
-The Rust TUI (`tui/`) is a separate cargo workspace member:
-
-```bash
-cargo fmt --all
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+uv run mypy src
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                  # pure unit + rendering tests
-cargo test --workspace -- --ignored     # integration tests that spawn the real CLI
+cargo test --workspace
 ```
 
-Tests run entirely against in-memory fakes of the interfaces (`tests/fakes.py`) — this is the
-payoff of the interface-first design.
-
-### Adding a strategy
-
-1. Implement the `Strategy` ABC (`interfaces/strategy.py`) in a new module under `strategies/`.
-   `evaluate()` must stay pure — no I/O.
-2. Register it in `strategies/registry.py` (one line).
-3. Add it under `strategies:` in `config/base.yaml` with its params.
-   - Single-strategy mode: set `active: true` on one strategy and `regime.active: false`.
-   - Regime mode: map regimes to it under `regime.regimes` (the `active` flags are ignored).
-
-### Adding a regime feature (score detector)
-
-1. Implement `RegimeFeature` in `regime/features/`.
-2. Register it in `regime/registry.py`.
-3. Add it to `regime.score.features` in `config/base.yaml`.
-
-### Swapping the broker / data provider
-
-1. Create a new package under `services/<provider>/` implementing `MarketDataService`,
-   `AccountService`, `OrderExecutor` and `MarketClock`. Keep SDK types inside the package;
-   convert to domain models (`domain/models.py`) at the boundary, as `services/alpaca/mappers.py`
-   does.
-2. Change the wiring in `main.py`. Nothing else changes.
-
-### Database migrations
-
-Schema lives in `persistence/orm.py`. After changing it:
-
-```bash
-uv run alembic revision --autogenerate -m "describe change"
-uv run alembic upgrade head
-```
+See `.claude/architecture.md` and `.claude/` for module and workflow details.

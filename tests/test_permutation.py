@@ -13,8 +13,8 @@ import pytest
 
 from carcharoth.analysis.metrics import RoundTrip
 from carcharoth.config.app_config import BacktestConfig, ObjectiveConfig
-from carcharoth.config.quicktest_config import PermutationConfig, QuickTestConfig
-from carcharoth.domain.models import Bar, MetricValue, Timeframe
+from carcharoth.config.permutation_config import PermutationConfig
+from carcharoth.domain.models import Bar, TargetExposure
 from carcharoth.permutation.methods.in_sample_bars import permute_symbol_bars
 from carcharoth.permutation.methods.monte_carlo_trades import MonteCarloTradesPermutation
 from carcharoth.permutation.registry import (
@@ -23,20 +23,14 @@ from carcharoth.permutation.registry import (
     method_kind,
 )
 from carcharoth.permutation.runner import (
-    _split_indices,
     build_trade_context,
     compute_p_value,
     run_monte_carlo_test,
-    run_permutation_chunk,
-    run_permutation_test,
 )
 from carcharoth.persistence.orm import Base, PermutationResultRow
 from carcharoth.persistence.repositories import (
-    BacktestMetricsRepository,
     PermutationRepository,
-    RoundTripRepository,
 )
-from tests.fakes import InMemoryRunRepository
 
 # 14:00 UTC on 2026-07-01 is 10:00 New York: inside the regular session.
 SESSION_START = datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
@@ -136,64 +130,6 @@ def test_p_value_no_permutations() -> None:
     assert compute_p_value(1.0, []) == 1.0
 
 
-# --- chunked seeding ----------------------------------------------------------
-
-
-def test_split_indices_covers_all() -> None:
-    chunks = _split_indices(10, 4)
-    assert [len(c) for c in chunks] == [3, 3, 2, 2]
-    assert sorted(i for c in chunks for i in c) == list(range(10))
-    assert _split_indices(2, 8) == [[0], [1]]
-
-
-def quicktest_config(**overrides: Any) -> QuickTestConfig:
-    payload: dict[str, Any] = {
-        "symbols": ["AAPL", "MSFT"],
-        "start": WINDOW_START.date(),
-        "end": WINDOW_START.date(),
-        "strategy": {"name": "mean_reversion", "params": {}},
-        **overrides,
-    }
-    return QuickTestConfig.model_validate(payload)
-
-
-def test_chunking_does_not_change_scores() -> None:
-    """Permutation i is seeded by (seed, i), so any chunking yields the same
-    scores — the guarantee that makes worker count irrelevant to results."""
-    config = quicktest_config()
-    bars = {
-        "AAPL": make_ohlc_bars(60, SESSION_START, seed=1, symbol="AAPL"),
-        "MSFT": make_ohlc_bars(60, SESSION_START, seed=2, symbol="MSFT"),
-    }
-    args = (config, OBJECTIVES["default"], bars, "in_sample_bars", {}, 42)
-
-    whole = run_permutation_chunk(*args, list(range(6)))
-    chunked = [
-        record for chunk in _split_indices(6, 3) for record in run_permutation_chunk(*args, chunk)
-    ]
-    assert sorted(chunked) == sorted(whole)
-    assert len({index for index, _, _ in whole}) == 6
-
-
-# --- runner persistence -------------------------------------------------------
-
-
-class RecordingRoundTripRepo(RoundTripRepository):
-    def __init__(self) -> None:
-        self.saved: dict[UUID, list[RoundTrip]] = {}
-
-    def save_all(self, run_id, round_trips) -> None:  # type: ignore[no-untyped-def]
-        self.saved[run_id] = list(round_trips)
-
-
-class RecordingMetricsRepo(BacktestMetricsRepository):
-    def __init__(self) -> None:
-        self.saved: dict[UUID, list[MetricValue]] = {}
-
-    def save_metrics(self, run_id, metrics) -> None:  # type: ignore[no-untyped-def]
-        self.saved[run_id] = list(metrics)
-
-
 class RecordingPermutationRepo(PermutationRepository):
     def __init__(self) -> None:
         self.tests: list[dict[str, Any]] = []
@@ -202,78 +138,6 @@ class RecordingPermutationRepo(PermutationRepository):
         test_id = uuid4()
         self.tests.append({"test_id": test_id, **kwargs})
         return test_id
-
-
-def test_run_permutation_test_persists_one_batch() -> None:
-    config = quicktest_config()
-    bars = {
-        "AAPL": make_ohlc_bars(60, SESSION_START, seed=1, symbol="AAPL"),
-        "MSFT": make_ohlc_bars(60, SESSION_START, seed=2, symbol="MSFT"),
-    }
-
-    def fetch_bars(
-        symbols: list[str], timeframe: Timeframe, start: datetime, end: datetime
-    ) -> dict[str, list[Bar]]:
-        return bars
-
-    permutation = PermutationConfig(n_permutations=5, seed=7, workers=1)
-    runs_repo = InMemoryRunRepository()
-    permutation_repo = RecordingPermutationRepo()
-    flushes: list[dict[type[Base], list[dict[str, Any]]]] = []
-
-    baseline, outcome = run_permutation_test(
-        config,
-        permutation,
-        OBJECTIVES,
-        fetch_bars,
-        runs_repo=runs_repo,
-        flush=lambda pending: flushes.append(dict(pending)),
-        round_trips_repo=RecordingRoundTripRepo(),
-        metrics_repo=RecordingMetricsRepo(),
-        permutation_repo=permutation_repo,
-        workers=1,
-    )
-
-    # exactly one test header row, linked to the baseline quicktest run
-    assert len(permutation_repo.tests) == 1
-    header = permutation_repo.tests[0]
-    assert header["run_id"] == baseline.run_id
-    assert header["method"] == "in_sample_bars"
-    assert header["n_permutations"] == 5
-    assert header["p_value"] == outcome.p_value
-
-    # per-permutation rows arrive in one flush, after the baseline's own batch
-    permutation_flushes = [f for f in flushes if PermutationResultRow in f]
-    assert len(permutation_flushes) == 1
-    rows = permutation_flushes[0][PermutationResultRow]
-    assert len(rows) == 5
-    assert {row["permutation_index"] for row in rows} == set(range(5))
-    assert all(row["test_id"] == outcome.test_id for row in rows)
-
-    assert len(outcome.scores) == 5
-    assert 0.0 < outcome.p_value <= 1.0
-    assert outcome.passed == (outcome.p_value <= permutation.significance)
-
-
-def test_run_permutation_test_requires_known_objective() -> None:
-    config = quicktest_config(objective="missing")
-    with pytest.raises(ValueError, match="objective 'missing'"):
-        run_permutation_test(
-            config,
-            PermutationConfig(n_permutations=1, workers=1),
-            OBJECTIVES,
-            lambda *a, **k: {},
-            runs_repo=InMemoryRunRepository(),
-            flush=lambda pending: None,
-            round_trips_repo=RecordingRoundTripRepo(),
-            metrics_repo=RecordingMetricsRepo(),
-            permutation_repo=RecordingPermutationRepo(),
-        )
-
-
-def test_permutation_config_rejects_unknown_method() -> None:
-    with pytest.raises(ValueError, match="unknown permutation method"):
-        PermutationConfig(method="nope")
 
 
 # --- monte carlo trade shuffle --------------------------------------------------
@@ -290,6 +154,7 @@ def make_round_trips(n: int, seed: int = 3) -> list[RoundTrip]:
         trips.append(
             RoundTrip(
                 symbol="AAPL",
+                direction=TargetExposure.LONG,
                 qty=10.0,
                 entry_price=entry,
                 exit_price=exit_,

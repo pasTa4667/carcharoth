@@ -9,28 +9,24 @@ from carcharoth.config.overrides import OverrideError, apply_overrides, validate
 
 def raw_config() -> dict:
     return {
-        "watchlist": {"symbols": ["AAPL"]},
+        "symbols": ["AAPL"],
         "risk": {"max_open_positions": 5},
-        "regime": {
-            "regimes": {
-                "mean_reverting": {"strategy": "mean_reversion", "params": {"entry_z": -1.5}}
-            }
-        },
+        "model": {"decision": {"long_entry_threshold": 0.001}},
     }
 
 
 def test_sets_nested_value() -> None:
-    result = apply_overrides(raw_config(), {"regime.regimes.mean_reverting.params.entry_z": -2.5})
-    assert result["regime"]["regimes"]["mean_reverting"]["params"]["entry_z"] == -2.5
+    result = apply_overrides(raw_config(), {"model.decision.long_entry_threshold": -2.5})
+    assert result["model"]["decision"]["long_entry_threshold"] == -2.5
 
 
 def test_sets_multiple_overrides() -> None:
     result = apply_overrides(
         raw_config(),
-        {"risk.max_open_positions": 3, "regime.regimes.mean_reverting.params.entry_z": -1.0},
+        {"risk.max_open_positions": 3, "model.decision.long_entry_threshold": -1.0},
     )
     assert result["risk"]["max_open_positions"] == 3
-    assert result["regime"]["regimes"]["mean_reverting"]["params"]["entry_z"] == -1.0
+    assert result["model"]["decision"]["long_entry_threshold"] == -1.0
 
 
 def test_absent_leaf_key_is_created() -> None:
@@ -40,8 +36,8 @@ def test_absent_leaf_key_is_created() -> None:
 
 
 def test_missing_intermediate_segment_raises() -> None:
-    with pytest.raises(OverrideError, match="strategy"):
-        apply_overrides(raw_config(), {"strategy.params.lookback": 10})
+    with pytest.raises(OverrideError, match="features"):
+        apply_overrides(raw_config(), {"model.features.0": 10})
 
 
 def test_non_dict_intermediate_raises() -> None:
@@ -52,14 +48,14 @@ def test_non_dict_intermediate_raises() -> None:
 def test_input_is_not_mutated() -> None:
     raw = raw_config()
     snapshot = copy.deepcopy(raw)
-    apply_overrides(raw, {"regime.regimes.mean_reverting.params.entry_z": -3.0})
+    apply_overrides(raw, {"model.decision.long_entry_threshold": -3.0})
     assert raw == snapshot
 
 
 def test_validate_paths_accepts_valid_and_absent_leaf() -> None:
     validate_override_paths(
         raw_config(),
-        ["regime.regimes.mean_reverting.params.entry_z", "risk.buying_power_buffer"],
+        ["model.decision.long_entry_threshold", "risk.buying_power_buffer"],
     )
 
 

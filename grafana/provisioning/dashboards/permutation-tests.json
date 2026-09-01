@@ -32,13 +32,13 @@
       {
         "current": {},
         "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
-        "definition": "SELECT test_id::text AS __value, to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | ' || method || ' n=' || n_permutations || ' p=' || round(p_value::numeric, 4) || CASE WHEN passed THEN ' PASS' ELSE ' FAIL' END AS __text FROM permutation_tests ORDER BY created_at DESC",
+        "definition": "SELECT test_id::text AS __value, to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | ' || method || ' n=' || n_permutations || ' p=' || COALESCE(round(p_value::numeric, 4)::text, 'N/A') || CASE WHEN passed IS TRUE THEN ' PASS' WHEN passed IS FALSE THEN ' FAIL' ELSE ' NO VERDICT' END AS __text FROM permutation_tests ORDER BY created_at DESC",
         "includeAll": false,
         "label": "Permutation Test",
         "multi": false,
         "name": "test",
         "options": [],
-        "query": "SELECT test_id::text AS __value, to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | ' || method || ' n=' || n_permutations || ' p=' || round(p_value::numeric, 4) || CASE WHEN passed THEN ' PASS' ELSE ' FAIL' END AS __text FROM permutation_tests ORDER BY created_at DESC",
+        "query": "SELECT test_id::text AS __value, to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | ' || method || ' n=' || n_permutations || ' p=' || COALESCE(round(p_value::numeric, 4)::text, 'N/A') || CASE WHEN passed IS TRUE THEN ' PASS' WHEN passed IS FALSE THEN ' FAIL' ELSE ' NO VERDICT' END AS __text FROM permutation_tests ORDER BY created_at DESC",
         "refresh": 2,
         "regex": "",
         "sort": 0,
@@ -59,8 +59,9 @@
           "mappings": [
             {
               "options": {
-                "0": { "color": "red", "index": 1, "text": "FAIL" },
-                "1": { "color": "green", "index": 0, "text": "PASS" }
+                "FAIL": { "color": "red", "index": 1, "text": "FAIL" },
+                "NO VERDICT": { "color": "gray", "index": 2, "text": "NO VERDICT" },
+                "PASS": { "color": "green", "index": 0, "text": "PASS" }
               },
               "type": "value"
             }
@@ -86,7 +87,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT passed::int AS verdict FROM permutation_tests WHERE test_id::text = '${test}'",
+          "rawSql": "SELECT CASE WHEN passed IS TRUE THEN 'PASS' WHEN passed IS FALSE THEN 'FAIL' ELSE 'NO VERDICT' END AS verdict FROM permutation_tests WHERE test_id::text = '${test}'",
           "refId": "A"
         }
       ]
@@ -101,7 +102,15 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "decimals": 4,
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "match": "null",
+                "result": { "color": "gray", "index": 0, "text": "N/A" }
+              },
+              "type": "special"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [

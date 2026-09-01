@@ -16,7 +16,7 @@ from uuid import UUID
 import yaml
 
 from carcharoth.analysis.objective import FITNESS_PREFIX
-from carcharoth.config.app_config import RegimeConfig, RiskConfig
+from carcharoth.config.app_config import ModelConfig, RiskConfig
 from carcharoth.domain.models import MetricValue, OptimizationResult
 
 if TYPE_CHECKING:
@@ -87,9 +87,8 @@ def write_backtest_summary(
     log_dir: Path,
     run_id: UUID,
     started_at: datetime,
-    regime_cfg: RegimeConfig | None,
+    model_cfg: ModelConfig,
     risk_cfg: RiskConfig,
-    strategy_cfgs: dict[str, Any],
     metrics: list[MetricValue],
     config_hash: str | None = None,
     provenance: dict[str, Any] | None = None,
@@ -111,11 +110,10 @@ def write_backtest_summary(
     if per_symbol:
         results["per_symbol"] = per_symbol
 
-    config_block: dict[str, object] = {}
-    config_block["strategies"] = strategy_cfgs
-    if regime_cfg is not None:
-        config_block["regime"] = regime_cfg.model_dump()
-    config_block["risk"] = risk_cfg.model_dump()
+    config_block: dict[str, object] = {
+        "model": model_cfg.model_dump(mode="json"),
+        "risk": risk_cfg.model_dump(),
+    }
 
     summary: dict[str, object] = {
         "run_id": str(run_id),

@@ -1,316 +1,107 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from carcharoth.domain.errors import BrokerError, OrderConflictError
 from carcharoth.domain.models import (
+    ExposureIntent,
     MarketSnapshot,
     OrderStatus,
-    Side,
-    Signal,
-    SignalAction,
+    TargetExposure,
 )
 from carcharoth.engine.engine import TradingEngine
-from carcharoth.engine.strategy_provider import RegimeStrategyProvider, SingleStrategyProvider
-from carcharoth.regime.models import Regime, RegimeAssessment
 from tests.factories import make_account, make_bars, make_quote
 from tests.fakes import (
     FakeAccountService,
-    FakeDetector,
     FakeMarketDataService,
+    FakeModelSignalGenerator,
     FakeOrderExecutor,
     FakeRiskManager,
-    FakeStrategy,
+    InMemoryModelDecisionRepository,
     InMemoryOrderRepository,
     InMemoryPositionSnapshotRepository,
-    InMemoryRegimeEvaluationRepository,
-    InMemoryStrategyAssignmentRepository,
-    InMemoryStrategyDecisionRepository,
     InMemoryTradeRepository,
-    RaisingStrategy,
 )
 
 AS_OF = datetime(2026, 7, 1, 15, 0, tzinfo=UTC)
 SYMBOLS = ["AAPL", "MSFT"]
 
 
-def make_snapshot(symbols: list[str] = SYMBOLS) -> MarketSnapshot:
-    return MarketSnapshot(
-        bars={symbol: make_bars([100.0] * 20, symbol) for symbol in symbols},
-        quotes={symbol: make_quote(100.0, symbol) for symbol in symbols},
+def intent(symbol: str, target: TargetExposure) -> ExposureIntent:
+    return ExposureIntent(symbol, target, "model-1", "schema", "test", timestamp=AS_OF)
+
+
+def build_engine(model: FakeModelSignalGenerator):
+    snapshot = MarketSnapshot(
+        bars={symbol: make_bars([100.0] * 20, symbol) for symbol in [*SYMBOLS, "SPY"]},
+        quotes={symbol: make_quote(100.0, symbol) for symbol in SYMBOLS},
         as_of=AS_OF,
     )
-
-
-def buy_signal(symbol: str) -> Signal:
-    return Signal(symbol=symbol, action=SignalAction.BUY, strategy="fake", reason="test buy")
-
-
-def sell_signal(symbol: str) -> Signal:
-    return Signal(symbol=symbol, action=SignalAction.SELL, strategy="fake", reason="test sell")
-
-
-def build_engine(
-    strategy: FakeStrategy,
-    risk: FakeRiskManager | None = None,
-    executor: FakeOrderExecutor | None = None,
-) -> tuple[
-    TradingEngine,
-    FakeOrderExecutor,
-    InMemoryStrategyDecisionRepository,
-    InMemoryOrderRepository,
-    InMemoryTradeRepository,
-    InMemoryPositionSnapshotRepository,
-]:
-    executor = executor or FakeOrderExecutor()
-    decisions = InMemoryStrategyDecisionRepository()
+    market = FakeMarketDataService(snapshot)
+    executor = FakeOrderExecutor()
+    decisions = InMemoryModelDecisionRepository()
     orders = InMemoryOrderRepository()
     trades = InMemoryTradeRepository()
-    snapshots = InMemoryPositionSnapshotRepository()
     engine = TradingEngine(
-        market_data=FakeMarketDataService(make_snapshot()),
+        market_data=market,
         account=FakeAccountService(make_account()),
-        strategies=SingleStrategyProvider(strategy),
-        risk=risk or FakeRiskManager(),
+        model=model,
+        risk=FakeRiskManager(),
         executor=executor,
         decisions_repo=decisions,
         orders_repo=orders,
         trades_repo=trades,
-        snapshots_repo=snapshots,
-        symbols=SYMBOLS,
-    )
-    return engine, executor, decisions, orders, trades, snapshots
-
-
-def test_engine_requests_provider_declared_bars() -> None:
-    provider = SingleStrategyProvider(FakeStrategy({}, lookback=42))
-    market_data = FakeMarketDataService(make_snapshot())
-    engine = TradingEngine(
-        market_data=market_data,
-        account=FakeAccountService(make_account()),
-        strategies=provider,
-        risk=FakeRiskManager(),
-        executor=FakeOrderExecutor(),
-        decisions_repo=InMemoryStrategyDecisionRepository(),
-        orders_repo=InMemoryOrderRepository(),
-        trades_repo=InMemoryTradeRepository(),
         snapshots_repo=InMemoryPositionSnapshotRepository(),
         symbols=SYMBOLS,
     )
+    return engine, market, executor, decisions, orders, trades
 
+
+def test_engine_fetches_context_but_only_generates_for_tradable_symbols() -> None:
+    model = FakeModelSignalGenerator({})
+    engine, market, _, decisions, _, _ = build_engine(model)
     engine.tick()
+    assert market.calls == [(["AAPL", "MSFT", "SPY"], model.requirements.bars)]
+    assert model.generated == SYMBOLS
+    assert len(decisions.saved) == 2
 
-    assert market_data.calls == [(SYMBOLS, provider.required_bars())]
 
-
-def test_engine_routes_symbols_to_their_regime_strategies() -> None:
-    """One tick, two symbols, two different strategies via the regime provider."""
-
-    class TrendStrategy(FakeStrategy):
-        name = "trend_fake"
-
-    def assessment(symbol: str, regime: Regime) -> RegimeAssessment:
-        score = 0.5 if regime is Regime.TRENDING else -0.5
-        return RegimeAssessment(
-            symbol=symbol,
-            regime=regime,
-            score=score,
-            directional_score=score,
-            stability=1.0,
-            evidence=(),
-        )
-
-    trending = TrendStrategy({})
-    reverting = FakeStrategy({})
-    provider = RegimeStrategyProvider(
-        detector=FakeDetector(
-            {
-                "AAPL": [assessment("AAPL", Regime.TRENDING)],
-                "MSFT": [assessment("MSFT", Regime.MEAN_REVERTING)],
-            }
-        ),
-        strategies={Regime.TRENDING: trending, Regime.MEAN_REVERTING: reverting},
-        evaluations_repo=InMemoryRegimeEvaluationRepository(),
-        assignments_repo=InMemoryStrategyAssignmentRepository(),
-    )
-    engine = TradingEngine(
-        market_data=FakeMarketDataService(make_snapshot()),
-        account=FakeAccountService(make_account()),
-        strategies=provider,
-        risk=FakeRiskManager(),
-        executor=FakeOrderExecutor(),
-        decisions_repo=InMemoryStrategyDecisionRepository(),
-        orders_repo=InMemoryOrderRepository(),
-        trades_repo=InMemoryTradeRepository(),
-        snapshots_repo=InMemoryPositionSnapshotRepository(),
-        symbols=SYMBOLS,
-    )
-
+def test_long_intent_submits_buy() -> None:
+    model = FakeModelSignalGenerator({"AAPL": intent("AAPL", TargetExposure.LONG)})
+    engine, _, executor, _, orders, _ = build_engine(model)
     engine.tick()
-
-    assert trending.evaluated == ["AAPL"]
-    assert reverting.evaluated == ["MSFT"]
-
-
-def test_approved_buy_submits_exactly_one_order() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    engine, executor, decisions, orders, _, _ = build_engine(strategy)
-
-    engine.tick()
-
     assert len(executor.submitted) == 1
     assert executor.submitted[0].symbol == "AAPL"
-    assert executor.submitted[0].client_order_id is not None
     assert len(orders.rows) == 1
-    # both symbols evaluated, both decisions persisted
-    assert strategy.evaluated == SYMBOLS
-    assert len(decisions.saved) == 2
 
 
-def test_hold_produces_decision_but_no_order() -> None:
-    strategy = FakeStrategy({})  # everything holds
-    engine, executor, decisions, orders, _, _ = build_engine(strategy)
-
+def test_unchanged_is_persisted_without_risk_or_order() -> None:
+    model = FakeModelSignalGenerator({})
+    engine, _, executor, decisions, _, _ = build_engine(model)
     engine.tick()
-
     assert executor.submitted == []
-    assert orders.rows == {}
-    assert len(decisions.saved) == 2
     assert all(risk is None for _, risk, _ in decisions.saved)
 
 
-def test_rejected_signal_is_persisted_but_not_executed() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    engine, executor, decisions, _, _, _ = build_engine(
-        strategy, risk=FakeRiskManager(approve=False)
-    )
-
+def test_failing_symbol_does_not_stop_remaining_symbols() -> None:
+    model = FakeModelSignalGenerator({"MSFT": intent("MSFT", TargetExposure.LONG)})
+    model.raise_for.add("AAPL")
+    engine, _, executor, _, _, _ = build_engine(model)
     engine.tick()
-
-    assert executor.submitted == []
-    aapl_decisions = [risk for signal, risk, _ in decisions.saved if signal.symbol == "AAPL"]
-    assert len(aapl_decisions) == 1
-    assert aapl_decisions[0] is not None
-    assert not aapl_decisions[0].approved
+    assert [request.symbol for request in executor.submitted] == ["MSFT"]
 
 
-def test_failing_symbol_does_not_stop_others() -> None:
-    strategy = RaisingStrategy({"MSFT": buy_signal("MSFT")}, raise_for={"AAPL"})
-    engine, executor, _, _, _, _ = build_engine(strategy)
-
+def test_fill_reconciliation_is_idempotent() -> None:
+    model = FakeModelSignalGenerator({"AAPL": intent("AAPL", TargetExposure.LONG)})
+    engine, _, executor, _, orders, trades = build_engine(model)
     engine.tick()
-
-    assert strategy.evaluated == SYMBOLS
-    assert len(executor.submitted) == 1
-    assert executor.submitted[0].symbol == "MSFT"
-
-
-def test_positions_snapshot_saved_every_tick() -> None:
-    strategy = FakeStrategy({})
-    engine, _, _, _, _, snapshots = build_engine(strategy)
-
-    engine.tick()
-    engine.tick()
-
-    assert len(snapshots.snapshots) == 2
-    assert snapshots.snapshots[0][0] == AS_OF
-
-
-def test_fill_reconciliation_records_trade_once() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    engine, executor, _, orders, trades, _ = build_engine(strategy)
-
-    engine.tick()
-    broker_order_id = next(iter(orders.rows))
-    executor.order_states[broker_order_id] = replace(
-        orders.rows[broker_order_id],
+    broker_id = next(iter(orders.rows))
+    executor.order_states[broker_id] = replace(
+        orders.rows[broker_id],
         status=OrderStatus.FILLED,
         filled_qty=1,
         filled_avg_price=100.0,
         filled_at=AS_OF,
     )
-
-    # strategy keeps signalling BUY, but risk sees it: use hold now to isolate reconciliation
+    model.intents.clear()
+    engine.tick()
     engine.tick()
     assert len(trades.fills) == 1
-    assert orders.rows[broker_order_id].status is OrderStatus.FILLED
-
-    engine.tick()  # reconciliation is idempotent
-    assert len(trades.fills) == 1
-
-
-def test_same_side_open_order_skips_duplicate_submit() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    engine, executor, _, orders, _, _ = build_engine(strategy)
-
-    engine.tick()
-    engine.tick()  # BUY still open, BUY signals again
-
-    assert len(executor.submitted) == 1
-    assert executor.canceled == []
-    assert len(orders.rows) == 1
-
-
-def test_opposite_side_open_order_is_canceled_and_submit_skipped() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    engine, executor, _, orders, _, _ = build_engine(strategy)
-
-    engine.tick()
-    broker_order_id = next(iter(orders.rows))
-    executor.order_states[broker_order_id] = orders.rows[broker_order_id]  # still open
-
-    strategy._signals["AAPL"] = sell_signal("AAPL")
-    engine.tick()
-
-    assert executor.canceled == [broker_order_id]
-    assert len(executor.submitted) == 1  # only the original BUY
-
-
-def test_order_placed_after_conflicting_order_cancels() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    engine, executor, _, orders, _, _ = build_engine(strategy)
-
-    engine.tick()
-    broker_order_id = next(iter(orders.rows))
-    executor.order_states[broker_order_id] = orders.rows[broker_order_id]
-
-    strategy._signals["AAPL"] = sell_signal("AAPL")
-    engine.tick()  # cancel requested, no submit yet
-    assert len(executor.submitted) == 1
-
-    executor.order_states[broker_order_id] = replace(
-        orders.rows[broker_order_id], status=OrderStatus.CANCELED
-    )
-    engine.tick()  # reconciliation sees the cancel, SELL goes through
-
-    assert len(executor.submitted) == 2
-    assert executor.submitted[1].side is Side.SELL
-
-
-def test_cancel_failure_still_skips_submit() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL"), "MSFT": buy_signal("MSFT")})
-    engine, executor, _, orders, _, _ = build_engine(strategy)
-
-    engine.tick()
-    for broker_order_id, row in orders.rows.items():
-        executor.order_states[broker_order_id] = row  # both stay open
-
-    strategy._signals["AAPL"] = sell_signal("AAPL")
-    executor.cancel_error = BrokerError("cancel failed", retryable=True)
-    engine.tick()
-
-    assert executor.canceled == []
-    assert len(executor.submitted) == 2  # no new orders beyond the two original BUYs
-    assert strategy.evaluated == SYMBOLS * 2  # MSFT still processed
-
-
-def test_broker_wash_trade_rejection_is_swallowed() -> None:
-    strategy = FakeStrategy({"AAPL": buy_signal("AAPL")})
-    executor = FakeOrderExecutor()
-    executor.submit_error = OrderConflictError("wash-trade rejection for AAPL")
-    engine, executor, _, orders, _, _ = build_engine(strategy, executor=executor)
-
-    engine.tick()
-
-    assert executor.submitted == []
-    assert orders.rows == {}
-    assert strategy.evaluated == SYMBOLS  # tick completed, MSFT still evaluated

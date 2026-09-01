@@ -51,9 +51,7 @@ def upgrade() -> None:
         sa.Column("profit_factor", sa.Float(), nullable=True),
         sa.Column("num_round_trips", sa.Integer(), nullable=False),
         sa.Column("final_equity", sa.Float(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["test_id"], ["permutation_tests.test_id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["test_id"], ["permutation_tests.test_id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("test_id", "permutation_index"),
     )

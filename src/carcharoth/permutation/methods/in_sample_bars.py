@@ -9,8 +9,8 @@ distribution, overall drift, and per-bar OHLC shape (high ≥ open/close ≥ low
 survives because each intrabar tuple moves as one unit; volume travels with
 its intrabar tuple).
 
-Warm-up bars before the simulation window stay untouched so the strategy
-warms up on real data, exactly like the baseline run.
+Warm-up bars before the simulation window stay untouched so model features
+warm up on real data, exactly like the baseline run.
 """
 
 from __future__ import annotations
@@ -38,8 +38,7 @@ class InSampleBarsPermutation:
         if ctx.simulate is None or ctx.start is None:
             raise ValueError("in_sample_bars needs a bars context (simulate + start)")
         permuted = {
-            symbol: permute_symbol_bars(bars, ctx.start, rng)
-            for symbol, bars in ctx.bars.items()
+            symbol: permute_symbol_bars(bars, ctx.start, rng) for symbol, bars in ctx.bars.items()
         }
         return ctx.simulate(permuted)
 

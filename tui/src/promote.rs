@@ -177,27 +177,33 @@ mod tests {
 
     #[test]
     fn merge_drops_conflicting_ancestors_and_descendants() {
-        let existing = leaves(&[("regime.hmm.n_states", json!(4))]);
+        let existing = leaves(&[("model.decision.long_entry_threshold", json!(0.001))]);
         let merged = merge(
             &existing,
-            vec![("regime.hmm".to_string(), json!({"n_states": 3}))],
+            vec![(
+                "model.decision".to_string(),
+                json!({"long_entry_threshold": 0.002}),
+            )],
         );
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged["regime.hmm"], json!({"n_states": 3}));
+        assert_eq!(
+            merged["model.decision"],
+            json!({"long_entry_threshold": 0.002})
+        );
     }
 
     #[test]
     fn nesting_rebuilds_the_layer_document() {
         let nested = nest(&leaves(&[
             ("risk.max_open_positions", json!(8)),
-            ("strategies.mean_reversion.params.entry_z", json!(-1.5)),
+            ("model.decision.long_entry_threshold", json!(0.001)),
             ("symbols", json!(["SPY"])),
         ]));
         assert_eq!(
             nested,
             json!({
                 "risk": {"max_open_positions": 8},
-                "strategies": {"mean_reversion": {"params": {"entry_z": -1.5}}},
+                "model": {"decision": {"long_entry_threshold": 0.001}},
                 "symbols": ["SPY"]
             })
         );
@@ -227,7 +233,7 @@ mod tests {
         let path = scratch("roundtrip");
         let selection = leaves(&[
             ("risk.max_open_positions", json!(8)),
-            ("strategies.mean_reversion.params.entry_z", json!(-1.5)),
+            ("model.decision.long_entry_threshold", json!(0.001)),
             ("symbols", json!(["SPY", "QQQ"])),
         ]);
         write_atomically(&path, &render_layer(&selection).unwrap()).unwrap();
@@ -248,14 +254,14 @@ mod tests {
     fn candidate_overrides_use_cli_value_syntax() {
         let overrides = candidate_overrides(&leaves(&[
             ("symbols", json!(["SPY"])),
-            ("quicktest.strategy", json!("mean_reversion")),
+            ("model.artifact_path", json!("artifacts/models/m1")),
         ]));
         assert_eq!(
             overrides,
             vec![
                 (
-                    "quicktest.strategy".to_string(),
-                    "mean_reversion".to_string()
+                    "model.artifact_path".to_string(),
+                    "artifacts/models/m1".to_string()
                 ),
                 ("symbols".to_string(), r#"["SPY"]"#.to_string()),
             ]

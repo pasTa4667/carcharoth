@@ -1,44 +1,35 @@
 # Design Principles
 
-## 1. Interface-First Design
-- Every component is defined by an **interface** (ABC) in `src/carcharoth/interfaces/`
-- Concrete implementations live in focused modules under `services/`, `strategies/`, `risk/`, etc.
-- Wiring happens in **exactly one place**: `src/carcharoth/main.py` (the composition root)
-- Swapping a component never requires changes anywhere else — just change the wiring
+## Interface-first, deep modules
 
-**Why:** This makes testing trivial (use fakes), refactoring safe, and swapping providers (broker,
-data source, strategies) a localized change.
+External variation lives at small seams in `interfaces/`; concrete adapters are wired only in
+`main.py`. The engine's model seam is `ModelSignalGenerator`: market requirements plus one
+`generate` operation. Feature registry, artifact validation, predictor, decision policy, and
+completed-bar state are internal implementation details.
 
-## 2. Type-First Development
-- Strict mypy enabled (`tool.mypy.strict = true`)
-- All function signatures are fully annotated
-- Generic types and union types are preferred over `Any`
-- Domain models are defined in `domain/models.py` and used consistently across layers
+## Type-first
 
-**Why:** Type checking catches bugs early and serves as machine-readable documentation.
+Strict mypy is enabled. Domain dataclasses cross interfaces; SDK/native types remain in Alpaca,
+XGBoost, Optuna, Redis, or SQLAlchemy adapters.
 
-## 3. Registry Pattern for Extensibility
-- Strategies register themselves in `strategies/registry.py`
-- Regime features register in `regime/registry.py`
-- Regime detectors register in `regime/detectors.py` (`build_detector` maps
-  `regime.detector` config to a concrete `RegimeDetector`)
-- New implementations can be added without touching the composition root
+## Reproducible model schema
 
-**How to add a strategy:**
-1. Create a new module under `strategies/`
-2. Implement the `Strategy` ABC from `interfaces/strategy.py`
-3. Add one line to `strategies/registry.py`: `_STRATEGIES["your_name"] = YourStrategy`
-4. Add it to `config/config.yaml` under `strategies:` (keyed by name) and set `active: true`
-   (single-strategy mode) or reference it from `regime.regimes` (regime-driven mode)
+Features are ordered registry entries with stable output names, params, implementation versions,
+and warm-up requirements. The schema fingerprint and native model hash are persisted in an
+immutable artifact manifest and checked before runtime.
 
-## 4. Layered Architecture
-- **Interfaces** (`interfaces/`) — contracts
-- **Domain models** (`domain/models.py`) — pure data, no I/O
-- **Services** (`services/`) — provider implementations, type conversions at boundaries
-- **Engine** (`engine/`) — orchestration logic
-- **Persistence** (`persistence/`) — data access (SQLAlchemy)
-- **Config** (`config/`) — Pydantic schemas, YAML loading
+## Layered configuration
 
-**Why:** Clear separation of concerns makes each layer testable and swappable.
+`config/base.yaml` owns the strict shape. Mappings merge recursively, lists replace, and later
+layers win. `model.target` and `optimization.search_space` replace atomically. Run config hashes
+and provenance make research replayable.
 
-For module-level detail and data flows, see [architecture.md](../architecture.md).
+## One composition root
+
+Live, replay, training, quicktest, and optimization construct concrete implementations in
+`main.py`; modules accept dependencies rather than creating remote/native clients themselves.
+
+## No legacy fallback
+
+There is no rule-based strategy interface/provider, regime router, or automatic model fallback.
+Missing inference yields `UNCHANGED`; a bad artifact fails startup.

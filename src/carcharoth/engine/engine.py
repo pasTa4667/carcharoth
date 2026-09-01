@@ -1,7 +1,7 @@
 """The trading engine: a deliberately "stupid" orchestrator.
 
 It only sequences the services and passes data between them. All trading
-logic lives in the strategy, risk manager and service implementations —
+logic lives in the model generator, risk manager and adapter implementations —
 never here. Swapping any component requires no change to this file.
 """
 
@@ -15,20 +15,20 @@ from carcharoth.domain.models import (
     OrderRequest,
     OrderStatus,
     Side,
-    SignalAction,
+    TargetExposure,
 )
 from carcharoth.interfaces import (
     AccountService,
     MarketDataService,
     OrderExecutor,
     RiskManager,
-    StrategyProvider,
 )
+from carcharoth.interfaces.model_signal import ModelSignalGenerator
 from carcharoth.logging_setup import DECISIONS_LOGGER, TRADES_LOGGER
 from carcharoth.persistence.repositories import (
+    ModelDecisionRepository,
     OrderRepository,
     PositionSnapshotRepository,
-    StrategyDecisionRepository,
     TradeRepository,
 )
 
@@ -36,18 +36,16 @@ logger = logging.getLogger(__name__)
 trades_log = logging.getLogger(TRADES_LOGGER)
 decisions_log = logging.getLogger(DECISIONS_LOGGER)
 
-_SIGNAL_TO_SIDE = {SignalAction.BUY: Side.BUY, SignalAction.SELL: Side.SELL}
-
 
 class TradingEngine:
     def __init__(
         self,
         market_data: MarketDataService,
         account: AccountService,
-        strategies: StrategyProvider,
+        model: ModelSignalGenerator,
         risk: RiskManager,
         executor: OrderExecutor,
-        decisions_repo: StrategyDecisionRepository,
+        decisions_repo: ModelDecisionRepository,
         orders_repo: OrderRepository,
         trades_repo: TradeRepository,
         snapshots_repo: PositionSnapshotRepository,
@@ -55,7 +53,7 @@ class TradingEngine:
     ) -> None:
         self._market_data = market_data
         self._account = account
-        self._strategies = strategies
+        self._model = model
         self._risk = risk
         self._executor = executor
         self._decisions_repo = decisions_repo
@@ -67,10 +65,12 @@ class TradingEngine:
     def tick(self) -> None:
         self._reconcile_fills()
 
+        requirements = self._model.market_requirements()
+        requested_symbols = list(
+            dict.fromkeys([*self._symbols, *sorted(requirements.context_symbols)])
+        )
         try:
-            snapshot = self._market_data.get_snapshot(
-                self._symbols, self._strategies.required_bars()
-            )
+            snapshot = self._market_data.get_snapshot(requested_symbols, requirements.bars)
         except MarketDataError:
             logger.exception("market data unavailable, aborting tick")
             return
@@ -86,34 +86,31 @@ class TradingEngine:
 
     def _process_symbol(self, symbol: str, snapshot: MarketSnapshot, state: AccountState) -> None:
         quote = snapshot.quotes.get(symbol)
-        bars = snapshot.bars.get(symbol, [])
         position = state.positions.get(symbol)
-        strategy = self._strategies.resolve(symbol, bars, position, snapshot.as_of)
-        if strategy is None:
-            logger.debug("%s: no regime strategy available, skipping tick", symbol)
-            return
-        signal = strategy.evaluate(symbol, bars, quote, position)
+        intent = self._model.generate(symbol, snapshot, position)
         decisions_log.info(
-            "%s signal=%s reason=%r indicators=%s",
+            "%s target=%s model=%s reason=%r prediction=%s features=%s",
             symbol,
-            signal.action.value,
-            signal.reason,
-            signal.indicators,
+            intent.target.value,
+            intent.model_id,
+            intent.reason,
+            intent.prediction.as_dict() if intent.prediction else {},
+            intent.features.as_dict() if intent.features else {},
         )
 
-        if signal.action is SignalAction.HOLD or quote is None:
-            self._decisions_repo.save(signal, None, snapshot.as_of)
+        if intent.target is TargetExposure.UNCHANGED or quote is None:
+            self._decisions_repo.save(intent, None, snapshot.as_of)
             return
 
-        decision = self._risk.assess(signal, state, quote)
+        decision = self._risk.assess(intent, state, quote)
         decisions_log.info(
             "%s risk approved=%s reason=%r", symbol, decision.approved, decision.reason
         )
-        self._decisions_repo.save(signal, decision, snapshot.as_of)
-        if not decision.approved:
+        self._decisions_repo.save(intent, decision, snapshot.as_of)
+        if not decision.approved or decision.side is None:
             return
 
-        side = _SIGNAL_TO_SIDE[signal.action]
+        side = decision.side
         if not self._clear_conflicting_orders(symbol, side):
             return
 

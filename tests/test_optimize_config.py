@@ -41,17 +41,17 @@ objective: growth
 constraints:
   - {metric: num_trades, min: 20}
 search_space:
-  strategies.mean_reversion.params.entry_z: {type: float, low: -3.0, high: -0.5}
-  strategies.mean_reversion.params.timeframe_minutes: {type: categorical, choices: [5, 15]}
+  model.decision.long_entry_threshold: {type: float, low: -3.0, high: -0.5}
+  model.timeframe_minutes: {type: categorical, choices: [5, 15]}
 """
     )
     config = OptimizeConfig.model_validate(yaml.safe_load(path.read_text()))
     assert config.study.name == "sweep"
     assert config.objective == "growth"
     assert config.constraints[0].metric == "num_trades"
-    entry_z = config.search_space["strategies.mean_reversion.params.entry_z"]
-    assert isinstance(entry_z, FloatParam)
-    timeframe = config.search_space["strategies.mean_reversion.params.timeframe_minutes"]
+    entry_threshold = config.search_space["model.decision.long_entry_threshold"]
+    assert isinstance(entry_threshold, FloatParam)
+    timeframe = config.search_space["model.timeframe_minutes"]
     assert isinstance(timeframe, CategoricalParam)
 
 

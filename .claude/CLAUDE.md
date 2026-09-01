@@ -1,85 +1,88 @@
 # Carcharoth — Developer Guide
 
-**Carcharoth** is an algorithmic stock trading bot that runs against the Alpaca paper trading API.
-It's a learning/experimentation project with a deliberately simple architecture: a scheduler
-triggers a fixed-sequence trading engine every minute during market hours.
+Carcharoth is an interface-first, XGBoost-driven intraday trading/research platform. A scheduler
+or replay runner drives the same deliberately simple engine. See [architecture.md](architecture.md)
+for module ownership and flow diagrams.
 
-For a high-level overview of the codebase structure, see [architecture.md](architecture.md).
+## Invariants
 
-## Key Principles
+- The engine orchestrates only; feature, prediction, decision, risk, and broker logic stay in
+  their modules.
+- Domain dataclasses are the only types crossing module interfaces. Alpaca/XGBoost SDK objects
+  remain in their adapters.
+- Features are pure, ordered, versioned, scale-free, and shared by training and inference.
+- Artifacts are immutable and explicit. Runtime validates model hash, feature schema, task,
+  target, timeframe, benchmark, and out-of-sample window before replay/live use.
+- Completed bar `t` produces an intent whose replay fill is bar `t+1` open.
+- Positions are signed; gross exposure uses absolute market value; reversals close first.
+- Missing inference means `UNCHANGED`, not `FLAT`; end-of-day flatten overrides model failure.
+- Regime detector source is retained but no runtime flow constructs or persists it.
+- Strict mypy, Ruff, Pydantic `extra="forbid"`, deterministic tests, and in-memory fakes apply.
 
-- [Design principles](principles/design.md) — interface-first design, types, registries, layers
-- [Development practices](principles/development.md) — testing, config, database, logging, style
+## Module map
 
-## Common Tasks
-
-### Adding a New Strategy
-See [Registry Pattern](principles/design.md#3-registry-pattern-for-extensibility), or refer to
-`strategies/mean_reversion.py` as an example. Strategies must implement
-`Strategy.evaluate(market_data, account, positions) → Signal` and stay pure (no I/O).
-
-### Swapping the Broker (e.g., IB instead of Alpaca)
-1. Create a new package `services/<provider>/` implementing the four key interfaces:
-   - `MarketDataService` — bars + quotes
-   - `AccountService` — equity, buying power, positions
-   - `OrderExecutor` — submit orders
-   - `MarketClock` — market hours
-2. Convert provider-specific types to domain models (`domain/models.py`) at the boundary
-3. Update the wiring in `main.py`
-
-More extension points (regime features, risk managers, optimization library) are in
-[architecture.md](architecture.md#extension-points).
-
-## Workflows
-
-- [Running the app, monitoring & troubleshooting](operations.md)
-- [Running a backtest](backtest.md)
-- [Running an optimization](optimize.md)
-- [Running a quicktest](quicktest.md)
-
-## File Structure Map
-
-```
+```text
 src/carcharoth/
-├── main.py                # Composition root (wiring) + CLI subcommands
-├── engine/                # Scheduler + trading logic
-├── interfaces/            # Component contracts (ABCs)
-├── services/              # Provider implementations (alpaca/, backtest/, cache/, optuna/)
-├── strategies/            # Trading strategies
-├── domain/                # Pure domain models
-├── risk/                  # Risk management
-├── backtest/              # Backtest runner (historical replay loop)
-├── analysis/              # Post-run metrics + analyzer + objective (fitness) scoring
-├── optimize/              # Optimization support logic (overrides, constraints, bars cache)
-├── persistence/           # Data access (ORM, repos)
-├── config/                # Configuration + validation
-├── regime/                # Market regime detection
-└── logging_setup.py       # Logging configuration
-
-tests/
-├── fakes.py               # In-memory test doubles
-├── test_*.py              # Test modules (1-to-1 with src)
-└── conftest.py            # Fixtures
-
-config/
-├── config.yaml            # App configuration (YAML)
-└── optimize.yaml          # Optimization study configuration (search space, budget)
-
-alembic/
-├── versions/              # Database migration scripts
-└── env.py                 # Migration environment
-
-grafana/
-└── provisioning/          # Dashboard + datasource configs
-
-docker/
-├── postgres/              # DB init scripts
-└── compose file
+  main.py                 composition root and CLI
+  engine/                 fixed orchestration and scheduler
+  features/               ordered feature registry/pipeline + session helpers
+  modeling/               datasets, targets, artifacts, policy, signal generator, training flow
+  services/xgboost/       only XGBoost-importing adapter
+  services/alpaca/        Alpaca data/account/execution adapters
+  services/backtest/      historical snapshots and signed next-open broker
+  risk/                   target-transition checks and sizing
+  quicktest/              fast fixed-artifact per-symbol simulation
+  backtest/               full-engine replay
+  analysis/               signed FIFO trips, MAE/MFE, metrics, objectives
+  services/optuna/        fixed-artifact optimization adapter
+  persistence/            run-scoped ORM/repositories/buffering
+  config/                 strict layered config
+  regime/                 disconnected detector source retained for future context
 ```
 
-## Links
-- [Alpaca API Docs](https://docs.alpaca.markets)
-- [Optuna Documentation](https://optuna.readthedocs.io)
-- [Alembic Migration Guide](https://alembic.sqlalchemy.org)
-- [Pydantic Documentation](https://docs.pydantic.dev)
-- [SQLAlchemy ORM](https://docs.sqlalchemy.org/en/20)
+## Common changes
+
+### Add a model feature
+
+1. Implement one scalar `Feature` in `features/` with a stable output name, implementation
+   version, warm-up requirement, and pure calculation.
+2. Register it in `features/registry.py`.
+3. Add its spec to the ordered `model.features` list and retrain.
+4. Test values, warm-up, invalid data, schema fingerprint changes, and training/inference parity.
+
+### Train and activate a model
+
+```bash
+uv run carcharoth train -p training
+uv run carcharoth backtest --set model.artifact_path=artifacts/models/<id>
+cargo run -p carcharoth-tui  # promote only after review
+```
+
+Never rewrite an artifact directory or auto-update paper config from training.
+
+### Change model task
+
+Replace atomic `model.target` with regression or classification config, train a new artifact,
+and explicitly select it. The engine does not change; target builder, XGBoost objective/output,
+and decision policy dispatch by the artifact task.
+
+### Swap broker/data provider
+
+Implement the relevant interface adapters, convert provider types at the adapter seam, and wire
+once in `main.py`.
+
+## Verification
+
+```bash
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+uv run mypy src
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Architectural/config/behavior changes must update README, these docs, relevant Mermaid sources,
+and Grafana SQL. See [principles/design.md](principles/design.md) and
+[principles/development.md](principles/development.md).

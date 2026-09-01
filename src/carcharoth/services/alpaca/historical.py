@@ -1,7 +1,7 @@
 """One-shot historical bar fetches for backtesting.
 
 Shares the fetch-window heuristics with the live market data service so the
-warm-up a backtest prefetches matches what strategies see in live trading.
+warm-up a backtest prefetches matches what model features see in live trading.
 """
 
 import math

@@ -2,14 +2,13 @@
 
 A regime assessment combines evidence from independent statistical features
 into a single score on a trend <-> mean-reversion axis; the engine uses it
-to decide which strategy trades a symbol.
+and is retained for possible future model context.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from enum import StrEnum
 
 
@@ -58,17 +57,3 @@ class RegimeAssessment:
     evidence: tuple[Evidence, ...]
     #: full posterior over regimes, for detectors that produce one (HMM)
     probabilities: Mapping[Regime, float] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StrategyAssignment:
-    """Which strategy currently trades a symbol, and since when.
-
-    Stores the strategy name (not the regime) so an assignment stays
-    meaningful even if the regime -> strategy mapping is reconfigured.
-    """
-
-    symbol: str
-    strategy: str
-    regime: Regime
-    since: datetime

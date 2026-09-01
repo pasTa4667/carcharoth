@@ -1,38 +1,27 @@
-"""Config sections shared by every run type (engine, strategies, regime, risk).
+"""Config sections shared by training, model runtime, replay, and risk.
 
 The root model that composes these sections is ``RunConfig`` in
 ``carcharoth.config.run_config``; files are loaded and layered by
 ``carcharoth.config.loader``.
 """
 
-from typing import Any, Literal
+from datetime import date
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from carcharoth.config.quicktest_config import PermutationConfig
+from carcharoth.config.permutation_config import PermutationConfig
 from carcharoth.config.strict import StrictModel
-from carcharoth.regime.models import Regime
 
 
 class EngineConfig(StrictModel):
     tick_interval_seconds: int = Field(default=60, gt=0)
 
 
-class StrategyConfig(StrictModel):
-    #: only consulted in single-strategy mode (regime inactive): the one
-    #: active strategy trades every symbol. Ignored under regime-driven mode.
-    active: bool = False
-    params: dict[str, Any] = Field(default_factory=dict)
-
-
 class RegimeFeatureConfig(StrictModel):
     weight: float = Field(default=1.0, gt=0)
     params: dict[str, Any] = Field(default_factory=dict)
-
-
-class RegimeStrategyConfig(StrictModel):
-    #: names a key in the top-level `strategies` block; params come from there
-    strategy: str
 
 
 class ScoreDetectorConfig(StrictModel):
@@ -70,31 +59,18 @@ class HmmDetectorConfig(StrictModel):
 
 
 class RegimeConfig(StrictModel):
-    #: master switch: true -> the detector picks a strategy per symbol/regime;
-    #: false -> the single active strategy in `strategies` trades everything
-    active: bool = False
-    #: which detector implementation classifies regimes
+    """Standalone detector config retained for possible future model context."""
+
     detector: Literal["score", "hmm"] = "score"
-    #: when None, warm-up ticks skip trading (same as an unmapped regime)
-    default_regime: str | None = None
     score: ScoreDetectorConfig | None = None
     hmm: HmmDetectorConfig | None = None
-    regimes: dict[str, RegimeStrategyConfig]
 
     @model_validator(mode="after")
-    def _validate_regime_names(self) -> "RegimeConfig":
+    def _selected_detector_exists(self) -> "RegimeConfig":
         selected = self.score if self.detector == "score" else self.hmm
         if selected is None:
             raise ValueError(
                 f"regime.detector is {self.detector!r} but the '{self.detector}' section is missing"
-            )
-        valid = {regime.value for regime in Regime}
-        unknown = set(self.regimes) - valid
-        if unknown:
-            raise ValueError(f"unknown regimes {sorted(unknown)}; valid: {sorted(valid)}")
-        if self.default_regime is not None and self.default_regime not in valid:
-            raise ValueError(
-                f"unknown default_regime {self.default_regime!r}; valid: {sorted(valid)}"
             )
         return self
 
@@ -104,6 +80,97 @@ class RegimeConfig(StrictModel):
         selected = self.score if self.detector == "score" else self.hmm
         assert selected is not None  # enforced by the validator
         return selected.evaluate_interval_minutes
+
+
+class FeatureSpecConfig(StrictModel):
+    """One ordered feature-registry entry.
+
+    A feature implementation may use params to derive its output name (for
+    example log_return(period=5) -> return_5). Lists are replaced wholesale by
+    the layered config loader, making feature membership explicit.
+    """
+
+    name: str = Field(min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegressionTargetConfig(StrictModel):
+    type: Literal["regression"] = "regression"
+    horizon_bars: int = Field(default=5, gt=0)
+
+
+class ClassificationTargetConfig(StrictModel):
+    type: Literal["classification"] = "classification"
+    horizon_bars: int = Field(default=5, gt=0)
+    neutral_band: float = Field(default=0.0005, ge=0)
+
+
+TargetConfig = Annotated[
+    RegressionTargetConfig | ClassificationTargetConfig,
+    Field(discriminator="type"),
+]
+
+
+class DecisionPolicyConfig(StrictModel):
+    #: Regression values are log-return fractions (0.001 = 10 bps).
+    long_entry_threshold: float = Field(default=0.0005, ge=0)
+    short_entry_threshold: float = Field(default=-0.0005, le=0)
+    long_exit_threshold: float = Field(default=0.0)
+    short_exit_threshold: float = Field(default=0.0)
+    #: Classification entry confidence; argmax FLAT below this threshold.
+    class_probability_threshold: float = Field(default=0.55, gt=0, le=1)
+    entry_delay_minutes: int = Field(default=15, ge=0)
+    entry_cutoff_minutes: int = Field(default=15, ge=0)
+    flatten_minutes: int = Field(default=10, gt=0)
+
+    @model_validator(mode="after")
+    def _threshold_order(self) -> "DecisionPolicyConfig":
+        if self.long_exit_threshold > self.long_entry_threshold:
+            raise ValueError("long_exit_threshold must be <= long_entry_threshold")
+        if self.short_exit_threshold < self.short_entry_threshold:
+            raise ValueError("short_exit_threshold must be >= short_entry_threshold")
+        if self.flatten_minutes < 5:
+            raise ValueError("flatten_minutes must leave at least one five-minute fill bar")
+        return self
+
+
+class ModelConfig(StrictModel):
+    artifact_path: Path | None = None
+    timeframe_minutes: int = Field(default=5, gt=0)
+    benchmark_symbol: str = Field(default="SPY", min_length=1)
+    features: list[FeatureSpecConfig] = Field(min_length=1)
+    target: TargetConfig = RegressionTargetConfig()
+    decision: DecisionPolicyConfig = DecisionPolicyConfig()
+    #: Native xgboost params; objective/eval_metric/seed are owned by the adapter.
+    xgboost_params: dict[str, bool | int | float | str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _session_timing(self) -> "ModelConfig":
+        if self.decision.flatten_minutes < self.timeframe_minutes:
+            raise ValueError("model.decision.flatten_minutes must be >= timeframe_minutes")
+        if self.decision.entry_cutoff_minutes < self.decision.flatten_minutes:
+            raise ValueError("entry_cutoff_minutes must be >= flatten_minutes")
+        return self
+
+
+class TrainingConfig(StrictModel):
+    train_start: date
+    train_end: date
+    validation_start: date
+    validation_end: date
+    artifact_root: Path = Path("artifacts/models")
+    seed: int = 42
+    early_stopping_rounds: int = Field(default=50, gt=0)
+
+    @model_validator(mode="after")
+    def _chronological_windows(self) -> "TrainingConfig":
+        if self.train_end < self.train_start:
+            raise ValueError("training.train_end must not be before train_start")
+        if self.validation_end < self.validation_start:
+            raise ValueError("training.validation_end must not be before validation_start")
+        if self.validation_start <= self.train_end:
+            raise ValueError("validation_start must be after train_end")
+        return self
 
 
 class RiskConfig(StrictModel):
@@ -118,6 +185,8 @@ class RiskConfig(StrictModel):
 
 class BacktestConfig(StrictModel):
     initial_capital: float = Field(default=100_000.0, gt=0)
+    #: Gross buying-power multiple used by the signed-position simulator.
+    margin_multiplier: float = Field(default=2.0, ge=1)
     #: synthetic quote spread: bid/ask = close * (1 -/+ spread_pct / 2)
     spread_pct: float = Field(default=0.0005, ge=0)
     #: fills execute this fraction worse than the quoted side
@@ -136,9 +205,6 @@ class CacheConfig(StrictModel):
     enabled: bool = True
     #: historical Alpaca bars, gap-filled per (timeframe, symbol)
     bars: bool = True
-    #: fitted HMM models; disable when an Optuna study searches HMM params
-    #: (every trial would get a fresh config hash and never hit)
-    hmm: bool = True
 
 
 class ObjectiveConfig(StrictModel):

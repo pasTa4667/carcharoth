@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
 
-from carcharoth.domain.models import AccountState, Quote, RiskDecision, Signal
+from carcharoth.domain.models import AccountState, ExposureIntent, Quote, RiskDecision
 
 
 class RiskManager(ABC):
-    """Applies risk rules and position sizing to strategy signals."""
+    """Turns a target exposure into a checked, sized order transition."""
 
     @abstractmethod
-    def assess(self, signal: Signal, account: AccountState, quote: Quote) -> RiskDecision:
-        """Approve or reject a signal and set the order quantity."""
+    def assess(self, intent: ExposureIntent, account: AccountState, quote: Quote) -> RiskDecision:
+        """Approve/reject one transition and, when approved, set side/quantity."""

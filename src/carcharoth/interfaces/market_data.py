@@ -13,7 +13,7 @@ class MarketDataService(ABC):
         (newest last) plus the latest quote per symbol.
 
         Symbols with insufficient history are returned with whatever bars exist;
-        deciding what to do with short history is the strategy's job.
+        deciding what to do with short history is the model generator's job.
 
         Raises MarketDataError if data cannot be fetched at all.
         """

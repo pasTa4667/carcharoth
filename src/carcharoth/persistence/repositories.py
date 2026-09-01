@@ -25,9 +25,9 @@ from carcharoth.analysis.metrics import RoundTrip
 from carcharoth.domain.models import (
     TERMINAL_ORDER_STATUSES,
     AccountState,
-    AssignmentRecord,
     DecisionRecord,
     EquityPoint,
+    ExposureIntent,
     MetricValue,
     OpenOrder,
     OrderRequest,
@@ -37,24 +37,23 @@ from carcharoth.domain.models import (
     RunInfo,
     RunType,
     Side,
-    Signal,
+    TargetExposure,
     TradeRecord,
 )
 from carcharoth.persistence.orm import (
     BacktestMetricRow,
     ConfigurationRow,
     EquitySnapshotRow,
+    ModelDecisionRow,
     OrderRow,
     PermutationTestRow,
     PositionSnapshotRow,
     RegimeEvaluationRow,
     RoundTripRow,
     RunRow,
-    StrategyAssignmentRow,
-    StrategyDecisionRow,
     TradeRow,
 )
-from carcharoth.regime.models import Regime, RegimeAssessment, StrategyAssignment
+from carcharoth.regime.models import RegimeAssessment
 
 
 def evidence_payload(assessment: RegimeAssessment) -> dict[str, Any]:
@@ -77,9 +76,11 @@ def probabilities_payload(assessment: RegimeAssessment) -> dict[str, float] | No
     return {regime.value: prob for regime, prob in assessment.probabilities.items()}
 
 
-class StrategyDecisionRepository(ABC):
+class ModelDecisionRepository(ABC):
     @abstractmethod
-    def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None: ...
+    def save(
+        self, intent: ExposureIntent, risk: RiskDecision | None, timestamp: datetime
+    ) -> None: ...
 
 
 class OrderRepository(ABC):
@@ -118,15 +119,6 @@ class ConfigurationRepository(ABC):
 class RegimeEvaluationRepository(ABC):
     @abstractmethod
     def save(self, assessment: RegimeAssessment, timestamp: datetime) -> None: ...
-
-
-class StrategyAssignmentRepository(ABC):
-    @abstractmethod
-    def save(self, assignment: StrategyAssignment) -> None: ...
-
-    @abstractmethod
-    def load_current(self) -> dict[str, StrategyAssignment]:
-        """The newest assignment per symbol (restart recovery)."""
 
 
 class RunRepository(ABC):
@@ -202,31 +194,31 @@ class AnalysisReader(ABC):
     def list_decisions(self, run_id: UUID) -> list[DecisionRecord]: ...
 
     @abstractmethod
-    def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]: ...
-
-    @abstractmethod
     def list_position_snapshots(self, run_id: UUID) -> list[PositionSnapshot]: ...
 
 
-class SqlAlchemyStrategyDecisionRepository(StrategyDecisionRepository):
+class SqlAlchemyModelDecisionRepository(ModelDecisionRepository):
     def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
         self._session_factory = session_factory
         self._run_id = run_id
 
-    def save(self, signal: Signal, risk: RiskDecision | None, timestamp: datetime) -> None:
+    def save(self, intent: ExposureIntent, risk: RiskDecision | None, timestamp: datetime) -> None:
         with self._session_factory.begin() as session:
             session.add(
-                StrategyDecisionRow(
+                ModelDecisionRow(
                     run_id=self._run_id,
                     timestamp=timestamp,
-                    symbol=signal.symbol,
-                    strategy=signal.strategy,
-                    signal=signal.action.value,
-                    reason=signal.reason,
-                    indicators=dict(signal.indicators),
+                    symbol=intent.symbol,
+                    model_id=intent.model_id,
+                    schema_hash=intent.schema_hash,
+                    target=intent.target.value,
+                    reason=intent.reason,
+                    prediction=intent.prediction.as_dict() if intent.prediction else {},
+                    features=intent.features.as_dict() if intent.features else {},
                     risk_approved=risk.approved if risk else None,
                     risk_reason=risk.reason if risk else None,
                     risk_qty=Decimal(str(risk.qty)) if risk else None,
+                    order_side=risk.side.value if risk and risk.side else None,
                 )
             )
 
@@ -378,42 +370,6 @@ class SqlAlchemyRegimeEvaluationRepository(RegimeEvaluationRepository):
             )
 
 
-class SqlAlchemyStrategyAssignmentRepository(StrategyAssignmentRepository):
-    def __init__(self, session_factory: sessionmaker[Session], run_id: UUID) -> None:
-        self._session_factory = session_factory
-        self._run_id = run_id
-
-    def save(self, assignment: StrategyAssignment) -> None:
-        with self._session_factory.begin() as session:
-            session.add(
-                StrategyAssignmentRow(
-                    run_id=self._run_id,
-                    symbol=assignment.symbol,
-                    strategy=assignment.strategy,
-                    regime=assignment.regime.value,
-                    since=assignment.since,
-                )
-            )
-
-    def load_current(self) -> dict[str, StrategyAssignment]:
-        with self._session_factory() as session:
-            rows = session.scalars(
-                select(StrategyAssignmentRow)
-                .where(StrategyAssignmentRow.run_id == self._run_id)
-                .distinct(StrategyAssignmentRow.symbol)
-                .order_by(StrategyAssignmentRow.symbol, StrategyAssignmentRow.since.desc())
-            )
-            return {
-                row.symbol: StrategyAssignment(
-                    symbol=row.symbol,
-                    strategy=row.strategy,
-                    regime=Regime(row.regime),
-                    since=row.since,
-                )
-                for row in rows
-            }
-
-
 class SqlAlchemyRunRepository(RunRepository):
     """Unscoped by design: manages the runs themselves."""
 
@@ -511,6 +467,7 @@ class SqlAlchemyRoundTripRepository(RoundTripRepository):
                     RoundTripRow(
                         run_id=run_id,
                         symbol=trip.symbol,
+                        direction=trip.direction.value,
                         qty=Decimal(str(trip.qty)),
                         entry_time=trip.opened_at,
                         exit_time=trip.closed_at,
@@ -518,11 +475,12 @@ class SqlAlchemyRoundTripRepository(RoundTripRepository):
                         exit_price=Decimal(str(trip.exit_price)),
                         pnl=Decimal(str(trip.pnl)),
                         holding_seconds=holding,
-                        strategy=trip.strategy,
+                        model_id=trip.model_id,
                         exit_reason=trip.exit_reason,
-                        regime=trip.regime,
-                        entry_indicators=dict(trip.entry_indicators),
-                        exit_indicators=dict(trip.exit_indicators),
+                        entry_features=dict(trip.entry_features),
+                        exit_features=dict(trip.exit_features),
+                        entry_prediction=dict(trip.entry_prediction),
+                        exit_prediction=dict(trip.exit_prediction),
                         mae_pct=Decimal(str(trip.mae_pct)) if trip.mae_pct is not None else None,
                         mfe_pct=Decimal(str(trip.mfe_pct)) if trip.mfe_pct is not None else None,
                     )
@@ -561,38 +519,20 @@ class SqlAlchemyAnalysisReader(AnalysisReader):
     def list_decisions(self, run_id: UUID) -> list[DecisionRecord]:
         with self._session_factory() as session:
             rows = session.scalars(
-                select(StrategyDecisionRow)
-                .where(
-                    StrategyDecisionRow.run_id == run_id,
-                    StrategyDecisionRow.signal.in_(["buy", "sell"]),
-                )
-                .order_by(StrategyDecisionRow.timestamp)
+                select(ModelDecisionRow)
+                .where(ModelDecisionRow.run_id == run_id)
+                .order_by(ModelDecisionRow.timestamp)
             )
             return [
                 DecisionRecord(
                     symbol=row.symbol,
-                    side=Side(row.signal),
+                    target=TargetExposure(row.target),
                     timestamp=row.timestamp,
                     reason=row.reason,
-                    indicators={k: float(v) for k, v in row.indicators.items()},
-                    strategy=row.strategy,
-                )
-                for row in rows
-            ]
-
-    def list_assignments(self, run_id: UUID) -> list[AssignmentRecord]:
-        with self._session_factory() as session:
-            rows = session.scalars(
-                select(StrategyAssignmentRow)
-                .where(StrategyAssignmentRow.run_id == run_id)
-                .order_by(StrategyAssignmentRow.since)
-            )
-            return [
-                AssignmentRecord(
-                    symbol=row.symbol,
-                    since=row.since,
-                    regime=row.regime,
-                    strategy=row.strategy,
+                    features={k: float(v) for k, v in row.features.items()},
+                    prediction={k: float(v) for k, v in row.prediction.items()},
+                    model_id=row.model_id,
+                    order_side=Side(row.order_side) if row.order_side else None,
                 )
                 for row in rows
             ]

@@ -3,7 +3,7 @@
 The optimizer is deliberately agnostic: it consumes a ``BacktestFunc``
 callable (satisfied by a closure built in the composition root) and reads
 the fitness metric each run's analysis already produced. It never touches
-the broker, the database, or strategy code.
+the broker, the database, or model implementation.
 """
 
 from __future__ import annotations
