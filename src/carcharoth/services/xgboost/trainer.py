@@ -22,6 +22,8 @@ class TrainingResult:
     booster: xgb.Booster
     metrics: dict[str, float]
     feature_importance: dict[str, float]
+    permutation_importance: dict[str, float]
+    validation_predictions: np.ndarray
     best_iteration: int
 
     def save_model(self, path: Path) -> None:
@@ -81,12 +83,44 @@ def train_model(
         name: float(np.mean(value)) if isinstance(value, list) else float(value)
         for name, value in booster.get_score(importance_type="gain").items()
     }
+    permutation_importance = (
+        _permutation_importance(booster, validation, prediction.reshape(-1), seed)
+        if validation.task is ModelTask.REGRESSION
+        else {}
+    )
     return TrainingResult(
         booster=booster,
         metrics=metrics,
         feature_importance=importance,
+        permutation_importance=permutation_importance,
+        validation_predictions=prediction,
         best_iteration=int(booster.best_iteration),
     )
+
+
+def _permutation_importance(
+    booster: xgb.Booster,
+    validation: ModelDataset,
+    baseline_prediction: np.ndarray,
+    seed: int,
+) -> dict[str, float]:
+    """Measure validation RMSE degradation after independently shuffling each feature."""
+    actual = validation.labels.astype(np.float64)
+    baseline_rmse = math.sqrt(float(np.mean((baseline_prediction - actual) ** 2)))
+    rng = np.random.default_rng(seed)
+    matrix = validation.features.copy()
+    importance: dict[str, float] = {}
+    for index, name in enumerate(validation.feature_names):
+        original = matrix[:, index].copy()
+        matrix[:, index] = rng.permutation(original)
+        permuted = np.asarray(
+            booster.predict(xgb.DMatrix(matrix, feature_names=list(validation.feature_names))),
+            dtype=np.float64,
+        ).reshape(-1)
+        permuted_rmse = math.sqrt(float(np.mean((permuted - actual) ** 2)))
+        importance[name] = permuted_rmse - baseline_rmse
+        matrix[:, index] = original
+    return importance
 
 
 def _metrics(dataset: ModelDataset, prediction: np.ndarray) -> dict[str, float]:

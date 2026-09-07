@@ -60,6 +60,7 @@ from carcharoth.logging_setup import (
     write_quicktest_summary,
 )
 from carcharoth.modeling import build_signal_generator, train_and_publish
+from carcharoth.modeling.artifact import MANIFEST_FILENAME, REPORT_FILENAME, load_manifest
 from carcharoth.optimize.bars_cache import BarsCache
 from carcharoth.permutation.registry import method_kind
 from carcharoth.permutation.runner import run_monte_carlo_test, run_permutation_test
@@ -80,6 +81,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyBacktestMetricsRepository,
     SqlAlchemyConfigurationRepository,
     SqlAlchemyModelDecisionRepository,
+    SqlAlchemyModelDiagnosticsRepository,
     SqlAlchemyOrderRepository,
     SqlAlchemyPermutationRepository,
     SqlAlchemyPositionSnapshotRepository,
@@ -718,8 +720,39 @@ def _run_train(resolved: ResolvedConfig) -> None:
     if bars_store is not None:
         fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
     artifact = train_and_publish(config, resolved.hash, fetch_bars)
+    manifest = load_manifest(artifact / MANIFEST_FILENAME)
+    report_value = json.loads((artifact / REPORT_FILENAME).read_text())
+    if not isinstance(report_value, dict):
+        raise TypeError(f"invalid diagnostics report in {artifact / REPORT_FILENAME}")
+
+    dashboard_published = False
+    db_engine = None
+    try:
+        db_engine = build_engine(settings.database_url)
+        SqlAlchemyModelDiagnosticsRepository(build_session_factory(db_engine)).save(
+            model_id=manifest.model_id,
+            task=manifest.task.value,
+            validation_start=manifest.validation_start,
+            validation_end=manifest.validation_end,
+            created_at=manifest.created_at,
+            report=report_value,
+        )
+        dashboard_published = True
+    except Exception as exc:
+        logger.warning(
+            "model diagnostics remain available in %s but could not be published to "
+            "Grafana; this model will not appear in the Model Diagnostics dashboard: %s",
+            artifact / REPORT_FILENAME,
+            exc,
+        )
+    finally:
+        if db_engine is not None:
+            db_engine.dispose()
+
     print("training complete")
     print(f"  artifact: {artifact}")
+    if dashboard_published:
+        print(f"  diagnostics: Grafana Model Diagnostics (model_id={manifest.model_id})")
     print("  activation: set model.artifact_path explicitly, backtest it, then promote")
 
 

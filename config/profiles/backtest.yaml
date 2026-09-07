@@ -1,2 +1,8 @@
-# Full-engine fixed-artifact research backtest.
-extends: [base, symbols/core51]
+extends:
+- base
+- symbols/core51
+data:
+  start: '2023-10-01'
+  end: '2023-12-30'
+model:
+  artifact_path: artifacts/models/20260903T103520342252Z-796be34b

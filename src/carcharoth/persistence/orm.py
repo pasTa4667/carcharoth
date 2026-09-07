@@ -9,11 +9,21 @@ to all of its data.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -236,6 +246,19 @@ class PermutationResultRow(Base):
     profit_factor: Mapped[float | None]
     num_round_trips: Mapped[int]
     final_equity: Mapped[float | None]
+
+
+class ModelDiagnosticsRow(Base):
+    """Bounded training diagnostics for one immutable model artifact."""
+
+    __tablename__ = "model_diagnostics"
+
+    model_id: Mapped[str] = mapped_column(primary_key=True)
+    task: Mapped[str]
+    validation_start: Mapped[date] = mapped_column(Date)
+    validation_end: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime]
+    report: Mapped[dict[str, Any]] = mapped_column(default=dict)
 
 
 class ConfigurationRow(Base):

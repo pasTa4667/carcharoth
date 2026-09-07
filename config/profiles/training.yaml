@@ -1,7 +1,8 @@
-# Offline global model training profile. model.artifact_path stays null.
-extends: [base, symbols/core51]
-training: 
+extends:
+- base
+- symbols/core51
+training:
   train_start: 2020-01-01
-  train_end: 2020-12-31
-  validation_start: 2021-01-01
-  validation_end: 2021-03-31
+  train_end: '2023-06-30'
+  validation_start: '2023-07-01'
+  validation_end: '2023-09-30'

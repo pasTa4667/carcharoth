@@ -5,7 +5,19 @@
 //! shortened wording the TUI shows (`run backtest`), while `args` holds the
 //! real subcommand path handed to the CLI (`["backtest"]`).
 
+use std::fs;
+use std::path::Path;
+
 use serde_json::Value;
+
+const ARTIFACT_MANIFEST: &str = "manifest.json";
+const ARTIFACT_MODEL: &str = "model.ubj";
+const ARTIFACT_SET_KEY: &str = "model.artifact_path";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DynamicSource {
+    ModelArtifact,
+}
 
 /// Choice option that emits nothing at all.
 pub const OMIT: &str = "off";
@@ -21,6 +33,8 @@ pub enum Kind {
     Text,
     /// One of a fixed set; [`OMIT`] emits nothing, [`BARE`] emits the flag alone.
     Choice(&'static [&'static str]),
+    /// Dynamic choices injected by Form.
+    DynamicChoice(DynamicSource),
 }
 
 /// One form field of a command.
@@ -97,12 +111,30 @@ impl Field {
         }
     }
 
+    const fn dynamic_choice(
+        key: &'static str,
+        label: &'static str,
+        flag: &'static str,
+        source: DynamicSource,
+        help: &'static str,
+    ) -> Self {
+        Field {
+            key,
+            label,
+            flag,
+            kind: Kind::DynamicChoice(source),
+            required: false,
+            help,
+        }
+    }
+
     /// The value a freshly opened form starts with.
     pub fn initial(&self) -> String {
         match self.kind {
             Kind::Flag => "off".to_string(),
             Kind::Text => String::new(),
             Kind::Choice(options) => options[0].to_string(),
+            Kind::DynamicChoice(_) => String::new(),
         }
     }
 }
@@ -183,11 +215,12 @@ const BACKTEST_FIELDS: &[Field] = &[
         "--symbols",
         "comma-separated override of the symbol universe",
     ),
-    Field::text(
+    Field::dynamic_choice(
         "artifact",
         "artifact",
         "--set",
-        "trained model artifact to run backtest on"
+        DynamicSource::ModelArtifact,
+        "trained model artifact to run backtest on",
     ),
     Field::choice(
         "permute",
@@ -458,6 +491,7 @@ pub struct Form {
     pub spec: usize,
     pub values: Vec<String>,
     pub cursor: usize,
+    pub field_options: Vec<Option<Vec<String>>>
 }
 
 impl Form {
@@ -468,10 +502,34 @@ impl Form {
         if let (Some(index), Some(profile)) = (index_of(spec, "profile"), spec.default_profile) {
             values[index] = profile.to_string();
         }
+        let field_options = vec![None; values.len()];
         Form {
             spec: spec_index,
             values,
             cursor: 0,
+            field_options,
+        }
+    }
+
+    pub fn load_dynamic_options(&mut self, config: &Value) {
+        if self.field_options.len() != self.values.len() {
+            self.field_options = vec![None; self.values.len()];
+        }
+        for (index, field) in self.spec().fields.iter().enumerate() {
+            if let Kind::DynamicChoice(source) = field.kind {
+                let options = resolve_dynamic(source, config);
+                if self.values[index].is_empty() {
+                    if let Some(path) = scalar_at(config, &["model", "artifact_path"]) {
+                        let candidate = format!("{ARTIFACT_SET_KEY}={path}");
+                        if options.contains(&candidate) {
+                            self.values[index] = candidate;
+                        }
+                    } else if let Some(first) = options.first() {
+                        self.values[index] = first.clone();
+                    }
+                }
+                self.field_options[index] = Some(options);
+            }
         }
     }
 
@@ -531,21 +589,48 @@ impl Form {
     /// Move the choice/flag under the cursor to its next (or previous) option.
     pub fn cycle(&mut self, forward: bool) {
         let field = &self.spec().fields[self.cursor];
-        let options: &[&str] = match field.kind {
-            Kind::Flag => &["off", "on"],
-            Kind::Choice(options) => options,
+        match field.kind {
             Kind::Text => return,
-        };
-        let current = options
-            .iter()
-            .position(|option| *option == self.values[self.cursor])
-            .unwrap_or(0);
-        let next = if forward {
-            (current + 1) % options.len()
-        } else {
-            (current + options.len() - 1) % options.len()
-        };
-        self.values[self.cursor] = options[next].to_string();
+            Kind::DynamicChoice(_) => {
+                let Some(options) = self
+                    .field_options
+                    .get(self.cursor)
+                    .and_then(Option::as_ref)
+                else {
+                    return;
+                };
+                if options.is_empty() {
+                    return;
+                }
+                let current = options
+                    .iter()
+                    .position(|option| option == &self.values[self.cursor])
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % options.len()
+                } else {
+                    (current + options.len() - 1) % options.len()
+                };
+                self.values[self.cursor] = options[next].clone();
+            }
+            Kind::Flag | Kind::Choice(_) => {
+                let options: &[&str] = match field.kind {
+                    Kind::Flag => &["off", "on"],
+                    Kind::Choice(options) => options,
+                    _ => unreachable!(),
+                };
+                let current = options
+                    .iter()
+                    .position(|option| *option == self.values[self.cursor])
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % options.len()
+                } else {
+                    (current + options.len() - 1) % options.len()
+                };
+                self.values[self.cursor] = options[next].to_string();
+            }
+        }
     }
 
     /// The full CLI argument vector: subcommand path, form fields, and the
@@ -567,8 +652,8 @@ impl Form {
                         args.push(value.to_string());
                     }
                 }
-                Kind::Choice(_) => match value {
-                    OMIT => {}
+                Kind::Choice(_) | Kind::DynamicChoice(_) => match value {
+                    "" | OMIT => {}
                     BARE => args.push(field.flag.to_string()),
                     other => {
                         args.push(field.flag.to_string());
@@ -582,6 +667,45 @@ impl Form {
         }
         args
     }
+}
+
+fn resolve_dynamic(source: DynamicSource, config: &Value) -> Vec<String> {
+    match source {
+        DynamicSource::ModelArtifact => resolve_model_artifact_options(config),
+    }
+}
+
+fn artifact_root_from(config: &Value) -> &str {
+    config
+        .get("training")
+        .and_then(|training| training.get("artifact_root"))
+        .and_then(Value::as_str)
+        .unwrap_or("artifacts/models")
+}
+
+fn is_valid_artifact_dir(path: &Path) -> bool {
+    path.is_dir()
+        && path.join(ARTIFACT_MANIFEST).is_file()
+        && path.join(ARTIFACT_MODEL).is_file()
+}
+
+fn resolve_model_artifact_options(config: &Value) -> Vec<String> {
+    let root = artifact_root_from(config);
+    let mut options = vec![OMIT.to_string()];
+    let Ok(entries) = fs::read_dir(root) else {
+        return options;
+    };
+    let mut artifacts: Vec<String> = entries
+        .flatten()
+        .filter(|entry| is_valid_artifact_dir(&entry.path()))
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            format!("{ARTIFACT_SET_KEY}={root}/{name}")
+        })
+        .collect();
+    artifacts.sort();
+    options.extend(artifacts);
+    options
 }
 
 fn index_of(spec: &CommandSpec, key: &str) -> Option<usize> {
@@ -664,6 +788,7 @@ mod tests {
             "2025-01-01".to_string(),
             "2025-06-30".to_string(),
             "AAPL,MSFT".to_string(),
+            OMIT.to_string(),
             "monte_carlo_trades".to_string(),
             "on".to_string(),
             "off".to_string(),
@@ -748,6 +873,49 @@ mod tests {
         assert_eq!(optimize.field("n-trials"), Some("20"));
         assert_eq!(optimize.field("workers"), Some("2"));
         assert_eq!(optimize.field("study-name"), Some("default-study"));
+    }
+
+    #[test]
+    fn resolve_model_artifact_options_lists_valid_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "carcharoth-artifacts-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("model-a")).unwrap();
+        fs::write(root.join("model-a/manifest.json"), "{}").unwrap();
+        fs::write(root.join("model-a/model.ubj"), "x").unwrap();
+        fs::create_dir_all(root.join("empty")).unwrap();
+
+        let config = json!({"training": {"artifact_root": root.to_str().unwrap()}});
+        let options = resolve_model_artifact_options(&config);
+        assert_eq!(options[0], OMIT);
+        assert_eq!(options.len(), 2);
+        assert_eq!(
+            options[1],
+            format!(
+                "{ARTIFACT_SET_KEY}={}/model-a",
+                root.to_str().unwrap()
+            )
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dynamic_artifact_emits_set_override() {
+        let mut backtest = form("run backtest");
+        backtest.values[4] = format!("{ARTIFACT_SET_KEY}=artifacts/models/example");
+        assert_eq!(
+            backtest.args(&[]),
+            vec![
+                "backtest",
+                "-p",
+                "backtest",
+                "--set",
+                "model.artifact_path=artifacts/models/example",
+            ]
+        );
     }
 
     #[test]

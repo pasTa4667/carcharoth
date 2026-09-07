@@ -1,0 +1,209 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "fieldConfig": { "defaults": { "decimals": 6 }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  (report #>> '{metrics,rmse}')::double precision AS rmse,\n  (report #>> '{metrics,mae}')::double precision AS mae,\n  (report #>> '{metrics,spearman}')::double precision AS spearman,\n  (report #>> '{diagnostics,prediction_vs_actual,total_rows}')::integer AS validation_rows\nFROM model_diagnostics\nWHERE model_id = '${model}'",
+          "refId": "A"
+        }
+      ],
+      "title": "Validation Summary",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "fieldConfig": {
+        "defaults": { "custom": { "axisLabel": "Actual forward log return", "axisPlacement": "auto", "drawStyle": "points", "pointSize": 3 }, "decimals": 6 },
+        "overrides": []
+      },
+      "gridPos": { "h": 12, "w": 12, "x": 0, "y": 4 },
+      "id": 2,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "seriesMapping": "auto",
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  (point->>'prediction')::double precision AS prediction,\n  (point->>'actual')::double precision AS actual\nFROM model_diagnostics\nCROSS JOIN LATERAL jsonb_array_elements(report #> '{diagnostics,prediction_vs_actual,scatter}') AS point\nWHERE model_id = '${model}'\nORDER BY prediction",
+          "refId": "A"
+        }
+      ],
+      "title": "Prediction vs Actual (validation sample)",
+      "type": "xychart"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "fieldConfig": { "defaults": { "decimals": 6 }, "overrides": [] },
+      "gridPos": { "h": 12, "w": 12, "x": 12, "y": 4 },
+      "id": 3,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.8,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "orientation": "auto",
+        "showValue": "never",
+        "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  'D' || (bucket->>'decile') AS decile,\n  (bucket->>'prediction_mean')::double precision AS prediction_mean,\n  (bucket->>'actual_mean')::double precision AS actual_mean\nFROM model_diagnostics\nCROSS JOIN LATERAL jsonb_array_elements(report #> '{diagnostics,prediction_deciles}') AS bucket\nWHERE model_id = '${model}'\nORDER BY (bucket->>'decile')::integer",
+          "refId": "A"
+        }
+      ],
+      "title": "Prediction Deciles",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 16 },
+      "id": 4,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 1,
+        "fullHighlight": false,
+        "groupWidth": 1,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "orientation": "auto",
+        "showValue": "never",
+        "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  round((bin->>'midpoint')::numeric, 6)::text AS return_bin,\n  (bin->>'prediction_count')::integer AS predictions,\n  (bin->>'actual_count')::integer AS actuals\nFROM model_diagnostics\nCROSS JOIN LATERAL jsonb_array_elements(report #> '{diagnostics,distributions,bins}') AS bin\nWHERE model_id = '${model}'\nORDER BY (bin->>'midpoint')::double precision",
+          "refId": "A"
+        }
+      ],
+      "title": "Prediction and Actual Distributions",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+      "fieldConfig": { "defaults": { "decimals": 4 }, "overrides": [] },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 16 },
+      "id": 5,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.8,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "orientation": "horizontal",
+        "showValue": "never",
+        "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  importance->>'feature' AS feature,\n  (importance->>'gain_normalized')::double precision AS normalized_gain,\n  (importance->>'permutation_rmse_increase')::double precision AS permutation_rmse_increase\nFROM model_diagnostics\nCROSS JOIN LATERAL jsonb_array_elements(report #> '{diagnostics,feature_importance}') AS importance\nWHERE model_id = '${model}'\nORDER BY (importance->>'permutation_rmse_increase')::double precision DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Feature Importance",
+      "type": "barchart"
+    },
+    {
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 26 },
+      "id": 6,
+      "options": {
+        "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false },
+        "content": "Feature importance is associative, not causal. Correlated features can split or dilute both gain and permutation importance. Deciles, distributions, and scatter aggregates use the chronological validation set; repeatedly tuning against that set will overfit it. Confirm changes on a later out-of-sample backtest.",
+        "mode": "markdown"
+      },
+      "title": "Interpretation",
+      "type": "text"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 40,
+  "tags": ["carcharoth", "model", "research"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "postgres", "uid": "carcharoth-pg" },
+        "definition": "SELECT model_id AS __text, model_id AS __value FROM model_diagnostics WHERE task = 'regression' ORDER BY created_at DESC",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Model",
+        "multi": false,
+        "name": "model",
+        "options": [],
+        "query": "SELECT model_id AS __text, model_id AS __value FROM model_diagnostics WHERE task = 'regression' ORDER BY created_at DESC",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Model Diagnostics",
+  "uid": "carcharoth-model-diagnostics",
+  "version": 1,
+  "weekStart": ""
+}

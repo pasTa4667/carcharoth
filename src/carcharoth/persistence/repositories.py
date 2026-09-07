@@ -13,7 +13,7 @@ start fresh each run.
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -45,6 +45,7 @@ from carcharoth.persistence.orm import (
     ConfigurationRow,
     EquitySnapshotRow,
     ModelDecisionRow,
+    ModelDiagnosticsRow,
     OrderRow,
     PermutationTestRow,
     PositionSnapshotRow,
@@ -434,6 +435,42 @@ class SqlAlchemyRunRepository(RunRepository):
     def delete(self, run_id: UUID) -> None:
         with self._session_factory.begin() as session:
             session.execute(delete(RunRow).where(RunRow.run_id == run_id))
+
+
+class SqlAlchemyModelDiagnosticsRepository:
+    """Publishes an artifact report for PostgreSQL-backed research dashboards."""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save(
+        self,
+        model_id: str,
+        task: str,
+        validation_start: date,
+        validation_end: date,
+        created_at: datetime,
+        report: dict[str, Any],
+    ) -> None:
+        with self._session_factory.begin() as session:
+            row = session.get(ModelDiagnosticsRow, model_id)
+            if row is None:
+                session.add(
+                    ModelDiagnosticsRow(
+                        model_id=model_id,
+                        task=task,
+                        validation_start=validation_start,
+                        validation_end=validation_end,
+                        created_at=created_at,
+                        report=report,
+                    )
+                )
+            else:
+                row.task = task
+                row.validation_start = validation_start
+                row.validation_end = validation_end
+                row.created_at = created_at
+                row.report = report
 
 
 class SqlAlchemyBacktestMetricsRepository(BacktestMetricsRepository):

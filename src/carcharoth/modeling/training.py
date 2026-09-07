@@ -14,6 +14,7 @@ from uuid import uuid4
 import xgboost
 
 from carcharoth.config.run_config import RunConfig
+from carcharoth.domain.models import ModelTask
 from carcharoth.features.pipeline import FeaturePipeline
 from carcharoth.interfaces.optimization import BarsFetcher
 from carcharoth.modeling.artifact import (
@@ -24,7 +25,7 @@ from carcharoth.modeling.artifact import (
     file_sha256,
 )
 from carcharoth.modeling.dataset import build_dataset
-from carcharoth.modeling.diagnostics import dataset_diagnostics
+from carcharoth.modeling.diagnostics import dataset_diagnostics, regression_diagnostics
 from carcharoth.services.alpaca.historical import warmup_window
 from carcharoth.services.xgboost import train_model
 
@@ -135,13 +136,25 @@ def train_and_publish(
         (temporary / MANIFEST_FILENAME).write_text(
             json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
         )
-        report = {
+        report: dict[str, object] = {
+            "model_id": model_id,
+            "task": train.task.value,
+            "validation_start": training.validation_start.isoformat(),
+            "validation_end": training.validation_end.isoformat(),
+            "target": model.target.model_dump(mode="json"),
             "train": train_diagnostics,
             "validation": validation_diagnostics,
             "metrics": result.metrics,
             "feature_importance_gain": result.feature_importance,
             "best_iteration": result.best_iteration,
         }
+        if train.task is ModelTask.REGRESSION:
+            report["diagnostics"] = regression_diagnostics(
+                validation,
+                result.validation_predictions,
+                result.feature_importance,
+                result.permutation_importance,
+            )
         (temporary / REPORT_FILENAME).write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n"
         )

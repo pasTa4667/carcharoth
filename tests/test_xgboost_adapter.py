@@ -44,6 +44,8 @@ def test_regression_trains_saves_and_predicts(tmp_path) -> None:
     )
     assert prediction.expected_return is not None
     assert result.metrics["rmse"] >= 0
+    assert result.validation_predictions.shape == validation.labels.shape
+    assert result.permutation_importance["a"] > result.permutation_importance["b"]
 
 
 def test_classification_emits_three_probabilities(tmp_path) -> None:

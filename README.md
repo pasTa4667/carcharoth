@@ -59,7 +59,15 @@ requires retraining.
 
 Features are scale-free and do not include symbol IDs, regime, raw prices, or quote fields that
 cannot be reproduced from historical bars. `report.json` records constant/high-correlation
-checks and gain importance.
+checks, prediction-versus-actual samples, prediction deciles and distributions, and gain plus
+validation permutation importance. Successful training also publishes this bounded report to the
+**Model Diagnostics** Grafana dashboard; a database failure only emits a warning because the
+artifact-local report remains authoritative.
+
+Feature importance measures association, not causal impact. Correlated features can split or
+dilute both gain and permutation importance. These diagnostics use the chronological validation
+window, so repeatedly tuning against them overfits that window; confirm changes on a later,
+strictly out-of-sample quicktest or backtest.
 
 ## Setup
 

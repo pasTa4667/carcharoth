@@ -344,6 +344,9 @@ impl App {
         match cli::resolve(&profile, &self.overrides) {
             Ok(resolved) => {
                 self.commands.form.prefill_from(&resolved.config);
+                self.commands
+                    .form
+                    .load_dynamic_options(&resolved.config);
                 self.status = format!("prefilled from profile {profile}");
             }
             Err(err) => self.status = format!("no suggestions: {err}"),
@@ -793,7 +796,7 @@ mod tests {
             app.handle_key(key(KeyCode::Char(c)));
         }
         app.handle_key(key(KeyCode::Backspace));
-        app.commands.form.cursor = 5; // --verbose
+        app.commands.form.cursor = 6; // --verbose
         app.handle_key(key(KeyCode::Char(' ')));
         assert_eq!(
             app.form_args(),

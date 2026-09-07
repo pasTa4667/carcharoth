@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 from carcharoth.config.loader import config_hash, load_profile
@@ -52,4 +53,13 @@ def test_train_publishes_immutable_artifact(tmp_path) -> None:
     assert artifact.parent == tmp_path
     assert (artifact / MODEL_FILENAME).is_file()
     assert (artifact / MANIFEST_FILENAME).is_file()
-    assert (artifact / REPORT_FILENAME).is_file()
+    report_path = artifact / REPORT_FILENAME
+    assert report_path.is_file()
+    report = json.loads(report_path.read_text())
+    assert report["model_id"] == artifact.name
+    assert report["task"] == "regression"
+    assert report["diagnostics"]["scope"] == "validation"
+    assert (
+        sum(bucket["count"] for bucket in report["diagnostics"]["prediction_deciles"])
+        == report["validation"]["complete_rows"]
+    )
