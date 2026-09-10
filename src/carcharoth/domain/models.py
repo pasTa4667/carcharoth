@@ -13,6 +13,35 @@ from typing import Any, Literal
 from uuid import UUID
 
 
+@dataclass(frozen=True)
+class PerformanceStage:
+    path: str
+    calls: int
+    inclusive_seconds: float
+    exclusive_seconds: float
+    max_seconds: float
+
+
+@dataclass(frozen=True)
+class PerformanceSnapshot:
+    execution_id: UUID
+    run_id: UUID | None
+    status: str
+    started_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None
+    wall_seconds: float
+    cpu_seconds: float
+    simulation_cpu_seconds: float
+    telemetry_seconds: float
+    periodic_enabled: bool
+    publication_errors: int
+    counters: dict[str, int]
+    metadata: dict[str, Any]
+    stages: tuple[PerformanceStage, ...]
+    recent_ticks_per_second: float | None
+
+
 class Side(StrEnum):
     BUY = "buy"
     SELL = "sell"

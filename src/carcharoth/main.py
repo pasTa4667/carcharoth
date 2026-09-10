@@ -18,11 +18,14 @@ overrides on top.
 import argparse
 import json
 import logging
+import math
 import multiprocessing
+import platform
 import signal
 import time
 import types
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -62,6 +65,7 @@ from carcharoth.logging_setup import (
 from carcharoth.modeling import build_signal_generator, train_and_publish
 from carcharoth.modeling.artifact import MANIFEST_FILENAME, REPORT_FILENAME, load_manifest
 from carcharoth.optimize.bars_cache import BarsCache
+from carcharoth.performance import Monitor, replay_profile, stage
 from carcharoth.permutation.registry import method_kind
 from carcharoth.permutation.runner import run_monte_carlo_test, run_permutation_test
 from carcharoth.persistence.buffered import (
@@ -72,7 +76,7 @@ from carcharoth.persistence.buffered import (
     WriteBuffer,
     sqlalchemy_flush,
 )
-from carcharoth.persistence.db import build_engine, build_session_factory
+from carcharoth.persistence.db import build_engine, build_performance_engine, build_session_factory
 from carcharoth.persistence.repositories import (
     ModelDecisionRepository,
     PositionSnapshotRepository,
@@ -83,6 +87,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyModelDecisionRepository,
     SqlAlchemyModelDiagnosticsRepository,
     SqlAlchemyOrderRepository,
+    SqlAlchemyPerformanceRepository,
     SqlAlchemyPermutationRepository,
     SqlAlchemyPositionSnapshotRepository,
     SqlAlchemyRoundTripRepository,
@@ -214,13 +219,46 @@ def run_backtest_once(
     show_progress: bool = False,
     verbose_db: bool = False,
     provenance: dict[str, Any] | None = None,
+    performance_monitor: Monitor | None = None,
+    profile_output: Path | None = None,
+) -> BacktestResult:
+    # All existing callers (including Optuna) remain unmonitored by default.
+    with performance_monitor.execution() if performance_monitor else nullcontext():
+        return _execute_backtest(
+            config,
+            start,
+            end_exclusive,
+            symbols,
+            session_factory,
+            fetch_bars,
+            show_progress,
+            verbose_db,
+            provenance,
+            performance_monitor,
+            profile_output,
+        )
+
+
+def _execute_backtest(
+    config: RunConfig,
+    start: datetime,
+    end_exclusive: datetime,
+    symbols: Sequence[str],
+    session_factory: "sessionmaker[Session]",
+    fetch_bars: BarsFetcher,
+    show_progress: bool = False,
+    verbose_db: bool = False,
+    provenance: dict[str, Any] | None = None,
+    performance_monitor: Monitor | None = None,
+    profile_output: Path | None = None,
 ) -> BacktestResult:
     """One fully-persisted backtest run: creates the run row, replays the
     window, analyzes. Knows nothing about its caller — manual CLI runs and
     optimizer trials are indistinguishable."""
     # Validate/load before creating a run row so a bad artifact leaves no
     # unfinished database record.
-    model = build_signal_generator(config.model, evaluation_start=start.date())
+    with stage("setup"):
+        model = build_signal_generator(config.model, evaluation_start=start.date())
     runs_repo = SqlAlchemyRunRepository(session_factory)
     started_at = datetime.now(UTC)
     run_id = runs_repo.create(
@@ -231,6 +269,9 @@ def run_backtest_once(
         backtest_start=start,
         backtest_end=end_exclusive,
     )
+    if performance_monitor is not None:
+        performance_monitor.run_id = run_id
+        performance_monitor.metadata["lookback"] = model.market_requirements().bars.lookback
     logger.info(
         "backtest run %s: %s to %s, model=%s symbols=%s",
         run_id,
@@ -256,12 +297,13 @@ def run_backtest_once(
     requirements = model.market_requirements()
     spec = requirements.bars
     requested_symbols = list(dict.fromkeys([*symbols, *sorted(requirements.context_symbols)]))
-    bars = fetch_bars(
-        requested_symbols,
-        spec.timeframe,
-        start - warmup_window(spec),
-        end_exclusive,
-    )
+    with stage("data_fetch"):
+        bars = fetch_bars(
+            requested_symbols,
+            spec.timeframe,
+            start - warmup_window(spec),
+            end_exclusive,
+        )
     total_bars = sum(len(symbol_bars) for symbol_bars in bars.values())
     logger.info("fetched %d bars for %d symbols", total_bars, len(symbols))
 
@@ -302,19 +344,21 @@ def run_backtest_once(
         show_progress=show_progress,
     )
     try:
-        runner.run()
+        with replay_profile(profile_output), stage("simulation"):
+            runner.run()
     finally:
-        # The analyzer below reads this run's rows: everything buffered must
-        # be on disk first.
-        buffer.flush()
+        # Preserve flush ordering even when replay/profiling fails.
+        with stage("final_flush"):
+            buffer.flush()
     runs_repo.finish(run_id, datetime.now(UTC))
 
-    metrics = BacktestAnalyzer(
-        reader=SqlAlchemyAnalysisReader(session_factory),
-        metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
-        objectives=config.objectives,
-        round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
-    ).analyze(run_id)
+    with stage("analysis"):
+        metrics = BacktestAnalyzer(
+            reader=SqlAlchemyAnalysisReader(session_factory),
+            metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
+            objectives=config.objectives,
+            round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
+        ).analyze(run_id)
     write_backtest_summary(
         LOG_DIR,
         run_id,
@@ -350,11 +394,24 @@ def _backtest_permutation_config(config: RunConfig, method_override: str) -> Per
     return section
 
 
+def _parse_performance_interval(value: str) -> float:
+    try:
+        interval = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a non-negative number of seconds") from exc
+    if not math.isfinite(interval) or interval < 0:
+        raise argparse.ArgumentTypeError("expected a finite non-negative number of seconds")
+    return interval
+
+
 def _run_backtest(
     resolved: ResolvedConfig,
     verbose: bool = False,
     verbose_db: bool = False,
     permute: str | None = None,
+    performance_interval: float = 10,
+    no_performance: bool = False,
+    profile_output: Path | None = None,
 ) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = resolved.config
@@ -370,6 +427,38 @@ def _run_backtest(
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
     if bars_store is not None:
         fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    telemetry_engine = None
+    monitor = None
+    if not no_performance:
+        publisher = None
+        try:
+            telemetry_engine = build_performance_engine(settings.database_url)
+            publisher = SqlAlchemyPerformanceRepository(
+                build_session_factory(telemetry_engine)
+            ).publish
+        except Exception:
+            logger.warning("performance database unavailable; using local reports", exc_info=True)
+        monitor = Monitor(
+            interval=performance_interval,
+            publish=publisher,
+            output_dir=LOG_DIR / "backtests",
+            metadata={
+                "config_hash": resolved.hash,
+                "profile": resolved.profile,
+                "artifact_path": str(config.model.artifact_path),
+                "symbol_count": len(watchlist),
+                "symbols": list(watchlist),
+                "start": start.isoformat(),
+                "end_exclusive": end_exclusive.isoformat(),
+                "timeframe_minutes": config.model.timeframe_minutes,
+                "verbose_db": verbose_db,
+                "decision_logging": True,
+                "performance_interval": performance_interval,
+                "profile_output": str(profile_output) if profile_output else None,
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+            },
+        )
     permutation_outcome = None
     try:
         # Only the interactive CLI run gets the tqdm bar; with --verbose we fall
@@ -384,6 +473,8 @@ def _run_backtest(
             show_progress=not verbose,
             verbose_db=verbose_db,
             provenance=resolved.stamp(),
+            performance_monitor=monitor,
+            profile_output=profile_output,
         )
         if permutation is not None:
             # Monte carlo the finished run's closed trades — read back from
@@ -403,6 +494,11 @@ def _run_backtest(
                 )
     finally:
         db_engine.dispose()
+        if telemetry_engine is not None:
+            try:
+                telemetry_engine.dispose()
+            except Exception:
+                logger.warning("could not dispose performance pool", exc_info=True)
 
     if permutation_outcome is not None:
         write_permutation_summary(
@@ -1109,6 +1205,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     backtest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
     backtest.add_argument(
+        "--performance-interval",
+        type=_parse_performance_interval,
+        default=None,
+        metavar="SECONDS",
+        help="performance checkpoint interval (default 10); 0 = final-only",
+    )
+    backtest.add_argument(
+        "--no-performance",
+        action="store_true",
+        help="disable performance collection/publication",
+    )
+    backtest.add_argument(
+        "--profile-output",
+        type=Path,
+        metavar="PATH",
+        help="opt-in replay cProfile .pstats output",
+    )
+    backtest.add_argument(
         "--verbose-db",
         action="store_true",
         help=(
@@ -1269,11 +1383,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.command == "train":
         _run_train(resolved)
     elif args.command == "backtest":
+        if args.no_performance and (
+            args.performance_interval is not None or args.profile_output is not None
+        ):
+            raise SystemExit(
+                "--no-performance conflicts with --performance-interval/--profile-output"
+            )
         _run_backtest(
             resolved,
             verbose=args.verbose,
             verbose_db=args.verbose_db,
             permute=args.permute,
+            performance_interval=(
+                args.performance_interval if args.performance_interval is not None else 10
+            ),
+            no_performance=args.no_performance,
+            profile_output=args.profile_output,
         )
     elif args.command == "optimize":
         _run_optimize(resolved)

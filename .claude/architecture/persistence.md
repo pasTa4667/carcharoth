@@ -30,5 +30,15 @@ bulk-inserts high-volume rows.
   `report.json` for Grafana and is keyed by immutable `model_id`, not `run_id`.
 - Model decisions and signed round trips remain auditable after the run completes.
 
+## Backtest performance snapshots
+
+`backtest_performance` has an execution ID independent of its nullable `run_id`, allowing
+failed setup before a domain run exists. Its fixed-cardinality `backtest_performance_stages`
+rows are cumulatively upserted with the header in one transaction, not appended per bar.
+A dedicated timeout-limited pool isolates telemetry transactions from research transactions.
+Deleting a run sets the performance link null; stages cascade when their execution header
+is deleted. Performance history therefore deliberately survives domain-run deletion.
+See [performance architecture](backtest-performance.md) for failure and timing semantics.
+
 Optuna study storage and migrations:
 [development practices](../principles/development.md#database--migrations).

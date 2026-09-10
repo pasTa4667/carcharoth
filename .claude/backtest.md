@@ -17,3 +17,9 @@ features/position rows; use `--verbose-db` when investigating decisions.
 
 `--permute [METHOD]` performs trade-based Monte Carlo on the finished run. Bar methods remain a
 quicktest operation.
+
+Backtests collect bounded stage timings and coarse CPU totals by default, with ~10-second
+cumulative Grafana updates. `--performance-interval 10` sets the default explicitly;
+`--performance-interval 0` selects final-only reporting and `--no-performance` disables it.
+`--profile-output logs/replay.pstats` is opt-in, more expensive function-level profiling.
+These flags leave trading config hashes unchanged. See the [performance runbook](backtest-performance.md).

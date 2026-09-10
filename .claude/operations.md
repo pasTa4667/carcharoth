@@ -4,7 +4,7 @@
 
 ```bash
 # Start dependencies (Postgres + Grafana + Redis)
-docker compose up -d
+docker compose up -d db redis grafana
 
 # Run migrations
 uv run alembic upgrade head
@@ -25,7 +25,9 @@ docker run --env-file .env carcharoth
 
 - **Grafana**: `http://localhost:3333` (see `.env` for credentials) — dashboards:
   *Trading Overview* (live, PAPER runs only), *Live Analysis* (equity/drawdown per paper
-  run), *Backtest Results* (metrics + equity curve per backtest run)
+  run), *Backtest Results* (metrics + equity curve per backtest run),
+  *Backtest Performance* (bounded phase/hotspot timings, CPU, throughput and checkpoint health).
+  See the [performance runbook](backtest-performance.md); apply migrations before using new panels.
 - **Logs**: `logs/` directory
 - **Database**: `docker compose exec db psql -U carcharoth -d carcharoth -c "\dt"`
 

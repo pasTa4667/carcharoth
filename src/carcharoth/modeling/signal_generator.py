@@ -19,6 +19,7 @@ from carcharoth.interfaces.model_signal import ModelSignalGenerator
 from carcharoth.modeling.artifact import ArtifactManifest, validate_artifact
 from carcharoth.modeling.decision import DecisionPolicy
 from carcharoth.modeling.predictor import Predictor
+from carcharoth.performance import increment, stage
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +72,20 @@ class XGBoostSignalGenerator(ModelSignalGenerator):
             return self._unchanged(symbol, bar_time, "bar already evaluated")
         self._last_attempt[symbol] = bar_time
 
-        vector = self._pipeline.compute(
-            bars,
-            snapshot.bars.get(self._pipeline.benchmark_symbol, []),
-        )
+        increment("features")
+        with stage("features"):
+            vector = self._pipeline.compute(
+                bars,
+                snapshot.bars.get(self._pipeline.benchmark_symbol, []),
+            )
         if vector is None:
             return self._unchanged(symbol, bar_time, "features warming up or unavailable")
         try:
-            prediction = self._predictor.predict(vector)
-            target, reason = self._decision.decide_at_timestamp(prediction, position, bar_time)
+            increment("predictions")
+            with stage("prediction"):
+                prediction = self._predictor.predict(vector)
+            with stage("policy"):
+                target, reason = self._decision.decide_at_timestamp(prediction, position, bar_time)
         except Exception:
             logger.exception("%s: model prediction failed", symbol)
             return self._unchanged(symbol, bar_time, "model prediction failed")

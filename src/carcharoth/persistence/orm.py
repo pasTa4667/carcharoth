@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 from sqlalchemy import (
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Numeric,
@@ -55,6 +56,42 @@ class RunRow(Base):
     backtest_start: Mapped[datetime | None]
     backtest_end: Mapped[datetime | None]
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class BacktestPerformanceRow(Base):
+    __tablename__ = "backtest_performance"
+    __table_args__ = (Index("ix_backtest_performance_started", "started_at"),)
+
+    execution_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.run_id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str]
+    started_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
+    wall_seconds: Mapped[float] = mapped_column(Float)
+    cpu_seconds: Mapped[float] = mapped_column(Float)
+    simulation_cpu_seconds: Mapped[float] = mapped_column(Float)
+    telemetry_seconds: Mapped[float] = mapped_column(Float)
+    periodic_enabled: Mapped[bool]
+    publication_errors: Mapped[int]
+    counters: Mapped[dict[str, Any]]
+    execution_metadata: Mapped[dict[str, Any]]
+    recent_ticks_per_second: Mapped[float | None] = mapped_column(Float)
+
+
+class BacktestPerformanceStageRow(Base):
+    __tablename__ = "backtest_performance_stages"
+
+    execution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("backtest_performance.execution_id", ondelete="CASCADE"), primary_key=True
+    )
+    path: Mapped[str] = mapped_column(primary_key=True)
+    calls: Mapped[int]
+    inclusive_seconds: Mapped[float] = mapped_column(Float)
+    exclusive_seconds: Mapped[float] = mapped_column(Float)
+    max_seconds: Mapped[float] = mapped_column(Float)
 
 
 class TradeRow(Base):

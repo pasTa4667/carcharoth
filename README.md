@@ -153,6 +153,15 @@ long/short `round_trips`, metrics, and permutation results. Slim backtests omit 
 features unless `--verbose-db` is used. Grafana dashboards live under
 `grafana/provisioning/dashboards/`.
 
+Backtests also produce bounded stage/CPU summaries in
+`logs/backtests/<execution-id>.performance.json` and the **Backtest Performance** dashboard.
+After `uv run alembic upgrade head`, backtests publish periodic cumulative updates every
+10 seconds by default. Use `--performance-interval 0` for final-only reporting, or `--no-performance`
+for a baseline. Slow/failed telemetry writes disable periodic publication without failing
+research. `--profile-output logs/replay.pstats` enables more expensive, replay-only cProfile.
+See [the performance runbook](.claude/backtest-performance.md) for interpreting nested timings,
+profiling limitations, and matched overhead comparisons. No Prometheus deployment is needed.
+
 ## Development
 
 ```bash

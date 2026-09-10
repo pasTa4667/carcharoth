@@ -70,6 +70,12 @@ trips, and metrics through `run_id`. `model_decisions` store artifact/schema IDs
 target exposure, configured feature values, and risk result. `round_trips` store direction,
 model ID, entry/exit prediction/features, P&L, and excursions.
 
+Backtest performance uses a context-local, composition-injected `Monitor`, with bounded
+in-memory stage/counter aggregation, an independent fail-open PostgreSQL publisher and local
+JSON fallback. Live and optimizer callers remain inactive. See
+[performance architecture](architecture/backtest-performance.md) for nested timing semantics,
+CPU limitations, checkpoint fallback, and the flow diagram.
+
 ## Extension seams
 
 - Broker/data/clock/execution interfaces have live and replay/test adapters.

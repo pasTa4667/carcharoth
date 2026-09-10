@@ -27,7 +27,11 @@ it explicitly. On macOS install `libomp` for native XGBoost.
 Schema lives in `persistence/orm.py`; every event is run-scoped. Core model-era tables are
 `model_decisions`, `orders`, `trades`, `positions_snapshot`, `equity_snapshots`, `round_trips`,
 `backtest_metrics`, and permutation tables. Regime evaluation history may remain from older runs,
-but current runtime never writes it.
+but current runtime never writes it. `backtest_performance` and
+`backtest_performance_stages` store cumulative execution telemetry (nullable run linkage,
+retained after run deletion). Test migration reversibility on a disposable database.
+Performance tests use injected clocks and publishers; real overhead comparisons interleave
+matched workloads and report variance rather than enforcing flaky wall-clock unit assertions.
 
 After ORM changes:
 

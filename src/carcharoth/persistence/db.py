@@ -15,5 +15,27 @@ def build_engine(
     return create_engine(database_url, pool_pre_ping=True, **kwargs)
 
 
+def build_performance_engine(database_url: str) -> Engine:
+    """Independent, bounded telemetry pool; never alters trading transactions.
+
+    PostgreSQL timeouts bound server work, not every possible network stall.
+    The monitor disables periodic writes after the first slow/failing attempt.
+    """
+    return create_engine(
+        database_url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.1,
+        connect_args={
+            "connect_timeout": 2,
+            "options": "-c statement_timeout=100 -c lock_timeout=50",
+            "keepalives": 1,
+            "keepalives_idle": 2,
+            "keepalives_interval": 1,
+            "keepalives_count": 2,
+        },
+    )
+
+
 def build_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, expire_on_commit=False)

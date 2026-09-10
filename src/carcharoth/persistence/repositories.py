@@ -13,12 +13,14 @@ start fresh each run.
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import asdict
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from carcharoth.analysis.metrics import RoundTrip
@@ -32,6 +34,7 @@ from carcharoth.domain.models import (
     OpenOrder,
     OrderRequest,
     OrderResult,
+    PerformanceSnapshot,
     PositionSnapshot,
     RiskDecision,
     RunInfo,
@@ -40,8 +43,11 @@ from carcharoth.domain.models import (
     TargetExposure,
     TradeRecord,
 )
+from carcharoth.performance import measured
 from carcharoth.persistence.orm import (
     BacktestMetricRow,
+    BacktestPerformanceRow,
+    BacktestPerformanceStageRow,
     ConfigurationRow,
     EquitySnapshotRow,
     ModelDecisionRow,
@@ -75,6 +81,54 @@ def probabilities_payload(assessment: RegimeAssessment) -> dict[str, float] | No
     if assessment.probabilities is None:
         return None
     return {regime.value: prob for regime, prob in assessment.probabilities.items()}
+
+
+class PerformanceRepository(ABC):
+    @abstractmethod
+    def publish(self, snapshot: PerformanceSnapshot) -> None:
+        """Atomically replace the cumulative header and stage measurements."""
+        ...
+
+
+class SqlAlchemyPerformanceRepository(PerformanceRepository):
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def publish(self, snapshot: PerformanceSnapshot) -> None:
+        header = asdict(snapshot)
+        header.pop("stages")
+        header["execution_metadata"] = header.pop("metadata")
+        statement = pg_insert(BacktestPerformanceRow).values(**header)
+        with self._session_factory.begin() as session:
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[BacktestPerformanceRow.execution_id],
+                    set_={key: statement.excluded[key] for key in header if key != "execution_id"},
+                )
+            )
+            if snapshot.stages:
+                stages = [
+                    {"execution_id": snapshot.execution_id, **asdict(stage)}
+                    for stage in snapshot.stages
+                ]
+                stage_statement = pg_insert(BacktestPerformanceStageRow).values(stages)
+                session.execute(
+                    stage_statement.on_conflict_do_update(
+                        index_elements=[
+                            BacktestPerformanceStageRow.execution_id,
+                            BacktestPerformanceStageRow.path,
+                        ],
+                        set_={
+                            key: stage_statement.excluded[key]
+                            for key in (
+                                "calls",
+                                "inclusive_seconds",
+                                "exclusive_seconds",
+                                "max_seconds",
+                            )
+                        },
+                    )
+                )
 
 
 class ModelDecisionRepository(ABC):
@@ -229,6 +283,7 @@ class SqlAlchemyOrderRepository(OrderRepository):
         self._session_factory = session_factory
         self._run_id = run_id
 
+    @measured("repository")
     def save_submitted(self, request: OrderRequest, result: OrderResult) -> None:
         with self._session_factory.begin() as session:
             session.add(
@@ -250,6 +305,7 @@ class SqlAlchemyOrderRepository(OrderRepository):
                 )
             )
 
+    @measured("repository")
     def update_from_broker(self, result: OrderResult) -> None:
         with self._session_factory.begin() as session:
             row = session.scalars(
@@ -260,6 +316,7 @@ class SqlAlchemyOrderRepository(OrderRepository):
             if result.filled_avg_price is not None:
                 row.filled_avg_price = Decimal(str(result.filled_avg_price))
 
+    @measured("repository")
     def find_open_broker_order_ids(self) -> list[str]:
         terminal = [status.value for status in TERMINAL_ORDER_STATUSES]
         with self._session_factory() as session:
@@ -271,6 +328,7 @@ class SqlAlchemyOrderRepository(OrderRepository):
                 )
             )
 
+    @measured("repository")
     def find_open_orders(self, symbol: str) -> list[OpenOrder]:
         terminal = [status.value for status in TERMINAL_ORDER_STATUSES]
         with self._session_factory() as session:
@@ -292,6 +350,7 @@ class SqlAlchemyTradeRepository(TradeRepository):
         self._session_factory = session_factory
         self._run_id = run_id
 
+    @measured("repository")
     def save_fill(self, result: OrderResult) -> None:
         with self._session_factory.begin() as session:
             session.add(
@@ -306,6 +365,7 @@ class SqlAlchemyTradeRepository(TradeRepository):
                 )
             )
 
+    @measured("repository")
     def exists_for_order(self, broker_order_id: str) -> bool:
         with self._session_factory() as session:
             return (

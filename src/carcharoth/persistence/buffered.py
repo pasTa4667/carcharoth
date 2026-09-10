@@ -24,6 +24,7 @@ from sqlalchemy import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from carcharoth.domain.models import AccountState, ExposureIntent, RiskDecision
+from carcharoth.performance import measured
 from carcharoth.persistence.orm import (
     Base,
     EquitySnapshotRow,
@@ -42,6 +43,7 @@ FlushFn = Callable[[Mapping[type[Base], list[Row]]], None]
 def sqlalchemy_flush(session_factory: sessionmaker[Session]) -> FlushFn:
     """One transaction per flush, one bulk insert (executemany) per table."""
 
+    @measured("buffer_flush")
     def flush(pending: Mapping[type[Base], list[Row]]) -> None:
         with session_factory.begin() as session:
             for row_class, rows in pending.items():

@@ -15,6 +15,7 @@ from carcharoth.domain.models import OrderStatus
 from carcharoth.engine.engine import TradingEngine
 from carcharoth.features.session import minutes_since_open, minutes_until_close
 from carcharoth.interfaces.execution import OrderExecutor
+from carcharoth.performance import checkpoint, increment, measured, stage
 from carcharoth.persistence.repositories import OrderRepository, TradeRepository
 from carcharoth.services.backtest.broker import SimulatedBroker
 from carcharoth.services.backtest.market_data import HistoricalMarketDataService
@@ -55,6 +56,7 @@ class BacktestRunner:
             for as_of in self._market_data.timestamp_grid(self._start, self._end)
             if minutes_since_open(as_of) >= 0 and minutes_until_close(as_of) > 0
         ]
+        increment("total_ticks", len(grid))
         if not grid:
             logger.warning("no historical bars between %s and %s", self._start, self._end)
             return
@@ -67,9 +69,14 @@ class BacktestRunner:
             else grid
         )
         for index, as_of in enumerate(iterable, start=1):
-            self._market_data.advance_to(as_of)
-            self._broker.mark_to_market(as_of, self._market_data.latest_bars())
+            with stage("market_data"):
+                self._market_data.advance_to(as_of)
+                latest = self._market_data.latest_bars()
+            with stage("broker"):
+                self._broker.mark_to_market(as_of, latest)
             self._engine.tick()
+            increment("ticks")
+            checkpoint()
             if not self._show_progress and (
                 index % _PROGRESS_EVERY_BARS == 0 or index == len(grid)
             ):
@@ -77,6 +84,7 @@ class BacktestRunner:
         self._broker.cancel_pending()
         self._reconcile_remaining()
 
+    @measured("reconcile")
     def _reconcile_remaining(self) -> None:
         """Record fills of orders submitted on the last bar.
 

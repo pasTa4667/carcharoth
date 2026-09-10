@@ -22,6 +22,7 @@ from carcharoth.domain.models import (
     OrderRequest,
     OrderResult,
     OrderStatus,
+    PerformanceSnapshot,
     Position,
     PositionSnapshot,
     Quote,
@@ -46,11 +47,20 @@ from carcharoth.persistence.repositories import (
     BacktestMetricsRepository,
     ModelDecisionRepository,
     OrderRepository,
+    PerformanceRepository,
     PositionSnapshotRepository,
     RoundTripRepository,
     RunRepository,
     TradeRepository,
 )
+
+
+class InMemoryPerformanceRepository(PerformanceRepository):
+    def __init__(self) -> None:
+        self.snapshots: list[PerformanceSnapshot] = []
+
+    def publish(self, snapshot: PerformanceSnapshot) -> None:
+        self.snapshots.append(snapshot)
 
 
 class FakeMarketDataService(MarketDataService):

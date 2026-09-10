@@ -25,6 +25,7 @@ from carcharoth.interfaces import (
 )
 from carcharoth.interfaces.model_signal import ModelSignalGenerator
 from carcharoth.logging_setup import DECISIONS_LOGGER, TRADES_LOGGER
+from carcharoth.performance import increment, measured, stage
 from carcharoth.persistence.repositories import (
     ModelDecisionRepository,
     OrderRepository,
@@ -70,43 +71,54 @@ class TradingEngine:
             dict.fromkeys([*self._symbols, *sorted(requirements.context_symbols)])
         )
         try:
-            snapshot = self._market_data.get_snapshot(requested_symbols, requirements.bars)
+            with stage("market_data"):
+                snapshot = self._market_data.get_snapshot(requested_symbols, requirements.bars)
         except MarketDataError:
             logger.exception("market data unavailable, aborting tick")
             return
 
-        state = self._account.get_account_state()
-        self._snapshots_repo.save_snapshot(snapshot.as_of, state)
+        with stage("account"):
+            state = self._account.get_account_state()
+        with stage("snapshot_persistence"):
+            self._snapshots_repo.save_snapshot(snapshot.as_of, state)
 
         for symbol in self._symbols:
+            increment("symbol_attempts")
             try:
                 self._process_symbol(symbol, snapshot, state)
             except Exception:
+                increment("symbol_errors")
                 logger.exception("error processing %s, continuing with next symbol", symbol)
 
     def _process_symbol(self, symbol: str, snapshot: MarketSnapshot, state: AccountState) -> None:
         quote = snapshot.quotes.get(symbol)
         position = state.positions.get(symbol)
-        intent = self._model.generate(symbol, snapshot, position)
-        decisions_log.info(
-            "%s target=%s model=%s reason=%r prediction=%s features=%s",
-            symbol,
-            intent.target.value,
-            intent.model_id,
-            intent.reason,
-            intent.prediction.as_dict() if intent.prediction else {},
-            intent.features.as_dict() if intent.features else {},
-        )
+        with stage("model"):
+            intent = self._model.generate(symbol, snapshot, position)
+        with stage("logging"):
+            decisions_log.info(
+                "%s target=%s model=%s reason=%r prediction=%s features=%s",
+                symbol,
+                intent.target.value,
+                intent.model_id,
+                intent.reason,
+                intent.prediction.as_dict() if intent.prediction else {},
+                intent.features.as_dict() if intent.features else {},
+            )
 
         if intent.target is TargetExposure.UNCHANGED or quote is None:
-            self._decisions_repo.save(intent, None, snapshot.as_of)
+            with stage("decision_persistence"):
+                self._decisions_repo.save(intent, None, snapshot.as_of)
             return
 
-        decision = self._risk.assess(intent, state, quote)
-        decisions_log.info(
-            "%s risk approved=%s reason=%r", symbol, decision.approved, decision.reason
-        )
-        self._decisions_repo.save(intent, decision, snapshot.as_of)
+        with stage("risk"):
+            decision = self._risk.assess(intent, state, quote)
+        with stage("logging"):
+            decisions_log.info(
+                "%s risk approved=%s reason=%r", symbol, decision.approved, decision.reason
+            )
+        with stage("decision_persistence"):
+            self._decisions_repo.save(intent, decision, snapshot.as_of)
         if not decision.approved or decision.side is None:
             return
 
@@ -121,7 +133,8 @@ class TradingEngine:
             client_order_id=uuid4().hex,
         )
         try:
-            result = self._executor.submit(request)
+            with stage("execution"):
+                result = self._executor.submit(request)
         except OrderConflictError as exc:
             trades_log.warning("%s: broker wash-trade rejection, skipping tick: %s", symbol, exc)
             return
@@ -137,6 +150,7 @@ class TradingEngine:
             result.status.value,
         )
 
+    @measured("execution")
     def _clear_conflicting_orders(self, symbol: str, side: Side) -> bool:
         """Return True when it is safe to submit a new `side` order for `symbol`.
 
@@ -170,6 +184,7 @@ class TradingEngine:
                 logger.exception("could not cancel order %s", order.broker_order_id)
         return False
 
+    @measured("reconcile")
     def _reconcile_fills(self) -> None:
         for broker_order_id in self._orders_repo.find_open_broker_order_ids():
             try:

@@ -1,0 +1,13 @@
+flowchart LR
+    CLI[Backtest CLI] --> M[Scoped Monitor]
+    CLI --> R[run_backtest_once]
+    R --> S[Engine / generator / repository stage helpers]
+    S --> A[Bounded in-memory counters and nested totals]
+    M --> A
+    A --> C[Initial / safe checkpoint / final publication]
+    C --> P[Dedicated timeout-limited pool]
+    P --> DB[(PostgreSQL cumulative header + stages)]
+    DB --> G[Grafana Backtest Performance]
+    C --> F[Slow or failed: disable periodic attempts]
+    A --> J[Final local JSON + slowest-stage log]
+    R --> O[Opt-in replay cProfile artifact]

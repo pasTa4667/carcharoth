@@ -18,6 +18,7 @@ import yaml
 from carcharoth.analysis.objective import FITNESS_PREFIX
 from carcharoth.config.app_config import ModelConfig, RiskConfig
 from carcharoth.domain.models import MetricValue, OptimizationResult
+from carcharoth.performance import measured
 
 if TYPE_CHECKING:
     from carcharoth.config.quicktest_config import QuickTestConfig
@@ -83,6 +84,7 @@ def setup_logging(log_dir: Path, console_level: str = "INFO", filename_suffix: s
     )
 
 
+@measured("summary")
 def write_backtest_summary(
     log_dir: Path,
     run_id: UUID,
