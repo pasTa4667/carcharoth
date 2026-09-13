@@ -61,6 +61,27 @@ profiling can be much slower and cannot split CPU from I/O wait or resolve nativ
 Never use profiled throughput as the unprofiled performance baseline. Use distinct output
 paths when retaining comparisons (an explicitly supplied existing path is overwritten).
 
+## P0 comparisons (not rollout approval)
+
+Preparation is opt-in (`model.prepared_history=true`); it is included in total latency,
+not replay cProfile. `feature_preparation` and `data_fetch/cache_read|cache_decode|cache_fetch|cache_write`
+are bounded stages. `features` means attempts; `feature_matrices` counts real matrix passes.
+Preparation rows, chunk hits/misses and encoded read/write/decoded array bytes are separate counters.
+Write bytes count attempted writes (resilient storage may be a no-op).
+
+Extend the existing driver with `--mode p0 --baseline-root /path/to/preserved-v1-checkout
+--input-fingerprint <sha256> --repeats 5 -- --start 2023-10-02 --end 2023-10-02`.
+The baseline checkout needs its own environment. Use identical immutable artifact/config and
+frozen provider inputs; the fingerprint is operator-supplied provenance, not input interception.
+The driver primes warm runs, rotates v1/legacy, v2/legacy and v2/prepared, captures per-process
+RSS using system time, local telemetry JSON, median/min/max/variance. It does not audit trades.
+`--isolated-cache` explicitly authorizes v2 clears and adds cold-fill measurements; only use
+with a disposable REDIS_URL and research DATABASE_URL. Never run it against live storage.
+Run three multi-month repeats separately. Independently compare native-precision predictions,
+threshold crossings, ordered risk/intents/orders/fills and equity/metrics before approval.
+No timing run should enable expensive parity tracing. Current gates/results:
+`plans/backtest-p0-results.md`.
+
 ## Overhead acceptance
 
 Run `uv run python scripts/benchmark_backtest_performance.py -- --start YYYY-MM-DD --end YYYY-MM-DD`

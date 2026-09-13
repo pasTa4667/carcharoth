@@ -26,7 +26,12 @@ from tests.fakes import (
 )
 
 
-def replay(monitored: bool, broken: bool = False) -> tuple[Any, Monitor]:
+def replay(
+    monitored: bool,
+    broken: bool = False,
+    prepared: bool | None = None,
+    prediction: float = 0.01,
+) -> tuple[Any, Monitor]:
     bars = [
         Bar("AAPL", BASE_TIME + timedelta(minutes=5 * i), price, price, price, price, 1000)
         for i, price in enumerate([100.0, 110.0, 120.0])
@@ -43,11 +48,22 @@ def replay(monitored: bool, broken: bool = False) -> tuple[Any, Monitor]:
         {"AAPL": ExposureIntent("AAPL", TargetExposure.LONG, "model", "schema", "long")},
         lookback=1,
     )
+    if prepared is not None:
+        from tests.test_model_signal_generator import generator
+
+        model, _ = generator(prediction)
+        if prepared:
+            model.prepare_history(
+                {"AAPL": bars, "SPY": bars},
+                symbols=["AAPL"],
+                start=bars[0].timestamp,
+                end_exclusive=bars[-1].timestamp + timedelta(minutes=5),
+            )
     engine = TradingEngine(
         market,
         broker,
         model,
-        BasicRiskManager(RiskConfig(max_position_notional=100.0)),
+        BasicRiskManager(RiskConfig(max_position_notional=100.0 if prepared is None else 1000.0)),
         broker,
         decisions,
         orders,
@@ -92,6 +108,17 @@ def test_replay_parity_and_counters() -> None:
     assert any(s.path == "simulation/reconcile" for s in monitor.snapshot().stages)
 
 
+@pytest.mark.parametrize("prediction", [0.01, -0.01])
+def test_full_engine_prepared_legacy_parity_on_compatible_features(prediction) -> None:
+    legacy, legacy_monitor = replay(True, prepared=False, prediction=prediction)
+    prepared, prepared_monitor = replay(True, prepared=True, prediction=prediction)
+    assert prepared == legacy  # intents/risk, fills, positions/equity, account
+    assert prepared_monitor.counters["predictions"] == legacy_monitor.counters["predictions"]
+    assert prepared_monitor.counters.get("feature_matrices", 0) == 0  # none during replay
+    assert legacy_monitor.counters["feature_matrices"] == 3
+    assert prepared[0]  # an actual next-open fill, not vacuous no-trade parity
+
+
 def test_swallowed_symbol_error_preserved_and_counted() -> None:
     baseline, _ = replay(False, broken=True)
     monitored, monitor = replay(True, broken=True)
@@ -129,3 +156,20 @@ def test_cli_interval_validation_and_options() -> None:
     assert _parse_performance_interval("0") == 0
     args = _build_parser().parse_args(["backtest", "--profile-output", "logs/test.pstats"])
     assert str(args.profile_output) == "logs/test.pstats"
+
+
+def test_cache_cleanup_is_version_scoped(capsys) -> None:
+    from carcharoth.main import _run_cache_clear, _run_cache_stats
+    from tests.fakes import InMemoryByteStore
+
+    store = InMemoryByteStore()
+    store.data.update({"carch:bars:v1:old": b"old", "carch:bars:v2:month": b"new"})
+    args = _build_parser().parse_args(["cache", "clear"])
+    assert args.bars_version == "v2"
+    with patch("carcharoth.main._cache_store_or_exit", return_value=store):
+        _run_cache_stats()
+        assert "server-wide" in capsys.readouterr().out
+        _run_cache_clear()
+        assert store.data == {"carch:bars:v1:old": b"old"}
+        _run_cache_clear("v1")
+        assert not store.data

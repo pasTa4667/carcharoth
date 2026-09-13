@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -16,6 +18,7 @@ from carcharoth.domain.models import Bar, BarSpec, FeatureVector, Timeframe
 from carcharoth.features.base import Feature
 from carcharoth.features.registry import build_feature
 from carcharoth.features.session import regular_session_bars
+from carcharoth.performance import increment
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +35,25 @@ class FeatureDescriptor:
             "params": self.params,
             "implementation_version": self.implementation_version,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedHistory:
+    rows: Mapping[datetime, int]
+    matrix: npt.NDArray[np.float64]
+    names: tuple[str, ...]
+    schema_hash: str
+
+    def lookup(self, timestamp: datetime) -> FeatureVector | None:
+        index = self.rows.get(timestamp)
+        if index is None or not np.isfinite(self.matrix[index]).all():
+            return None
+        return FeatureVector(
+            names=self.names,
+            values=tuple(float(value) for value in self.matrix[index]),
+            schema_hash=self.schema_hash,
+            as_of=timestamp,
+        )
 
 
 class FeaturePipeline:
@@ -107,6 +129,7 @@ class FeaturePipeline:
         benchmark_bars: Sequence[Bar],
     ) -> tuple[tuple[Bar, ...], npt.NDArray[np.float64]]:
         """All feature rows in linear/vectorized passes (NaN during warm-up)."""
+        increment("feature_matrices")
         bars = tuple(sorted(regular_session_bars(symbol_bars), key=lambda bar: bar.timestamp))
         if not bars:
             return bars, np.empty((0, len(self._features)), dtype=np.float64)
@@ -120,6 +143,36 @@ class FeaturePipeline:
             feature.compute_series(bars, benchmark, self._timeframe) for feature in self._features
         ]
         return bars, np.column_stack(columns).astype(np.float64, copy=False)
+
+    def prepare_history(
+        self,
+        symbol_bars: Sequence[Bar],
+        benchmark_bars: Sequence[Bar],
+        *,
+        start: datetime,
+        end_exclusive: datetime,
+    ) -> _PreparedHistory:
+        for values in (symbol_bars, benchmark_bars):
+            timestamps = [bar.timestamp for bar in values]
+            if any(ts.tzinfo is None or ts.utcoffset() is None for ts in timestamps):
+                raise ValueError("prepared history requires aware timestamps")
+            if len(timestamps) != len(set(timestamps)):
+                raise ValueError("duplicate timestamps in prepared history input")
+        bars, matrix = self.compute_matrix(symbol_bars, benchmark_bars)
+        retained = [i for i, bar in enumerate(bars) if start <= bar.timestamp < end_exclusive]
+        predecessor = next(
+            (i for i in range(len(bars) - 1, -1, -1) if bars[i].timestamp < start), None
+        )
+        if predecessor is not None:
+            retained.insert(0, predecessor)
+        compact = matrix[retained].copy()
+        compact.flags.writeable = False
+        return _PreparedHistory(
+            MappingProxyType({bars[i].timestamp: row for row, i in enumerate(retained)}),
+            compact,
+            self._names,
+            self._schema_hash,
+        )
 
     def compute(
         self,

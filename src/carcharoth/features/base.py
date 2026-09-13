@@ -53,8 +53,14 @@ class Feature(ABC):
         dataset construction does not recompute every prefix.
         """
         result = np.full(len(bars), np.nan, dtype=np.float64)
+        benchmark_end = 0
         for index in range(len(bars)):
-            context = FeatureContext(bars[: index + 1], benchmark_bars, timeframe)
+            while (
+                benchmark_end < len(benchmark_bars)
+                and benchmark_bars[benchmark_end].timestamp <= bars[index].timestamp
+            ):
+                benchmark_end += 1
+            context = FeatureContext(bars[: index + 1], benchmark_bars[:benchmark_end], timeframe)
             value = self.compute(context)
             if value is not None:
                 result[index] = value

@@ -10,6 +10,7 @@ engine:
   tick_interval_seconds: 60
 
 model:
+  prepared_history: false # Gated batch initialization; live always uses rolling history.
   # Training never changes this. Select an immutable artifact explicitly for
   # quicktest/backtest/live use, then promote that leaf to trading/paper.
   artifact_path: null

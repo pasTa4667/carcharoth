@@ -74,6 +74,13 @@ def simulate_and_analyze(
     bars: Mapping[str, list[Bar]],
 ) -> tuple[QuickTestResult, list[RoundTrip], list[MetricValue]]:
     model = build_signal_generator(config.model, evaluation_start=config.start)
+    if config.model.prepared_history:
+        model.prepare_history(
+            bars,
+            symbols=config.symbols,
+            start=config.start_dt,
+            end_exclusive=config.end_exclusive_dt,
+        )
     settings = simulation_settings(config)
     result = QuickTestResult(capital_per_symbol=config.capital)
     benchmark = bars.get(config.model.benchmark_symbol, [])

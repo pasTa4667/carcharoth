@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 
 from carcharoth.config.app_config import ModelConfig
 from carcharoth.domain.models import (
+    Bar,
     ExposureIntent,
     MarketDataRequirements,
     MarketSnapshot,
     Position,
     TargetExposure,
 )
-from carcharoth.features.pipeline import FeaturePipeline
+from carcharoth.features.pipeline import FeaturePipeline, _PreparedHistory
 from carcharoth.features.session import minutes_until_close
 from carcharoth.interfaces.model_signal import ModelSignalGenerator
 from carcharoth.modeling.artifact import ArtifactManifest, validate_artifact
@@ -37,6 +39,33 @@ class XGBoostSignalGenerator(ModelSignalGenerator):
         self._manifest = manifest
         self._decision = decision
         self._last_attempt: dict[str, datetime] = {}
+        self._prepared: dict[str, _PreparedHistory] | None = None
+
+    def prepare_history(
+        self,
+        bars_by_symbol: Mapping[str, Sequence[Bar]],
+        *,
+        symbols: Sequence[str],
+        start: datetime,
+        end_exclusive: datetime,
+    ) -> None:
+        if any(t.tzinfo is None or t.utcoffset() is None for t in (start, end_exclusive)):
+            raise ValueError("prepared history requires aware bounds")
+        if end_exclusive < start:
+            raise ValueError("prepared history end precedes start")
+        replacement: dict[str, _PreparedHistory] = {}
+        with stage("feature_preparation"):
+            for symbol in dict.fromkeys(symbols):
+                table = self._pipeline.prepare_history(
+                    bars_by_symbol.get(symbol, []),
+                    bars_by_symbol.get(self._pipeline.benchmark_symbol, []),
+                    start=start,
+                    end_exclusive=end_exclusive,
+                )
+                replacement[symbol] = table
+                increment("preparation_rows", len(table.rows))
+        self._prepared = replacement
+        self._last_attempt.clear()
 
     def market_requirements(self) -> MarketDataRequirements:
         return MarketDataRequirements(
@@ -74,10 +103,14 @@ class XGBoostSignalGenerator(ModelSignalGenerator):
 
         increment("features")
         with stage("features"):
-            vector = self._pipeline.compute(
-                bars,
-                snapshot.bars.get(self._pipeline.benchmark_symbol, []),
-            )
+            if self._prepared is None:
+                vector = self._pipeline.compute(
+                    bars,
+                    snapshot.bars.get(self._pipeline.benchmark_symbol, []),
+                )
+            else:
+                table = self._prepared.get(symbol)
+                vector = table.lookup(bar_time) if table is not None else None
         if vector is None:
             return self._unchanged(symbol, bar_time, "features warming up or unavailable")
         try:

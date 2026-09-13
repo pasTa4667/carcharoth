@@ -135,6 +135,7 @@ class DecisionPolicyConfig(StrictModel):
 
 
 class ModelConfig(StrictModel):
+    prepared_history: bool = False
     artifact_path: Path | None = None
     timeframe_minutes: int = Field(default=5, gt=0)
     benchmark_symbol: str = Field(default="SPY", min_length=1)

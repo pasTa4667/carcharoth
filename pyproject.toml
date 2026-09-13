@@ -15,6 +15,7 @@ dependencies = [
     "optuna>=4.2",
     "pandas>=3.0.3",
     "psycopg[binary]>=3.3.4",
+    "pyarrow>=19",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",
@@ -61,7 +62,7 @@ module = ["alpaca.*"]
 follow_untyped_imports = true
 
 [[tool.mypy.overrides]]
-module = ["hmmlearn.*"]
+module = ["hmmlearn.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -11,6 +11,12 @@ validation window. Replay uses the full engine/risk path, signed long/short posi
 reversals, and next-bar-open fills with configured spread/slippage. Context SPY bars are fetched
 without expanding the tradable grid.
 
+`--set model.prepared_history=true` opts into one batch matrix per target after fetching,
+before the replay profile. Only execution rows and the latest regular-session predecessor
+are retained; exact missing/non-finite timestamps remain UNCHANGED. The default stays false:
+EMA/ADX/ATR/RSI initialization and sparse slots can differ from legacy rolling snapshots.
+Do not retrain, relax numerical tolerances, or enable by default without the P0 approval gate.
+
 Every run is persisted and analyzed into signed FIFO round trips, MAE/MFE, equity metrics, named
 fitness scores, and `logs/backtests/<run_id>.yaml`. Default slim mode omits high-volume model
 features/position rows; use `--verbose-db` when investigating decisions.

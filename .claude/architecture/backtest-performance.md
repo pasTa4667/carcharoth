@@ -17,7 +17,8 @@ is the only publisher that knows PostgreSQL. Clocks and publisher are injectable
 - Fixed stage names, at most 128 paths/eight nesting levels; fixed counters. No samples,
   symbol labels, SQL text/parameters or per-function traces are retained by the collector.
 - Top-level stages: setup/model loading, fetch, simulation, final buffer flush, analysis,
-  summary. Untimed orchestration remains explicit in the dashboard's coverage panel.
+  summary, and opt-in feature preparation (outside replay profiling).
+  Fetch nests cache_read/cache_decode/cache_fetch/cache_write. Untimed orchestration remains explicit in the dashboard's coverage panel.
 - Replay separates broker, market data, reconciliation, account/snapshot persistence,
   model, risk/execution, decision persistence and decision logging. Inside the model,
   features/prediction/policy are separate. Feature implementations stay pure.
@@ -33,8 +34,10 @@ is the only publisher that knows PostgreSQL. Clocks and publisher are injectable
   is average cores; a gap is not proof of database waiting. Whole-execution CPU includes
   telemetry work, while stage wall clocks subtract publication time.
 - `ticks` means grid timestamps across the watchlist, not symbol-bars. Symbol attempts,
-  feature computations, predictions, repository calls and swallowed symbol errors are
-  separate counters; skipped/duplicate/warming-up bars need not yield predictions.
+  feature attempts, actual matrices, preparation rows, predictions, repository calls and
+  swallowed symbol errors are separate counters. Chunk hits/misses and read/write/decoded
+  bytes are aggregate counters; attempted writes may be resilient no-ops.
+  Skipped/duplicate/warming-up bars need not yield predictions.
 - Whole-execution elapsed starts before model loading and ends after final publication;
   CLI startup/config/data-client construction and local final-report serialization are
   outside it. External command timing remains the end-to-end overhead baseline.

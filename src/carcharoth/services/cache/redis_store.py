@@ -1,9 +1,8 @@
 """Redis-backed ByteStore — the only module that imports ``redis``.
 
 A 1:1 protocol mapping with no logic of its own; like the other SDK
-boundaries it is spot-checked manually rather than unit-tested. Values are
-pickles produced exclusively by carcharoth against a local compose-network
-Redis — never point REDIS_URL at a shared or untrusted server.
+boundaries it is spot-checked manually rather than unit-tested. Values are opaque
+bytes (historical bars use monthly Arrow IPC). Use a trusted Redis endpoint.
 """
 
 import logging

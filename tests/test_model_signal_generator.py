@@ -109,3 +109,90 @@ def test_regression_hysteresis_holds_long_until_exit_threshold() -> None:
         120,
     )
     assert target is TargetExposure.LONG
+
+
+def test_prepared_exact_lookup_reset_and_atomic_failure(monkeypatch) -> None:
+    from datetime import timedelta
+
+    import pytest
+
+    subject, predictor = generator()
+    bars = make_bars([100, 101, 102, 103])
+    snapshot = MarketSnapshot({"AAPL": bars[:2]}, {}, bars[-1].timestamp)
+    expected = subject.generate("AAPL", snapshot, None)
+    subject.prepare_history(
+        {"AAPL": bars}, symbols=["AAPL"], start=bars[2].timestamp, end_exclusive=bars[-1].timestamp
+    )
+
+    def fail(*args, **kwargs):
+        raise AssertionError("rolling recomputation in prepared mode")
+
+    monkeypatch.setattr(subject._pipeline, "compute", fail)
+    actual = subject.generate("AAPL", snapshot, None)
+    assert actual == expected  # predecessor timestamp, not snapshot.as_of
+    assert predictor.calls == 2  # successful preparation reset de-duplication
+    with pytest.raises(ValueError, match="duplicate"):
+        subject.prepare_history(
+            {"AAPL": bars + bars[:1]},
+            symbols=["AAPL"],
+            start=bars[0].timestamp,
+            end_exclusive=bars[-1].timestamp,
+        )
+    assert subject.generate("AAPL", snapshot, None).reason == "bar already evaluated"
+    missing = MarketSnapshot({"AAPL": bars}, {}, bars[-1].timestamp)
+    assert subject.generate("AAPL", missing, None).target is TargetExposure.UNCHANGED
+    subject.prepare_history(
+        {},
+        symbols=["AAPL"],
+        start=bars[0].timestamp,
+        end_exclusive=bars[-1].timestamp + timedelta(minutes=5),
+    )
+    assert subject.generate("AAPL", snapshot, None).target is TargetExposure.UNCHANGED
+
+
+def test_repreparation_uses_transformed_inputs() -> None:
+    from dataclasses import replace
+    from datetime import timedelta
+
+    subject, _ = generator()
+    bars = make_bars([100, 101])
+
+    def prepare(values):
+        subject.prepare_history(
+            {"AAPL": values},
+            symbols=["AAPL"],
+            start=bars[0].timestamp,
+            end_exclusive=bars[-1].timestamp + timedelta(minutes=5),
+        )
+
+    snapshot = MarketSnapshot({"AAPL": bars}, {}, bars[-1].timestamp)
+    prepare(bars)
+    first = subject.generate("AAPL", snapshot, None)
+    prepare([bars[0], replace(bars[1], close=102)])
+    second = subject.generate("AAPL", snapshot, None)
+    assert first.features != second.features
+
+
+def test_preparation_counts_only_target_matrices_and_safety_still_flattens() -> None:
+    from datetime import timedelta
+
+    from carcharoth.performance import Monitor
+
+    subject, predictor = generator()
+    bars = make_bars([100, 101, 102])
+    monitor = Monitor()
+    with monitor.execution():
+        subject.prepare_history(
+            {"AAPL": bars, "SPY": bars},
+            symbols=["AAPL"],
+            start=bars[1].timestamp,
+            end_exclusive=bars[-1].timestamp + timedelta(minutes=5),
+        )
+        subject.generate("AAPL", MarketSnapshot({"AAPL": bars}, {}, bars[-1].timestamp), None)
+    assert monitor.counters["feature_matrices"] == 1
+    assert monitor.counters["preparation_rows"] == 3
+    assert monitor.counters["features"] == 1
+    assert any(s.path == "feature_preparation" for s in monitor.snapshot().stages)
+    close = datetime(2026, 7, 1, 19, 55, tzinfo=UTC)
+    intent = subject.generate("AAPL", MarketSnapshot({}, {}, close), make_position())
+    assert intent.target is TargetExposure.FLAT and predictor.calls == 1

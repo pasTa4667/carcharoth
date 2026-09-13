@@ -1,162 +1,152 @@
-"""Persistent cross-run cache for historical bars.
+"""Monthly v2 bars cache with self-contained fetched coverage.
 
-Wraps any BarsFetcher; one ByteStore entry per (timeframe, symbol) holding a
-single contiguous coverage window. Requests are gap-filled: only missing
-head/tail ranges are fetched upstream (grouped so symbols sharing a range go
-out as one batched call). Coverage never extends into the current UTC day —
-partial intraday data is re-fetched fresh on every call instead of going
-stale in the cache (at the cost of one extra upstream call for windows that
-touch today).
-
-Payloads are pickles; a corrupt or foreign value is treated as a miss and
-overwritten. A disjoint older request bridges the gap by construction (the
-missing head range spans from the new start to the old coverage start), an
-accepted over-fetch that keeps every entry a single interval.
+Single-key last-writer-wins is deliberate: stale writers can reduce hit rate,
+never attach another writer's coverage to unrelated rows. v1 is untouched.
 """
 
-import bisect
 import logging
-import pickle
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from carcharoth.domain.models import Bar, Timeframe
 from carcharoth.interfaces.cache import ByteStore
 from carcharoth.interfaces.optimization import BarsFetcher
+from carcharoth.performance import increment, stage
+from carcharoth.services.cache.bars_codec import Chunk, Interval, decode, encode, union
 
 logger = logging.getLogger(__name__)
-
-BARS_PREFIX = "carch:bars:v1:"
-
-
-def bars_key(timeframe: Timeframe, symbol: str) -> str:
-    return f"{BARS_PREFIX}{timeframe.amount}{timeframe.unit.value}:{symbol}"
+BARS_PREFIX = "carch:bars:v2:"
+V1_BARS_PREFIX = "carch:bars:v1:"
+_BATCH_SIZE = 16
 
 
-@dataclass(frozen=True, slots=True)
-class CachedBars:
-    """One symbol's contiguous coverage window; the pickled cache payload."""
-
-    coverage_start: datetime
-    coverage_end: datetime  # exclusive; never inside the current UTC day
-    bars: list[Bar]
+def bars_key(timeframe: Timeframe, symbol: str, month: str) -> str:
+    return f"{BARS_PREFIX}{timeframe.amount}{timeframe.unit.value}:{symbol}:{month}"
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
+def _next_month(value: datetime) -> datetime:
+    return value.replace(year=value.year + (value.month == 12), month=value.month % 12 + 1)
+
+
+def _missing(coverage: Sequence[Interval], start: datetime, end: datetime) -> list[Interval]:
+    result = []
+    cursor = start
+    for a, b in coverage:
+        if cursor < min(a, end):
+            result.append((cursor, min(a, end)))
+        cursor = max(cursor, b)
+        if cursor >= end:
+            break
+    if cursor < end:
+        result.append((cursor, end))
+    return result
+
+
+def _normalize(bars: Sequence[Bar], symbol: str, start: datetime, end: datetime) -> list[Bar]:
+    rows: dict[datetime, Bar] = {}
+    for bar in bars:
+        if bar.timestamp.tzinfo is None or bar.timestamp.utcoffset() is None:
+            raise ValueError("upstream bars require aware timestamps")
+        if bar.symbol != symbol:
+            raise ValueError("upstream bar symbol mismatch")
+        if start <= bar.timestamp < end:
+            rows[bar.timestamp] = bar
+    return sorted(rows.values(), key=lambda bar: bar.timestamp)
 
 
 class PersistentBarsCache:
-    """Wraps a BarsFetcher; implements BarsFetcher itself (``end`` exclusive)."""
+    """BarsFetcher with half-open UTC ranges and bounded monthly decode batches."""
 
     def __init__(
         self,
         store: ByteStore,
         fetch: BarsFetcher,
-        now: Callable[[], datetime] = _utc_now,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        self._store = store
-        self._fetch = fetch
-        self._now = now
+        self._store, self._fetch, self._now = store, fetch, now
 
     def __call__(
         self, symbols: Sequence[str], timeframe: Timeframe, start: datetime, end: datetime
     ) -> dict[str, list[Bar]]:
+        if any(t.tzinfo is None or t.utcoffset() is None for t in (start, end)):
+            raise ValueError("bars cache requires aware datetimes")
+        if end < start:
+            raise ValueError("bars cache end precedes start")
+        symbols = list(dict.fromkeys(symbols))
+        result: dict[str, list[Bar]] = {s: [] for s in symbols}
+        if not symbols or start == end:
+            return result
+        start, end = start.astimezone(UTC), end.astimezone(UTC)
         today = self._now().astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        cacheable_end = min(end, today)
-        if cacheable_end <= start:
-            return self._fetch(symbols, timeframe, start, end)  # whole window is today
+        cache_end = min(end, today)
+        requests: list[tuple[str, datetime, datetime]] = []
+        month = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        while start < cache_end and month < cache_end:
+            next_month = _next_month(month)
+            requests.extend((symbol, month, next_month) for symbol in symbols)
+            month = next_month
+        warned = False
 
-        entries = self._load(symbols, timeframe)
-        groups: dict[tuple[datetime, datetime], list[str]] = {}
-        for symbol in symbols:
-            for window in _missing_ranges(entries.get(symbol), start, cacheable_end):
-                groups.setdefault(window, []).append(symbol)
-        if groups:
-            logger.info(
-                "bars cache: fetching %d missing range(s) covering %d symbol(s)",
-                len(groups),
-                len({symbol for group in groups.values() for symbol in group}),
-            )
-        else:
-            logger.info("bars cache: all %d symbol(s) served from cache", len(symbols))
+        def warn() -> None:
+            nonlocal warned
+            if not warned:
+                logger.warning("bars cache v2: invalid payload/codec failure; bypassing storage")
+                warned = True
 
-        changed: dict[str, CachedBars] = {}
-        for (fetch_start, fetch_end), group in groups.items():
-            fetched = self._fetch(group, timeframe, fetch_start, fetch_end)
-            for symbol in group:
-                merged = _merge(
-                    entries.get(symbol), fetched.get(symbol, []), fetch_start, fetch_end
-                )
-                entries[symbol] = merged
-                changed[bars_key(timeframe, symbol)] = merged
-        if changed:
-            self._store.mset(
-                {key: pickle.dumps(entry, protocol=5) for key, entry in changed.items()}
-            )
-
-        result = {
-            symbol: _slice_bars(entries[symbol].bars, start, cacheable_end) for symbol in symbols
-        }
-        if end > cacheable_end:  # fresh tail inside today: returned but never stored
-            tail = self._fetch(symbols, timeframe, cacheable_end, end)
+        tf = f"{timeframe.amount}{timeframe.unit.value}"
+        for offset in range(0, len(requests), _BATCH_SIZE):
+            batch = requests[offset : offset + _BATCH_SIZE]
+            keys = [bars_key(timeframe, s, a.strftime("%Y-%m")) for s, a, _ in batch]
+            with stage("cache_read"):
+                payloads = self._store.mget(keys)
+            entries: list[Chunk] = []
+            missing: dict[str, list[Interval]] = {}
+            with stage("cache_decode"):
+                for (symbol, a, b), payload in zip(batch, payloads, strict=True):
+                    chunk = Chunk.empty()
+                    if payload is not None:
+                        increment("cache_bytes_read", len(payload))
+                        try:
+                            chunk = decode(payload, symbol, tf, a.strftime("%Y-%m"), a, b)
+                            increment("cache_bytes_decoded", chunk.nbytes)
+                            chunk = chunk.before(today)
+                        except Exception:
+                            warn()
+                    gaps = _missing(chunk.coverage, max(a, start), min(b, cache_end))
+                    increment("cache_chunk_misses" if gaps else "cache_chunk_hits")
+                    missing.setdefault(symbol, []).extend(gaps)
+                    entries.append(chunk)
+            groups: dict[Interval, list[str]] = {}
+            for symbol, gaps in missing.items():
+                for gap in union(gaps):
+                    groups.setdefault(gap, []).append(symbol)
+            changed: set[int] = set()
+            for (a, b), group in groups.items():
+                with stage("cache_fetch"):
+                    fetched = self._fetch(group, timeframe, a, b)
+                for i, (symbol, month_start, month_end) in enumerate(batch):
+                    left, right = max(a, month_start), min(b, month_end)
+                    if symbol in group and left < right:
+                        fresh = _normalize(fetched.get(symbol, []), symbol, left, right)
+                        entries[i] = entries[i].merge(fresh, (left, right))
+                        changed.add(i)
+            with stage("cache_write"):
+                writes = {}
+                for i in changed:
+                    symbol, a, _ = batch[i]
+                    try:
+                        writes[keys[i]] = encode(entries[i], symbol, tf, a.strftime("%Y-%m"))
+                    except Exception:
+                        warn()
+                if writes:
+                    increment("cache_bytes_written", sum(map(len, writes.values())))
+                    self._store.mset(writes)
+            for (symbol, a, b), chunk in zip(batch, entries, strict=True):
+                result[symbol].extend(chunk.bars(symbol, max(a, start), min(b, cache_end)))
+        if end > max(start, cache_end):
+            tail_start = max(start, cache_end)
+            with stage("cache_fetch"):
+                tail = self._fetch(symbols, timeframe, tail_start, end)
             for symbol in symbols:
-                result[symbol] += _slice_bars(tail.get(symbol, []), cacheable_end, end)
-        return result
-
-    def _load(self, symbols: Sequence[str], timeframe: Timeframe) -> dict[str, CachedBars]:
-        payloads = self._store.mget([bars_key(timeframe, symbol) for symbol in symbols])
-        entries: dict[str, CachedBars] = {}
-        for symbol, payload in zip(symbols, payloads, strict=True):
-            entry = _decode(payload)
-            if entry is not None:
-                entries[symbol] = entry
-        return entries
-
-
-def _decode(payload: bytes | None) -> CachedBars | None:
-    """Unpickle a payload; anything corrupt or foreign is a miss."""
-    if payload is None:
-        return None
-    try:
-        entry = pickle.loads(payload)  # self-produced values, local redis only
-    except Exception:
-        logger.warning("bars cache: dropping unreadable payload", exc_info=True)
-        return None
-    return entry if isinstance(entry, CachedBars) else None
-
-
-def _missing_ranges(
-    entry: CachedBars | None, start: datetime, end: datetime
-) -> list[tuple[datetime, datetime]]:
-    if entry is None:
-        return [(start, end)]
-    ranges = []
-    if start < entry.coverage_start:
-        ranges.append((start, entry.coverage_start))
-    if end > entry.coverage_end:
-        ranges.append((entry.coverage_end, end))
-    return ranges
-
-
-def _merge(
-    entry: CachedBars | None, fetched: list[Bar], fetch_start: datetime, fetch_end: datetime
-) -> CachedBars:
-    """Widened coverage; freshly fetched bars win on timestamp collisions.
-    An empty fetch still widens — "we asked, there was nothing" is cached."""
-    if entry is None:
-        return CachedBars(fetch_start, fetch_end, sorted(fetched, key=lambda b: b.timestamp))
-    merged = {bar.timestamp: bar for bar in entry.bars}
-    merged.update({bar.timestamp: bar for bar in fetched})
-    return CachedBars(
-        coverage_start=min(entry.coverage_start, fetch_start),
-        coverage_end=max(entry.coverage_end, fetch_end),
-        bars=sorted(merged.values(), key=lambda b: b.timestamp),
-    )
-
-
-def _slice_bars(bars: list[Bar], start: datetime, end: datetime) -> list[Bar]:
-    """Bars with ``start <= timestamp < end``; bars are sorted oldest-first."""
-    timestamps = [bar.timestamp for bar in bars]
-    return bars[bisect.bisect_left(timestamps, start) : bisect.bisect_left(timestamps, end)]
+                result[symbol].extend(_normalize(tail.get(symbol, []), symbol, tail_start, end))
+        return {s: _normalize(rows, s, start, end) for s, rows in result.items()}

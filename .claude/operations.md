@@ -41,8 +41,17 @@ then restart: `docker compose restart grafana`
 **"redis unreachable" warning:** Run `docker compose up -d redis` — backtests still work
 without it, just uncached
 
-**Suspicious backtest results after changing data feed / bumping hmmlearn:** Run
-`uv run carcharoth cache clear` to drop stale cached bars/fits
+**Historical bars cache:** v2 stores UTC calendar-month Arrow IPC chunks (Zstandard),
+including successful empty fetched intervals. Refill is lazy; v1 pickles remain untouched
+and unread. `uv run carcharoth cache stats` distinguishes v1 entries from v2 chunks;
+Redis memory is server-wide, not bars-only.
+
+`uv run carcharoth cache clear --bars-version v2` is the default cleanup.
+Use `--bars-version v1` or `all` only for deliberate legacy cleanup. No pickle conversion
+or fit-cache deletion occurs. `--set cache.bars=false` bypasses the bars adapter (also training).
+Today's tail is never persisted; partial writes/corruption cause misses. Each value owns its
+coverage: concurrent stale writers can lose hit rate and require refetch, not invent coverage.
+Reads/decode are bounded to 16 monthly chunks per batch; requested output still scales with history.
 
 **Type errors:** Run `uv run mypy src` to see full type-checking report
 

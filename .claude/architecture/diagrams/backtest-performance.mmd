@@ -1,7 +1,11 @@
 flowchart LR
     CLI[Backtest CLI] --> M[Scoped Monitor]
     CLI --> R[run_backtest_once]
-    R --> S[Engine / generator / repository stage helpers]
+    R --> CACHE[Fetch: monthly Arrow read / decode / fetch / write]
+    CACHE --> PREP[Opt-in feature preparation before replay]
+    PREP --> S[Engine / generator / repository stage helpers]
+    CACHE --> A
+    PREP --> A
     S --> A[Bounded in-memory counters and nested totals]
     M --> A
     A --> C[Initial / safe checkpoint / final publication]

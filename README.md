@@ -146,6 +146,18 @@ Important sections:
 Optuna rejects search paths under features, target, timeframe, benchmark, XGBoost parameters,
 artifact path, or training config because those require a retrained artifact.
 
+### P0 research controls
+
+`--set model.prepared_history=true` computes one causal batch per target before replay,
+quicktest or each bar permutation. It is **opt-in**: recursive initialization can differ
+from rolling live history. Artifacts/feature versions are unchanged; no automatic retraining
+or default promotion is allowed. See [P0 status and gates](plans/backtest-p0-results.md).
+
+Historical caching now uses UTC monthly Arrow/Zstandard chunks with embedded fetched coverage.
+v1 pickle keys are neither read nor migrated. `cache clear --bars-version v2` (the default)
+clears only v2; `v1` or `all` requires deliberate selection. `--set cache.bars=false` bypasses
+storage. Today's UTC tail is always fetched fresh. Redis stats label server-wide memory.
+
 ## Persistence and monitoring
 
 PostgreSQL stores run-scoped `model_decisions`, orders, fills, signed position/equity snapshots,

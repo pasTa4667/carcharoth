@@ -332,19 +332,26 @@ class InMemoryByteStore:
         self.data: dict[str, bytes] = {}
         self.mget_calls = 0
         self.mset_calls = 0
+        self.read_keys: list[str] = []
+        self.bytes_read = 0
+        self.bytes_written = 0
 
     def get(self, key: str) -> bytes | None:
         return self.data.get(key)
 
     def mget(self, keys: Sequence[str]) -> list[bytes | None]:
         self.mget_calls += 1
-        return [self.data.get(key) for key in keys]
+        self.read_keys.extend(keys)
+        values = [self.data.get(key) for key in keys]
+        self.bytes_read += sum(len(value) for value in values if value is not None)
+        return values
 
     def set(self, key: str, value: bytes) -> None:
         self.data[key] = value
 
     def mset(self, items: Mapping[str, bytes]) -> None:
         self.mset_calls += 1
+        self.bytes_written += sum(map(len, items.values()))
         self.data.update(items)
 
     def count_prefix(self, prefix: str) -> int:

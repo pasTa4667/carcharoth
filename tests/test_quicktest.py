@@ -100,3 +100,47 @@ def test_unchanged_never_flattens_existing_position() -> None:
     )
     assert len(result.trades) == 1
     assert result.trades[0].side is Side.BUY
+
+
+def test_preload_callers_prepare_targets_and_each_transformed_input(monkeypatch) -> None:
+    from unittest.mock import Mock
+
+    from carcharoth.config.app_config import FeatureSpecConfig, ModelConfig, ObjectiveConfig
+    from carcharoth.config.quicktest_config import QuickTestConfig
+    from carcharoth.permutation.runner import build_permutation_context
+    from carcharoth.quicktest.runner import simulate_and_analyze
+
+    model_config = ModelConfig(
+        prepared_history=True, features=[FeatureSpecConfig(name="log_return", params={"period": 1})]
+    )
+    config = QuickTestConfig(
+        symbols=["AAPL"], start=START.date(), end=START.date(), model=model_config
+    )
+    models = []
+
+    def build(*args, **kwargs):
+        model = ScriptedModel({})
+        model.prepare_history = Mock()
+        models.append(model)
+        return model
+
+    monkeypatch.setattr("carcharoth.quicktest.runner.build_signal_generator", build)
+    monkeypatch.setattr("carcharoth.permutation.runner.build_signal_generator", build)
+    bars = {"AAPL": make_bars([100, 101]), "SPY": make_bars([200, 201], symbol="SPY")}
+    simulate_and_analyze(config, {}, bars)
+    models[-1].prepare_history.assert_called_once_with(
+        bars, symbols=["AAPL"], start=config.start_dt, end_exclusive=config.end_exclusive_dt
+    )
+    context = build_permutation_context(
+        config, ObjectiveConfig(weights={"total_return": 1.0}), bars
+    )
+    transformed = {"AAPL": make_bars([101, 100]), "SPY": bars["SPY"]}
+    context.simulate(transformed)
+    models[-1].prepare_history.assert_called_once_with(
+        transformed, symbols=["AAPL"], start=config.start_dt, end_exclusive=config.end_exclusive_dt
+    )
+    context.simulate(bars)
+    assert len(models) == 3 and len({id(m) for m in models}) == 3
+    config.model.prepared_history = False
+    simulate_and_analyze(config, {}, bars)
+    models[-1].prepare_history.assert_not_called()

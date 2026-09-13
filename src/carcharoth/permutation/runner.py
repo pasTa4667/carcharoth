@@ -131,6 +131,13 @@ def build_permutation_context(
 
     def simulate(permuted_bars: Mapping[str, list[Bar]]) -> PermutedOutcome:
         model = build_signal_generator(config.model, evaluation_start=config.start)
+        if config.model.prepared_history:
+            model.prepare_history(
+                permuted_bars,
+                symbols=config.symbols,
+                start=config.start_dt,
+                end_exclusive=config.end_exclusive_dt,
+            )
         settings = simulation_settings(config)
         result = QuickTestResult(capital_per_symbol=config.capital)
         benchmark = permuted_bars.get(config.model.benchmark_symbol, [])

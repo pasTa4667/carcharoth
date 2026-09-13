@@ -106,7 +106,7 @@ from carcharoth.services.alpaca import (
 )
 from carcharoth.services.alpaca.historical import fetch_historical_bars, warmup_window
 from carcharoth.services.backtest import HistoricalMarketDataService, SimulatedBroker
-from carcharoth.services.cache.bars import BARS_PREFIX, PersistentBarsCache
+from carcharoth.services.cache.bars import BARS_PREFIX, V1_BARS_PREFIX, PersistentBarsCache
 from carcharoth.services.cache.noop import NoOpCache
 from carcharoth.services.cache.redis_store import build_redis_store
 from carcharoth.services.optuna import (
@@ -304,6 +304,8 @@ def _execute_backtest(
             start - warmup_window(spec),
             end_exclusive,
         )
+    if config.model.prepared_history:
+        model.prepare_history(bars, symbols=symbols, start=start, end_exclusive=end_exclusive)
     total_bars = sum(len(symbol_bars) for symbol_bars in bars.values())
     logger.info("fetched %d bars for %d symbols", total_bars, len(symbols))
 
@@ -864,15 +866,18 @@ def _cache_store_or_exit() -> ByteStore:
 
 def _run_cache_stats() -> None:
     store = _cache_store_or_exit()
-    print(f"  bars entries:     {store.count_prefix(BARS_PREFIX)}")
+    print(f"  bars v1 entries:  {store.count_prefix(V1_BARS_PREFIX)}")
+    print(f"  bars v2 chunks:   {store.count_prefix(BARS_PREFIX)}")
     used = store.used_memory_bytes()
     if used is not None:
-        print(f"  redis memory:     {used / 1_048_576:.1f} MiB")
+        print(f"  redis memory (server-wide): {used / 1_048_576:.1f} MiB")
 
 
-def _run_cache_clear() -> None:
+def _run_cache_clear(bars_version: str = "v2") -> None:
     store = _cache_store_or_exit()
-    print(f"  deleted {store.delete_prefix(BARS_PREFIX)} bars entries")
+    for version, prefix in (("v1", V1_BARS_PREFIX), ("v2", BARS_PREFIX)):
+        if bars_version in (version, "all"):
+            print(f"  deleted {store.delete_prefix(prefix)} bars {version} values")
 
 
 def _run_delete(run_id: UUID | None, all_backtests: bool, all_quicktests: bool = False) -> None:
@@ -1262,7 +1267,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cache = subparsers.add_parser("cache", help="inspect or clear the persistent Redis cache")
     cache_sub = cache.add_subparsers(dest="cache_command", required=True)
     cache_sub.add_parser("stats", help="entry counts per cache + redis memory usage")
-    cache_sub.add_parser("clear", help="delete cached historical bars")
+    cache_clear = cache_sub.add_parser("clear", help="delete cached historical bars")
+    cache_clear.add_argument("--bars-version", choices=("v1", "v2", "all"), default="v2")
 
     quicktest = subparsers.add_parser(
         "quicktest", help="fast fixed-artifact model test (no engine or risk manager)"
@@ -1408,7 +1414,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.cache_command == "stats":
             _run_cache_stats()
         else:
-            _run_cache_clear()
+            _run_cache_clear(args.bars_version)
     elif args.command == "analyze":
         _run_analyze(args.run_id)
     elif args.command == "delete-run":
