@@ -229,6 +229,12 @@ const BACKTEST_FIELDS: &[Field] = &[
         PERMUTE_METHODS,
         "monte carlo the finished backtest's trades (trade-based methods only)",
     ),
+    Field::text(
+        "prepared_history",
+        "prepared history",
+        "--set",
+        "enable prepared history mode",
+    ),
     Field::flag("--verbose", "verbose", "INFO console logging"),
     Field::flag(
         "--verbose-db",
