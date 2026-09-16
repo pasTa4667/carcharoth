@@ -149,7 +149,7 @@ def _model_description(config: RunConfig) -> str:
 def _run_live(resolved: ResolvedConfig) -> None:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = resolved.config
-    model = build_signal_generator(config.model)
+    model = build_signal_generator(config.model, evaluation_universe=config.universe_metadata)
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
@@ -258,7 +258,11 @@ def _execute_backtest(
     # Validate/load before creating a run row so a bad artifact leaves no
     # unfinished database record.
     with stage("setup"):
-        model = build_signal_generator(config.model, evaluation_start=start.date())
+        model = build_signal_generator(
+            config.model,
+            evaluation_start=start.date(),
+            evaluation_universe=config.universe_metadata,
+        )
     runs_repo = SqlAlchemyRunRepository(session_factory)
     started_at = datetime.now(UTC)
     run_id = runs_repo.create(
@@ -1264,6 +1268,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     optimize.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
+    universe = subparsers.add_parser("universe", help="offline Alpaca universe discovery")
+    universe_sub = universe.add_subparsers(dest="universe_command", required=True)
+    discover = universe_sub.add_parser("discover", help="rank and group a frozen universe")
+    discover.add_argument("--config", type=Path, required=True, help="standalone discovery YAML")
+    discover.add_argument(
+        "--reuse-data", type=Path, default=None, help="recluster a snapshot without network access"
+    )
+
     cache = subparsers.add_parser("cache", help="inspect or clear the persistent Redis cache")
     cache_sub = cache.add_subparsers(dest="cache_command", required=True)
     cache_sub.add_parser("stats", help="entry counts per cache + redis memory usage")
@@ -1324,6 +1336,77 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_universe_discover(config_path: Path, reuse_data: Path | None) -> None:
+    """Standalone path: deliberately does not initialize DB, Redis, engine, or models."""
+    from carcharoth.config.universe_config import UniverseDiscoveryConfig
+    from carcharoth.domain.models import Timeframe
+    from carcharoth.services.alpaca.universe import fetch_assets, fetch_calendar
+    from carcharoth.universe import discover, load_reuse_inputs, publish_snapshot
+
+    try:
+        raw = yaml.safe_load(config_path.read_text())
+        config = UniverseDiscoveryConfig.model_validate(raw)
+    except Exception as exc:
+        raise SystemExit(f"invalid universe discovery config {config_path}: {exc}") from exc
+    if config.end >= datetime.now(UTC).date():
+        raise SystemExit("universe discovery end must be before today")
+
+    reused = reuse_data is not None
+    if reuse_data is not None:
+        assets, calendar, bars, assets_retrieved_at = load_reuse_inputs(reuse_data, config)
+    else:
+        settings = Settings()  # type: ignore[call-arg]
+        trading_client = build_trading_client(settings)
+        data_client = build_data_client(settings)
+        records = fetch_assets(trading_client, set(config.exclude_symbols))
+        assets_retrieved_at = datetime.now(UTC)
+        assets = [record.payload() for record in records]
+        calendar = fetch_calendar(trading_client, config.start, config.end)
+        symbols = [record.symbol for record in records]
+        if config.benchmark_symbol not in symbols:
+            symbols.append(config.benchmark_symbol)
+        bars = {}
+        start = datetime(config.start.year, config.start.month, config.start.day, tzinfo=UTC)
+        end_day = config.end + timedelta(days=1)
+        end = datetime(end_day.year, end_day.month, end_day.day, tzinfo=UTC)
+        for offset in range(0, len(symbols), 100):
+            batch = symbols[offset : offset + 100]
+            print(f"fetching daily bars {offset + 1}-{offset + len(batch)} of {len(symbols)}")
+            bars.update(
+                fetch_historical_bars(
+                    data_client,
+                    batch,
+                    Timeframe.daily(),
+                    start,
+                    end,
+                    feed=config.feed,
+                    adjustment="split",
+                    asof="-",
+                )
+            )
+    result = discover(bars, calendar, config)
+    output = publish_snapshot(
+        config,
+        result,
+        assets,
+        calendar,
+        bars,
+        reused=reused,
+        asset_catalogue_retrieved_at=assets_retrieved_at,
+    )
+    print(f"universe snapshot: {output}")
+    for name, symbols in result.buckets.items():
+        print(f"  {name}: {len(symbols)}")
+    selected_count = len(result.buckets["all"])
+    if selected_count < config.top_n:
+        print(f"warning: only {selected_count} of {config.top_n} requested assets qualified")
+    if len(result.buckets) == 1:
+        print("warning: no cluster meets min_bucket_size; inspect undersized clusters")
+    print(
+        f"select with: --set universe.snapshot={output / 'buckets.yaml'} --set universe.bucket=all"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     import sys
 
@@ -1336,6 +1419,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         "INFO" if args.command == "run" or getattr(args, "verbose", False) else "WARNING"
     )
     setup_logging(LOG_DIR, console_level=console_level)
+
+    if args.command == "universe":
+        _run_universe_discover(args.config, args.reuse_data)
+        return
 
     if args.command == "config":
         overrides = _parse_set(getattr(args, "set", None))

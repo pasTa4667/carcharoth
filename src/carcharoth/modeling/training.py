@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import shutil
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -81,6 +82,18 @@ def train_and_publish(
     )
     train_diagnostics = dataset_diagnostics(train)
     validation_diagnostics = dataset_diagnostics(validation)
+    train_by_symbol = Counter(row.symbol for row in train.rows)
+    validation_by_symbol = Counter(row.symbol for row in validation.rows)
+    if config.universe_metadata is not None:
+        missing_train = [symbol for symbol in config.symbols if not train_by_symbol[symbol]]
+        missing_validation = [
+            symbol for symbol in config.symbols if not validation_by_symbol[symbol]
+        ]
+        if missing_train or missing_validation:
+            raise ValueError(
+                "bucket training has symbols with zero usable rows: "
+                f"train={missing_train}, validation={missing_validation}"
+            )
     constants = train_diagnostics["constant_features"]
     if constants:
         raise ValueError(f"constant training features are not useful: {constants}")
@@ -117,6 +130,7 @@ def train_and_publish(
             timeframe_minutes=model.timeframe_minutes,
             benchmark_symbol=model.benchmark_symbol,
             symbols=list(config.symbols),
+            universe_metadata=config.universe_metadata,
             xgboost_params=dict(model.xgboost_params),
             seed=training.seed,
             train_start=training.train_start,
@@ -144,6 +158,10 @@ def train_and_publish(
             "target": model.target.model_dump(mode="json"),
             "train": train_diagnostics,
             "validation": validation_diagnostics,
+            "rows_by_symbol": {
+                "train": {symbol: train_by_symbol[symbol] for symbol in config.symbols},
+                "validation": {symbol: validation_by_symbol[symbol] for symbol in config.symbols},
+            },
             "metrics": result.metrics,
             "feature_importance_gain": result.feature_importance,
             "best_iteration": result.best_iteration,

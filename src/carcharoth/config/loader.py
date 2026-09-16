@@ -37,6 +37,7 @@ import yaml
 
 from carcharoth.config.overrides import OverrideError, validate_override_paths
 from carcharoth.config.run_config import RunConfig
+from carcharoth.config.universe_config import load_universe_snapshot, members_digest
 
 CONFIG_DIR = Path("config")
 MAX_EXTENDS_DEPTH = 8
@@ -69,11 +70,15 @@ class ResolvedConfig:
 
     def stamp(self) -> dict[str, Any]:
         """The reproducibility block written into run summary artifacts."""
-        return {
+        stamp: dict[str, Any] = {
             "profile": self.profile,
             "layers": list(self.layers),
             "overrides": dict(self.overrides),
         }
+        if self.config.universe_metadata is not None:
+            stamp["universe"] = self.config.universe_metadata.model_dump(mode="json")
+            stamp["symbols"] = list(self.config.symbols)
+        return stamp
 
 
 def config_hash(config: RunConfig) -> str:
@@ -130,12 +135,58 @@ def resolve_raw(
         if index == 0:
             base_structure = copy.deepcopy(body)
         _merge_layer(merged, body, "", source, provenance, base_structure, structural=(index == 0))
+    if any(
+        path == "universe_metadata" or path.startswith("universe_metadata.")
+        for path in (overrides or {})
+    ):
+        raise ConfigError("universe_metadata is derived and cannot be overridden")
     if overrides:
         override_layer = _nested(overrides)
         _merge_layer(
             merged, override_layer, "", OVERRIDES_SOURCE, provenance, base_structure, False
         )
+    _resolve_universe(merged, dict(overrides or {}), provenance)
     return merged, [_relative(p, config_dir) for p, _ in layers], provenance
+
+
+def _resolve_universe(
+    raw: dict[str, Any], overrides: Mapping[str, Any], provenance: dict[str, str]
+) -> None:
+    if raw.get("universe_metadata") is not None:
+        raise ConfigError("universe_metadata is derived and cannot be set in config layers")
+    selection = raw.get("universe")
+    if not isinstance(selection, dict) or selection.get("bucket") is None:
+        return
+    snapshot_value = selection.get("snapshot")
+    if snapshot_value is None:
+        raise ConfigError("universe.snapshot is required when universe.bucket is set")
+    path = Path(snapshot_value)
+    try:
+        snapshot = load_universe_snapshot(path)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    bucket = str(selection["bucket"])
+    if bucket not in snapshot.buckets:
+        raise ConfigError(f"unknown universe bucket {bucket!r} in {path}")
+    symbols = snapshot.buckets[bucket]
+    if symbols != sorted(symbols):
+        raise ConfigError(f"universe bucket {bucket!r} must be sorted")
+    explicit = overrides.get("symbols")
+    if explicit is not None and list(explicit) != symbols:
+        raise ConfigError("--set symbols conflicts with selected universe bucket")
+    source = f"{path}#{bucket}"
+    raw["symbols"] = list(symbols)
+    raw["universe_metadata"] = {
+        "snapshot_digest": snapshot.content_digest,
+        "bucket": bucket,
+        "members_digest": members_digest(symbols),
+        "discovery_start": snapshot.discovery.start,
+        "discovery_end": snapshot.discovery.end,
+        "feed": snapshot.discovery.feed,
+        "survivorship_biased": snapshot.survivorship_biased,
+    }
+    _record(provenance, raw["symbols"], "symbols", source)
+    _record(provenance, raw["universe_metadata"], "universe_metadata", source)
 
 
 def _profile_path(profile: str, config_dir: Path) -> Path:

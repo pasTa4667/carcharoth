@@ -113,6 +113,9 @@ fn build_rows(
 ) {
     let Some(map) = node.as_object() else { return };
     for (key, child) in map {
+        if prefix.is_empty() && key == "universe_metadata" {
+            continue;
+        }
         let path = if prefix.is_empty() {
             key.clone()
         } else {
@@ -164,6 +167,9 @@ fn walk(node: &Value, prefix: &str, flat: &mut BTreeMap<String, Value>) {
     match node.as_object() {
         Some(map) if !map.is_empty() => {
             for (key, child) in map {
+                if prefix.is_empty() && key == "universe_metadata" {
+                    continue;
+                }
                 let path = if prefix.is_empty() {
                     key.clone()
                 } else {
@@ -319,6 +325,17 @@ mod tests {
         assert_eq!(flat["model.decision.long_entry_threshold"], json!(0.001));
         assert_eq!(flat["backtest.permutation"], json!(null));
         assert_eq!(flat["optimization.search_space"], json!({}));
+    }
+
+    #[test]
+    fn derived_universe_metadata_is_hidden_and_not_promotable() {
+        let config = json!({
+            "symbols": ["SPY"],
+            "universe_metadata": {"bucket": "all", "snapshot_digest": "abc"}
+        });
+        let tree = Tree::new("backtest".into(), config.clone(), "h".into());
+        assert!(tree.rows.iter().all(|row| row.path != "universe_metadata"));
+        assert!(!flatten(&config).contains_key("universe_metadata.bucket"));
     }
 
     #[test]

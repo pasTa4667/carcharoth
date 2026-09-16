@@ -12,6 +12,7 @@ from pydantic import Field
 
 from carcharoth.config.app_config import ModelConfig
 from carcharoth.config.strict import StrictModel
+from carcharoth.config.universe_config import UniverseMetadata
 from carcharoth.domain.models import ModelTask
 from carcharoth.features.pipeline import FeaturePipeline
 
@@ -34,6 +35,7 @@ class ArtifactManifest(StrictModel):
     timeframe_minutes: int
     benchmark_symbol: str
     symbols: list[str]
+    universe_metadata: UniverseMetadata | None = None
     xgboost_params: dict[str, bool | int | float | str]
     seed: int
     train_start: date
@@ -72,6 +74,7 @@ def validate_artifact(
     pipeline: FeaturePipeline,
     config: ModelConfig,
     evaluation_start: date | None = None,
+    evaluation_universe: UniverseMetadata | None = None,
 ) -> tuple[ArtifactManifest, Path]:
     manifest_path = artifact_dir / MANIFEST_FILENAME
     model_path = artifact_dir / MODEL_FILENAME
@@ -112,4 +115,13 @@ def validate_artifact(
             f"evaluation starts {evaluation_start} but artifact validation ends "
             f"{manifest.validation_end}; use a strictly out-of-sample window"
         )
+    for label, universe in (
+        ("training", manifest.universe_metadata),
+        ("evaluation", evaluation_universe),
+    ):
+        if universe is not None and universe.discovery_end >= manifest.train_start:
+            raise ArtifactError(
+                f"{label} universe discovery ends {universe.discovery_end} but artifact training "
+                f"starts {manifest.train_start}"
+            )
     return manifest, model_path

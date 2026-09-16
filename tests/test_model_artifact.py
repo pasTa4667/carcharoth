@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from carcharoth.config.loader import load_profile
+from carcharoth.config.universe_config import UniverseMetadata
 from carcharoth.features.pipeline import FeaturePipeline
 from carcharoth.modeling.artifact import (
     MANIFEST_FILENAME,
@@ -52,6 +53,16 @@ def test_artifact_hash_schema_and_out_of_sample_guard(tmp_path) -> None:
     assert loaded_path == model_path
     with pytest.raises(ArtifactError, match="out-of-sample"):
         validate_artifact(tmp_path, pipeline, config, evaluation_start=date(2024, 12, 31))
+    future_universe = UniverseMetadata(
+        snapshot_digest="snapshot",
+        bucket="all",
+        members_digest="members",
+        discovery_start=date(2023, 1, 1),
+        discovery_end=date(2024, 1, 1),
+        feed="sip",
+    )
+    with pytest.raises(ArtifactError, match="evaluation universe discovery"):
+        validate_artifact(tmp_path, pipeline, config, evaluation_universe=future_universe)
 
     model_path.write_bytes(b"corrupt")
     with pytest.raises(ArtifactError, match="hash"):

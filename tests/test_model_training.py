@@ -59,6 +59,7 @@ def test_train_publishes_immutable_artifact(tmp_path) -> None:
     assert report["model_id"] == artifact.name
     assert report["task"] == "regression"
     assert report["diagnostics"]["scope"] == "validation"
+    assert report["rows_by_symbol"]["train"]["AAPL"] > 0
     assert (
         sum(bucket["count"] for bucket in report["diagnostics"]["prediction_deciles"])
         == report["validation"]["complete_rows"]

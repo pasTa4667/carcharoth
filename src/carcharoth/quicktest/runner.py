@@ -73,7 +73,11 @@ def simulate_and_analyze(
     objectives: Mapping[str, ObjectiveConfig],
     bars: Mapping[str, list[Bar]],
 ) -> tuple[QuickTestResult, list[RoundTrip], list[MetricValue]]:
-    model = build_signal_generator(config.model, evaluation_start=config.start)
+    model = build_signal_generator(
+        config.model,
+        evaluation_start=config.start,
+        evaluation_universe=config.universe_metadata,
+    )
     if config.model.prepared_history:
         model.prepare_history(
             bars,

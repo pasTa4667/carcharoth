@@ -24,6 +24,7 @@ from carcharoth.config.optimize_config import (
 from carcharoth.config.permutation_config import PermutationConfig
 from carcharoth.config.quicktest_config import QuickTestConfig
 from carcharoth.config.strict import StrictModel
+from carcharoth.config.universe_config import UniverseMetadata, UniverseSelection, members_digest
 
 
 class DataConfig(StrictModel):
@@ -63,6 +64,8 @@ class OptimizationConfig(StrictModel):
 
 class RunConfig(StrictModel):
     symbols: list[str] = Field(min_length=1)
+    universe: UniverseSelection = UniverseSelection()
+    universe_metadata: UniverseMetadata | None = None
     data: DataConfig
     engine: EngineConfig = EngineConfig()
     model: ModelConfig
@@ -78,6 +81,15 @@ class RunConfig(StrictModel):
     def _normalized_symbols(self) -> "RunConfig":
         if len(set(self.symbols)) != len(self.symbols):
             raise ValueError("symbols must be unique")
+        if self.universe.bucket is not None and self.universe_metadata is None:
+            raise ValueError("selected universe bucket requires embedded metadata")
+        if self.universe_metadata is not None:
+            if self.universe.bucket != self.universe_metadata.bucket:
+                raise ValueError("universe metadata bucket does not match selection")
+            if members_digest(self.symbols) != self.universe_metadata.members_digest:
+                raise ValueError("universe metadata does not match symbols")
+            if self.universe_metadata.discovery_end >= self.training.train_start:
+                raise ValueError("universe discovery must end before training starts")
         return self
 
     def quicktest_view(self) -> QuickTestConfig:
@@ -86,6 +98,7 @@ class RunConfig(StrictModel):
             start=self.data.start,
             end=self.data.end,
             model=self.model,
+            universe_metadata=self.universe_metadata,
             capital=self.quicktest.capital,
             position_size_pct=self.quicktest.position_size_pct,
             spread_pct=self.quicktest.spread_pct,
@@ -109,6 +122,9 @@ class RunConfig(StrictModel):
             "model.benchmark_symbol",
             "model.xgboost_params",
             "training.",
+            "symbols",
+            "universe",
+            "universe_metadata",
         )
         forbidden = [
             path for path in self.optimization.search_space if path.startswith(forbidden_prefixes)

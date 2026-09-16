@@ -109,6 +109,41 @@ A backtest/quicktest window must start strictly after the artifact's validation 
 rejects missing/corrupt artifacts, model hashes, task/schema/config mismatches, and in-sample
 windows.
 
+### Frozen universe grouping
+
+Universe discovery is a manual offline preprocessing step, never an application-startup task:
+
+```bash
+uv run carcharoth universe discover --config config/universe-discovery.yaml
+uv run carcharoth universe discover --config config/universe-discovery.yaml \
+  --reuse-data artifacts/universes/<id>
+```
+
+The command ranks currently listed Alpaca US equities (stocks and ETFs) by mean daily
+`close × volume`, computes six long-window statistical descriptors, and uses deterministic
+complete-linkage clustering. Lower `distance_threshold` values create tighter, usually smaller
+buckets; clusters below `min_bucket_size` remain diagnostic-only. The reserved `all` bucket is
+the pooled baseline. `--reuse-data` verifies saved checksums and reclusters without credentials
+or network access.
+
+Each run atomically publishes immutable source data, membership, features, and diagnostics under
+`artifacts/universes/`. Alpaca's asset catalogue is current rather than point-in-time, so
+historical snapshots are explicitly **survivorship-biased**. SIP access is attempted as
+configured and never silently downgraded; selecting IEX means ranking by exchange-only volume.
+
+Select a frozen bucket in a research profile or on the CLI:
+
+```bash
+uv run carcharoth train -p training \
+  --set universe.snapshot=artifacts/universes/<id>/buckets.yaml \
+  --set universe.bucket=bucket-001
+```
+
+Bucket membership replaces inherited `symbols` during config resolution and is embedded with its
+hash in stored configs and model artifacts. Discovery must end before training starts. Compare a
+bucket-trained model with a pooled (`all`) model on the same later bucket/window; do not combine
+per-bucket portfolio returns as one capital-constrained portfolio.
+
 ## CLI
 
 | Command | Purpose |
@@ -118,6 +153,7 @@ windows.
 | `carcharoth quicktest` | Fast per-symbol, fixed-artifact long/short simulation |
 | `carcharoth backtest` | Replay the full engine, risk, signed broker, and next-open fills |
 | `carcharoth optimize` | Optuna search over fixed-artifact decision/risk settings |
+| `carcharoth universe discover` | Manually rank and group an immutable Alpaca universe |
 | `carcharoth quicktest --permute [METHOD]` | Bar permutation or trade Monte Carlo |
 | `carcharoth backtest --permute [METHOD]` | Trade-based Monte Carlo on a finished run |
 | `carcharoth analyze --run-id UUID` | Recompute metrics and signed FIFO round trips |
@@ -142,6 +178,7 @@ Important sections:
 - `risk`: symmetric position sizing, gross-exposure, buying-power, position-count, daily loss
 - `backtest`: initial capital, margin multiplier, synthetic spread/slippage
 - `optimization`: fixed-artifact threshold/risk search space and constraints
+- `universe`: optional immutable snapshot and bucket selector; resolved metadata is read-only
 
 Optuna rejects search paths under features, target, timeframe, benchmark, XGBoost parameters,
 artifact path, or training config because those require a retrained artifact.

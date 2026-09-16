@@ -2,6 +2,13 @@
 
 symbols: []
 
+# Optional frozen universe snapshot. A selected bucket replaces inherited symbols.
+universe:
+  snapshot: null
+  bucket: null
+# Populated by the loader from the selected snapshot; never hand-edit.
+universe_metadata: null
+
 data:
   start: 2010-01-01
   end: 2010-06-30

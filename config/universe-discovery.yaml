@@ -1,0 +1,19 @@
+# Offline Alpaca universe discovery. Run manually; never loaded at application startup.
+start: 2016-01-01
+end: 2016-12-31
+top_n: 500
+feed: sip
+benchmark_symbol: SPY
+min_observations: 252
+min_coverage: 0.95
+exclude_symbols: []
+distance_threshold: 1.0
+min_bucket_size: 10
+feature_weights:
+  log_dollar_volume: 1.0
+  log_realized_volatility: 1.0
+  log_intraday_range: 1.0
+  log_overnight_gap: 1.0
+  market_beta: 1.0
+  return_autocorrelation: 1.0
+output_root: artifacts/universes

@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 from carcharoth.config.app_config import ModelConfig
 from carcharoth.config.permutation_config import PermutationConfig
 from carcharoth.config.strict import StrictModel
+from carcharoth.config.universe_config import UniverseMetadata
 
 
 class QuickTestConfig(StrictModel):
@@ -14,6 +15,7 @@ class QuickTestConfig(StrictModel):
     start: date
     end: date
     model: ModelConfig
+    universe_metadata: UniverseMetadata | None = None
     capital: float = Field(default=10_000.0, gt=0)
     position_size_pct: float = Field(default=0.10, gt=0, le=1)
     spread_pct: float = Field(default=0.0, ge=0)

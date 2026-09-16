@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 
 from carcharoth.config.app_config import ModelConfig
+from carcharoth.config.universe_config import UniverseMetadata
 from carcharoth.domain.models import (
     Bar,
     ExposureIntent,
@@ -147,6 +148,7 @@ class XGBoostSignalGenerator(ModelSignalGenerator):
 def build_signal_generator(
     config: ModelConfig,
     evaluation_start: date | None = None,
+    evaluation_universe: UniverseMetadata | None = None,
 ) -> XGBoostSignalGenerator:
     if config.artifact_path is None:
         raise ValueError("model.artifact_path must be explicitly selected for this command")
@@ -160,6 +162,7 @@ def build_signal_generator(
         pipeline,
         config,
         evaluation_start=evaluation_start,
+        evaluation_universe=evaluation_universe,
     )
     from carcharoth.services.xgboost import XGBoostPredictor
 

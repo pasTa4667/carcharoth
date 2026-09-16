@@ -8,6 +8,7 @@ import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -50,13 +51,24 @@ def fetch_historical_bars(
     timeframe: Timeframe,
     start: datetime,
     end: datetime,
+    *,
+    feed: str | None = None,
+    adjustment: str | None = None,
+    asof: str | None = None,
 ) -> dict[str, list[Bar]]:
-    """All bars per symbol in [start, end], oldest first; the SDK paginates."""
+    """All bars per symbol in [start, end], oldest first; the SDK paginates.
+
+    Optional provider semantics are explicit for reproducible offline discovery;
+    existing callers retain Alpaca's defaults.
+    """
     request = StockBarsRequest(
         symbol_or_symbols=list(symbols),
         timeframe=to_alpaca_timeframe(timeframe),
         start=start,
         end=end,
+        feed=DataFeed(feed) if feed is not None else None,
+        adjustment=Adjustment(adjustment) if adjustment is not None else None,
+        asof=asof,
     )
     try:
         response = client.get_stock_bars(request)

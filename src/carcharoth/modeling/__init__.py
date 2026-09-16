@@ -10,16 +10,19 @@ if TYPE_CHECKING:
 
     from carcharoth.config.app_config import ModelConfig
     from carcharoth.config.run_config import RunConfig
+    from carcharoth.config.universe_config import UniverseMetadata
     from carcharoth.interfaces.optimization import BarsFetcher
     from carcharoth.modeling.signal_generator import XGBoostSignalGenerator
 
 
 def build_signal_generator(
-    config: ModelConfig, evaluation_start: date | None = None
+    config: ModelConfig,
+    evaluation_start: date | None = None,
+    evaluation_universe: UniverseMetadata | None = None,
 ) -> XGBoostSignalGenerator:
     from carcharoth.modeling.signal_generator import build_signal_generator as build
 
-    return build(config, evaluation_start)
+    return build(config, evaluation_start, evaluation_universe)
 
 
 def train_and_publish(config: RunConfig, config_hash: str, fetch_bars: BarsFetcher) -> Path:
