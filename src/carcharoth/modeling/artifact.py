@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from carcharoth.config.app_config import ModelConfig
 from carcharoth.config.strict import StrictModel
@@ -35,6 +35,8 @@ class ArtifactManifest(StrictModel):
     timeframe_minutes: int
     benchmark_symbol: str
     symbols: list[str]
+    effective_symbols: list[str] | None = None
+    eligibility_assessment_id: str | None = None
     universe_metadata: UniverseMetadata | None = None
     xgboost_params: dict[str, bool | int | float | str]
     seed: int
@@ -47,6 +49,18 @@ class ArtifactManifest(StrictModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     versions: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
+
+    @model_validator(mode="after")
+    def _effective_membership(self) -> ArtifactManifest:
+        if self.effective_symbols is not None:
+            members = self.effective_symbols
+            if (
+                not members
+                or len(members) != len(set(members))
+                or not set(members) <= set(self.symbols)
+            ):
+                raise ValueError("effective_symbols must be a nonempty unique subset of symbols")
+        return self
 
 
 class ArtifactError(ValueError):

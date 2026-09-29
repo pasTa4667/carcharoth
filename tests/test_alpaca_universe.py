@@ -33,7 +33,15 @@ def test_alpaca_universe_filters_and_keeps_funds() -> None:
 
 
 def test_calendar_and_explicit_bar_semantics() -> None:
-    client = SimpleNamespace(get_calendar=lambda request: [SimpleNamespace(date=date(2020, 1, 2))])
+    client = SimpleNamespace(
+        get_calendar=lambda request: [
+            SimpleNamespace(
+                date=date(2020, 1, 2),
+                open=datetime(2020, 1, 2, 9, 30),
+                close=datetime(2020, 1, 2, 16),
+            )
+        ]
+    )
     assert fetch_calendar(client, date(2020, 1, 1), date(2020, 1, 3)) == [date(2020, 1, 2)]
 
     seen = {}

@@ -48,6 +48,14 @@ The artifact manifest is the contract between training and runtime: ordered feat
 and implementation versions, schema/model hashes, task/target, horizon, timeframe, benchmark,
 universe, parameters, seed, versions, date windows, metrics, and row counts.
 
+## Research loops
+
+The Backtest Loop TUI tab launches one `backtest-loop` CLI child. Python owns calendar-window
+planning and preflight validation in `backtest/loop.py`; the composition root supplies the
+existing train/backtest callables. Each optional training stage returns its exact immutable
+artifact path to that iteration's independent backtest. Failure stops the sequence; no model
+is discovered by timestamp or activated live. See [backtest flow](architecture/backtest.md).
+
 ## Important modules
 
 - `features/`: pure scalar features and ordered/versioned `FeaturePipeline`.
@@ -58,6 +66,7 @@ universe, parameters, seed, versions, date windows, metrics, and row counts.
 - `risk/`: signed target transitions, sizing, absolute gross exposure, close-first reversal.
 - `services/backtest/`: queued order at bar `t`, fill at `t+1` open, mark at close, signed margin
   accounting.
+- `backtest/loop.py`: calendar-anchored expanding training, read-only previews and sequential loops.
 - `quicktest/`: independent per-symbol fixed-artifact simulation with SPY context.
 - `analysis/`: long/short FIFO matching and common metrics.
 - `services/optuna/`: fixed-artifact decision/risk search; retraining-required paths are rejected.
@@ -69,6 +78,10 @@ Every PAPER/BACKTEST/QUICKTEST run owns its model decisions, orders, trades, sna
 trips, and metrics through `run_id`. `model_decisions` store artifact/schema IDs, raw prediction,
 target exposure, configured feature values, and risk result. `round_trips` store direction,
 model ID, entry/exit prediction/features, P&L, and excursions.
+
+Loop runs retain ordinary UUID run IDs. Nullable `runs.loop_context` stores a separate loop UUID,
+label, iteration/count and model ID, outside strict replay config/hashes. Grafana groups on this
+metadata and compares independent returns; no capital/position state crosses iterations.
 
 Backtest performance uses a context-local, composition-injected `Monitor`, with bounded
 in-memory stage/counter aggregation, an independent fail-open PostgreSQL publisher and local

@@ -51,7 +51,7 @@ pub struct Field {
 }
 
 impl Field {
-    const fn flag(key: &'static str, label: &'static str, help: &'static str) -> Self {
+    pub(crate) const fn flag(key: &'static str, label: &'static str, help: &'static str) -> Self {
         Field {
             key,
             label,
@@ -62,7 +62,7 @@ impl Field {
         }
     }
 
-    const fn text(
+    pub(crate) const fn text(
         key: &'static str,
         label: &'static str,
         flag: &'static str,
@@ -94,7 +94,7 @@ impl Field {
         }
     }
 
-    const fn choice(
+    pub(crate) const fn choice(
         key: &'static str,
         label: &'static str,
         flag: &'static str,
@@ -133,7 +133,7 @@ impl Field {
         match self.kind {
             Kind::Flag => "off".to_string(),
             Kind::Text => String::new(),
-            Kind::Choice(options) => options[0].to_string(),
+            Kind::Choice(options) => options.first().unwrap_or(&"").to_string(),
             Kind::DynamicChoice(_) => String::new(),
         }
     }
@@ -497,7 +497,7 @@ pub struct Form {
     pub spec: usize,
     pub values: Vec<String>,
     pub cursor: usize,
-    pub field_options: Vec<Option<Vec<String>>>
+    pub field_options: Vec<Option<Vec<String>>>,
 }
 
 impl Form {
@@ -596,12 +596,9 @@ impl Form {
     pub fn cycle(&mut self, forward: bool) {
         let field = &self.spec().fields[self.cursor];
         match field.kind {
-            Kind::Text => return,
+            Kind::Text => (),
             Kind::DynamicChoice(_) => {
-                let Some(options) = self
-                    .field_options
-                    .get(self.cursor)
-                    .and_then(Option::as_ref)
+                let Some(options) = self.field_options.get(self.cursor).and_then(Option::as_ref)
                 else {
                     return;
                 };
@@ -690,12 +687,10 @@ fn artifact_root_from(config: &Value) -> &str {
 }
 
 fn is_valid_artifact_dir(path: &Path) -> bool {
-    path.is_dir()
-        && path.join(ARTIFACT_MANIFEST).is_file()
-        && path.join(ARTIFACT_MODEL).is_file()
+    path.is_dir() && path.join(ARTIFACT_MANIFEST).is_file() && path.join(ARTIFACT_MODEL).is_file()
 }
 
-fn resolve_model_artifact_options(config: &Value) -> Vec<String> {
+pub(crate) fn resolve_model_artifact_options(config: &Value) -> Vec<String> {
     let root = artifact_root_from(config);
     let mut options = vec![OMIT.to_string()];
     let Ok(entries) = fs::read_dir(root) else {
@@ -796,6 +791,7 @@ mod tests {
             "AAPL,MSFT".to_string(),
             OMIT.to_string(),
             "monte_carlo_trades".to_string(),
+            String::new(), // prepared-history text override
             "on".to_string(),
             "off".to_string(),
         ];
@@ -883,10 +879,8 @@ mod tests {
 
     #[test]
     fn resolve_model_artifact_options_lists_valid_artifacts() {
-        let root = std::env::temp_dir().join(format!(
-            "carcharoth-artifacts-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("carcharoth-artifacts-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("model-a")).unwrap();
         fs::write(root.join("model-a/manifest.json"), "{}").unwrap();
@@ -899,10 +893,7 @@ mod tests {
         assert_eq!(options.len(), 2);
         assert_eq!(
             options[1],
-            format!(
-                "{ARTIFACT_SET_KEY}={}/model-a",
-                root.to_str().unwrap()
-            )
+            format!("{ARTIFACT_SET_KEY}={}/model-a", root.to_str().unwrap())
         );
 
         let _ = fs::remove_dir_all(&root);

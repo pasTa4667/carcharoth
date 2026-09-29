@@ -1,0 +1,79 @@
+{
+  "uid": "backtest-loops",
+  "links": [{"title": "Data Eligibility", "type": "link", "url": "/d/data-eligibility?var-loop=${loop:percentencode}", "includeVars": false}],
+  "title": "Backtest Loops",
+  "description": "Independent expanding-window backtests. Every iteration resets capital and positions; returns are not compounded. Missing iterations may still be training or may have stopped before creating a backtest.",
+  "schemaVersion": 40,
+  "version": 1,
+  "editable": true,
+  "tags": ["backtest", "research", "loops"],
+  "timezone": "utc",
+  "refresh": "10s",
+  "time": {"from": "2016-01-01T00:00:00.000Z", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "loop",
+        "label": "Loop",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "carcharoth-pg"},
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "query": "SELECT loop_context->>'loop_id' AS __value, COALESCE(NULLIF(MAX(loop_context->>'label'), ''), 'Unnamed loop') || ' | ' || to_char(MIN(started_at), 'YYYY-MM-DD HH24:MI') || ' | ' || (loop_context->>'loop_id') AS __text FROM runs WHERE loop_context IS NOT NULL GROUP BY loop_context->>'loop_id' ORDER BY MIN(started_at) DESC",
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Backtest progress (training stages appear once a backtest starts)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "carcharoth-pg"},
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 4},
+      "fieldConfig": {"defaults": {"decimals": 0, "color": {"mode": "palette-classic"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none", "textMode": "auto"},
+      "targets": [{"refId": "A", "format": "table", "rawQuery": true, "editorMode": "code", "rawSql": "SELECT MAX((r.loop_context->>'iterations')::int) AS requested, COUNT(*) AS recorded, COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM backtest_metrics m WHERE m.run_id=r.run_id AND m.symbol IS NULL AND m.name='total_return')) AS completed FROM runs r WHERE r.loop_context IS NOT NULL AND r.loop_context->>'loop_id' = ${loop:sqlstring}"}]
+    },
+    {
+      "id": 2,
+      "title": "Iterations — click run, execution, or model for details",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "carcharoth-pg"},
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 10},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto", "filterable": true}, "decimals": 3},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "run_id"}, "properties": [{"id": "links", "value": [{"title": "Backtest Results", "url": "/d/backtest-results?var-run=${__value.raw}&var-run_input=${__value.raw}&from=1451606400000&to=now", "targetBlank": true}]}]},
+          {"matcher": {"id": "byName", "options": "execution_id"}, "properties": [{"id": "links", "value": [{"title": "Backtest Performance", "url": "/d/backtest-performance?var-config=*&var-artifact=*&var-execution=${__value.raw}", "targetBlank": true}]}]},
+          {"matcher": {"id": "byName", "options": "model_id"}, "properties": [{"id": "links", "value": [{"title": "Model Diagnostics", "url": "/d/carcharoth-model-diagnostics?var-model=${__value.raw}", "targetBlank": true}]}]},
+          {"matcher": {"id": "byRegexp", "options": "^(total_return|max_drawdown|win_rate)$"}, "properties": [{"id": "unit", "value": "percentunit"}]}
+        ]
+      },
+      "options": {"showHeader": true, "cellHeight": "sm", "sortBy": [{"displayName": "iteration", "desc": false}]},
+      "targets": [{"refId": "A", "format": "table", "rawQuery": true, "editorMode": "code", "rawSql": "SELECT (r.loop_context->>'iteration')::int AS iteration, CASE WHEN m.total_return IS NOT NULL THEN 'completed' ELSE 'running / unfinished' END AS state, r.run_id::text, r.config->'training'->>'train_start' AS train_start, r.config->'training'->>'train_end' AS train_end, r.config->'training'->>'validation_start' AS validation_start, r.config->'training'->>'validation_end' AS validation_end, r.config->'data'->>'start' AS backtest_start, r.config->'data'->>'end' AS backtest_end, r.config->'universe'->>'snapshot' AS universe_artifact, r.config->'universe'->>'bucket' AS bucket, r.config->'model'->>'prepared_history' AS prepared_history, r.config->'model'->>'artifact_path' AS artifact, r.loop_context->>'model_id' AS model_id, m.total_return, m.sharpe, m.max_drawdown, m.win_rate, m.num_trades, p.execution_id::text FROM runs r LEFT JOIN LATERAL (SELECT MAX(value) FILTER (WHERE name='total_return') AS total_return, MAX(value) FILTER (WHERE name='sharpe') AS sharpe, MAX(value) FILTER (WHERE name='max_drawdown') AS max_drawdown, MAX(value) FILTER (WHERE name='win_rate') AS win_rate, MAX(value) FILTER (WHERE name='num_trades') AS num_trades FROM backtest_metrics WHERE run_id=r.run_id AND symbol IS NULL) m ON true LEFT JOIN LATERAL (SELECT execution_id FROM backtest_performance WHERE run_id=r.run_id ORDER BY started_at DESC LIMIT 1) p ON true WHERE r.loop_context IS NOT NULL AND r.loop_context->>'loop_id' = ${loop:sqlstring} ORDER BY iteration"}]
+    },
+    {
+      "id": 3,
+      "title": "Return and max drawdown by iteration (not compounded)",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "carcharoth-pg"},
+      "gridPos": {"x": 0, "y": 14, "w": 12, "h": 9},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "color": {"mode": "palette-classic"}}, "overrides": []},
+      "options": {"xField": "iteration", "orientation": "vertical", "stacking": "none", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}},
+      "targets": [{"refId": "A", "format": "table", "rawQuery": true, "editorMode": "code", "rawSql": "SELECT r.loop_context->>'iteration' AS iteration, MAX(m.value) FILTER (WHERE m.name='total_return') AS total_return, MAX(m.value) FILTER (WHERE m.name='max_drawdown') AS max_drawdown FROM runs r LEFT JOIN backtest_metrics m ON m.run_id=r.run_id AND m.symbol IS NULL WHERE r.loop_context IS NOT NULL AND r.loop_context->>'loop_id' = ${loop:sqlstring} GROUP BY r.loop_context->>'iteration' ORDER BY (r.loop_context->>'iteration')::int"}]
+    },
+    {
+      "id": 4,
+      "title": "Independent equity returns — one series per run, each starting from its own capital",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "carcharoth-pg"},
+      "gridPos": {"x": 12, "y": 14, "w": 12, "h": 9},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 1, "spanNulls": false, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [{"refId": "A", "format": "time_series", "rawQuery": true, "editorMode": "code", "rawSql": "SELECT e.timestamp AS time, e.equity / NULLIF((r.config->'backtest'->>'initial_capital')::numeric, 0) - 1 AS value, 'iteration ' || (r.loop_context->>'iteration') || ' | ' || r.run_id::text AS metric FROM runs r JOIN equity_snapshots e ON e.run_id=r.run_id WHERE r.loop_context IS NOT NULL AND r.loop_context->>'loop_id' = ${loop:sqlstring} ORDER BY e.timestamp, metric"}]
+    }
+  ]
+}

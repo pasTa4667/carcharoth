@@ -292,6 +292,8 @@ class RunInfo:
     backtest_end: datetime | None = None
     #: the effective configuration the run started with (JSON dump of AppConfig)
     config: dict[str, Any] = field(default_factory=dict)
+    #: Research-loop execution metadata, deliberately outside replayable config.
+    loop_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

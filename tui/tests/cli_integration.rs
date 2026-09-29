@@ -46,6 +46,32 @@ fn wait(runner: &mut Runner) {
 
 #[test]
 #[ignore = "spawns the Python CLI"]
+fn loop_read_only_helpers_match_the_python_cli() {
+    repo_root();
+    let listing = cli::capture_json(&[
+        "universe".into(),
+        "list".into(),
+        "--root".into(),
+        "nonexistent-test-root".into(),
+        "--json".into(),
+    ])
+    .unwrap();
+    assert!(listing["snapshots"].as_array().unwrap().is_empty());
+    let help = cli::capture(&["backtest-loop".into(), "--help".into()]).unwrap();
+    assert!(help.ok);
+    for field in carcharoth_tui::backtest_loop::FIELDS {
+        if !field.flag.is_empty() {
+            assert!(
+                help.stdout.contains(field.flag),
+                "loop CLI missing {}",
+                field.flag
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "spawns the Python CLI"]
 fn resolving_a_profile_yields_a_usable_tree() {
     repo_root();
     let resolved = cli::resolve("backtest", &[]).expect("backtest resolves");

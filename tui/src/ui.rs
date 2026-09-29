@@ -31,6 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::Commands => draw_commands(frame, app, chunks[1]),
         Screen::Config => draw_config(frame, app, chunks[1]),
         Screen::Promote => draw_promote(frame, app, chunks[1]),
+        Screen::BacktestLoop => draw_loop(frame, app, chunks[1]),
         Screen::Output => draw_output(frame, app, chunks[1]),
     }
     draw_status(frame, app, chunks[2]);
@@ -193,6 +194,102 @@ fn draw_form(frame: &mut Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: false })
             .block(list_block(format!(" {} ", spec.name), focused)),
         area,
+    );
+}
+
+fn draw_loop(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::backtest_loop::FIELDS;
+    let form = &app.backtest_loop;
+    let panes = Layout::default()
+        .direction(if area.width >= 110 {
+            Direction::Horizontal
+        } else {
+            Direction::Vertical
+        })
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+    let visible = form.visible();
+    let height = panes[0].height.saturating_sub(5) as usize;
+    let offset = scroll_offset(form.cursor, visible.len(), height.max(1));
+    let mut lines: Vec<Line> = visible
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(height.max(1))
+        .map(|(row, i)| {
+            let value = if form.values[*i].is_empty() {
+                "—"
+            } else {
+                &form.values[*i]
+            };
+            let active = row == form.cursor;
+            Line::styled(
+                format!(
+                    "{} {:<23} {}",
+                    if active { "›" } else { " " },
+                    FIELDS[*i].label,
+                    value
+                ),
+                if active {
+                    Style::default().fg(ACCENT)
+                } else {
+                    Style::default()
+                },
+            )
+        })
+        .collect();
+    lines.push(Line::styled(
+        FIELDS[visible[form.cursor]].help,
+        Style::default().fg(DIM),
+    ));
+    lines.push(Line::styled(form.universe_hint(), Style::default().fg(DIM)));
+    lines.push(Line::styled(
+        format!("{} temporary override(s)", app.overrides.len()),
+        Style::default().fg(DIM),
+    ));
+    frame.render_widget(
+        Paragraph::new(lines).block(list_block(" loop settings ".into(), true)),
+        panes[0],
+    );
+
+    let mut preview = vec![];
+    if let Some(windows) = form.preview.as_ref().and_then(|p| p["windows"].as_array()) {
+        for window in windows.iter().skip(form.preview_scroll) {
+            let text =
+                |section: &str, key: &str| window[section][key].as_str().unwrap_or("?").to_string();
+            preview.push(Line::styled(
+                format!("Iteration {}", window["iteration"]),
+                Style::default().fg(ACCENT),
+            ));
+            if form.training() {
+                preview.push(Line::raw(format!(
+                    "Train {} → {}",
+                    text("training", "train_start"),
+                    text("training", "train_end")
+                )));
+                preview.push(Line::raw(format!(
+                    "Valid {} → {}",
+                    text("training", "validation_start"),
+                    text("training", "validation_end")
+                )));
+            }
+            preview.push(Line::raw(format!(
+                "Test  {} → {}",
+                text("backtest", "start"),
+                text("backtest", "end")
+            )));
+            preview.push(Line::raw(""));
+        }
+    } else {
+        preview.push(Line::raw("F3: validate and preview all windows."));
+        preview.push(Line::raw("Choose universe artifact, then bucket."));
+        preview.push(Line::raw("Each backtest starts with fresh capital."));
+    }
+    frame.render_widget(
+        Paragraph::new(preview)
+            .wrap(Wrap { trim: false })
+            .block(list_block(" schedule · PgUp/PgDn ".into(), false)),
+        panes[1],
     );
 }
 
@@ -491,6 +588,10 @@ fn help_text() -> String {
          Promote   diffs the source profile (plus overrides) against {}; space\n\
          selects values, Enter validates and writes them to {}.\n\
          \n\
+         Backtest Loop  choose universe then bucket; training is optional.\n\
+         F2 refreshes artifacts, F3 validates/previews, Enter confirms Start.\n\
+         PgUp/PgDn scroll windows. Every backtest resets capital and positions.\n\
+         \n\
          Output    one command at a time; ↑↓/PgUp/PgDn scroll, End follows the\n\
          tail, x cancels the running child.",
         promote::PAPER_PROFILE,
@@ -519,6 +620,27 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn loop_form_scrolls_on_small_terminals_and_renders_preview() {
+        let mut app = App {
+            screen: Screen::BacktestLoop,
+            ..App::default()
+        };
+        app.backtest_loop.cursor = app.backtest_loop.visible().len() - 1;
+        app.backtest_loop.preview = Some(serde_json::json!({"windows": [{
+            "iteration": 1, "backtest": {"start": "2021-04-01", "end": "2021-06-30"}
+        }]}));
+        let mut terminal = Terminal::new(TestBackend::new(70, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("prepared history"));
+        assert!(text.contains("2021-04-01"));
+        // Tiny terminals should degrade without panicking.
+        let mut tiny = Terminal::new(TestBackend::new(25, 8)).unwrap();
+        tiny.draw(|frame| draw(frame, &mut app)).unwrap();
     }
 
     #[test]

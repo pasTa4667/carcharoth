@@ -26,10 +26,19 @@ docker run --env-file .env carcharoth
 - **Grafana**: `http://localhost:3333` (see `.env` for credentials) — dashboards:
   *Trading Overview* (live, PAPER runs only), *Live Analysis* (equity/drawdown per paper
   run), *Backtest Results* (metrics + equity curve per backtest run),
-  *Backtest Performance* (bounded phase/hotspot timings, CPU, throughput and checkpoint health).
+  *Backtest Performance* (bounded phase/hotspot timings, CPU, throughput and checkpoint health),
+  *Backtest Loops* (loop UUID/label, iteration results, independent equity and drilldowns).
   See the [performance runbook](backtest-performance.md); apply migrations before using new panels.
 - **Logs**: `logs/` directory
 - **Database**: `docker compose exec db psql -U carcharoth -d carcharoth -c "\dt"`
+
+## Research loops
+
+Run `uv run alembic upgrade head` before the new Backtest Loop tab/command; migration
+`e1f2a3b4c5d6` adds nullable grouping metadata to runs. Refresh Grafana provisioning (restart
+Grafana if needed) to load Backtest Loops. See the [loop runbook](backtest.md#backtest-loops).
+An interrupted iteration can remain unfinished; completed results remain available. There is no
+automatic resume. Do not use `finished_at` alone as proof analysis completed.
 
 ## Troubleshooting
 

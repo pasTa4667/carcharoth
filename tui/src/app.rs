@@ -1,6 +1,6 @@
 //! Application state and key handling.
 //!
-//! Four screens (commands, config, promote, output), one modal layer, and a
+//! Five screens (commands, config, promote, backtest loop, output), one modal layer, and a
 //! single status line. Everything that touches the trading system goes
 //! through the Python CLI in [`crate::cli`] / [`crate::runner`].
 
@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
+use crate::backtest_loop::LoopForm;
 use crate::catalog::{Form, Kind, COMMANDS};
 use crate::cli::{self, Validation};
 use crate::config_tree::{self, Change, Tree};
@@ -20,14 +21,16 @@ pub enum Screen {
     Commands,
     Config,
     Promote,
+    BacktestLoop,
     Output,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 4] = [
+    pub const ALL: [Screen; 5] = [
         Screen::Commands,
         Screen::Config,
         Screen::Promote,
+        Screen::BacktestLoop,
         Screen::Output,
     ];
 
@@ -36,6 +39,7 @@ impl Screen {
             Screen::Commands => "Commands",
             Screen::Config => "Config",
             Screen::Promote => "Promote",
+            Screen::BacktestLoop => "Backtest Loop",
             Screen::Output => "Output",
         }
     }
@@ -125,6 +129,7 @@ pub struct Promote {
 pub struct App {
     pub screen: Screen,
     pub commands: Commands,
+    pub backtest_loop: LoopForm,
     pub config: Option<Tree>,
     pub config_profile: String,
     /// temporary `--set` overrides shared by every profiled command
@@ -143,6 +148,7 @@ impl Default for App {
         App {
             screen: Screen::Commands,
             commands: Commands::default(),
+            backtest_loop: LoopForm::default(),
             config: None,
             config_profile: "backtest".to_string(),
             overrides: Vec::new(),
@@ -205,6 +211,7 @@ impl App {
                 Screen::Commands => self.commands_key(key),
                 Screen::Config => self.config_key(key),
                 Screen::Promote => self.promote_key(key),
+                Screen::BacktestLoop => self.loop_key(key),
                 Screen::Output => self.output_key(key),
             },
         }
@@ -344,9 +351,7 @@ impl App {
         match cli::resolve(&profile, &self.overrides) {
             Ok(resolved) => {
                 self.commands.form.prefill_from(&resolved.config);
-                self.commands
-                    .form
-                    .load_dynamic_options(&resolved.config);
+                self.commands.form.load_dynamic_options(&resolved.config);
                 self.status = format!("prefilled from profile {profile}");
             }
             Err(err) => self.status = format!("no suggestions: {err}"),
@@ -420,6 +425,49 @@ impl App {
                 self.status = format!("running: {}", self.runner.command);
             }
             Err(err) => self.status = err.to_string(),
+        }
+    }
+
+    fn loop_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::F(2) => {
+                self.status = self
+                    .backtest_loop
+                    .refresh(&self.overrides)
+                    .unwrap_or_else(|err| err.to_string());
+            }
+            KeyCode::F(3) => {
+                self.status = match self.backtest_loop.request_preview(&self.overrides) {
+                    Ok(()) => "schedule validated; Enter confirms Start".into(),
+                    Err(err) => err.to_string(),
+                };
+            }
+            KeyCode::Enter => {
+                if self.runner.is_running() {
+                    self.status = "a command is already running; cancel it in Output first".into();
+                    return;
+                }
+                match self.backtest_loop.ready_args(&self.overrides) {
+                    Ok(args) => {
+                        self.modal = Modal::Confirm {
+                            message: format!(
+                                "Run {} independent backtests{}?\\n\\n{}",
+                                self.backtest_loop.value("iterations"),
+                                if self.backtest_loop.training() {
+                                    " with fresh training each time"
+                                } else {
+                                    ""
+                                },
+                                cli::display_command(&args)
+                            ),
+                            action: Action::Run(args),
+                        }
+                    }
+                    Err(err) => self.status = err.to_string(),
+                }
+            }
+            KeyCode::Esc => self.screen = Screen::Commands,
+            code => self.backtest_loop.edit(code),
         }
     }
 
@@ -723,7 +771,14 @@ impl App {
 
     /// Lazy per-screen loading, run once per frame.
     pub fn refresh(&mut self) {
+        self.backtest_loop.invalidate_if_changed(&self.overrides);
         match self.screen {
+            Screen::BacktestLoop if !self.backtest_loop.loaded => {
+                self.status = self
+                    .backtest_loop
+                    .refresh(&self.overrides)
+                    .unwrap_or_else(|err| err.to_string());
+            }
             Screen::Config if self.config.is_none() && !self.status.starts_with("could not") => {
                 self.load_config()
             }
@@ -742,6 +797,7 @@ impl App {
             },
             Screen::Config => "↑↓ move · Enter expand/edit · e edit · d drop · D drop all · p profile · r reload · z collapse",
             Screen::Promote => "↑↓ move · space select · a all · s source · r reload · Enter promote",
+            Screen::BacktestLoop => "↑↓ field · ←→ choice · type edit · F2 refresh · F3 preview · PgUp/Dn windows · Enter start · Esc back",
             Screen::Output => "↑↓/PgUp/PgDn scroll · End follow · x cancel · q quit",
         }
     }
@@ -796,7 +852,14 @@ mod tests {
             app.handle_key(key(KeyCode::Char(c)));
         }
         app.handle_key(key(KeyCode::Backspace));
-        app.commands.form.cursor = 6; // --verbose
+        app.commands.form.cursor = app
+            .commands
+            .form
+            .spec()
+            .fields
+            .iter()
+            .position(|field| field.key == "--verbose")
+            .unwrap();
         app.handle_key(key(KeyCode::Char(' ')));
         assert_eq!(
             app.form_args(),

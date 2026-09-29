@@ -261,6 +261,35 @@ def load_snapshot(path: Path) -> UniverseSnapshot:
     return load_universe_snapshot(path)
 
 
+def list_snapshots(root: Path) -> dict[str, Any]:
+    """Small local catalogue for the TUI; invalid snapshots stay visible as warnings."""
+    snapshots: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if not root.is_dir():
+        return {"snapshots": [], "warnings": [f"universe root does not exist: {root}"]}
+    paths = (
+        [root / "buckets.yaml"]
+        if (root / "buckets.yaml").is_file()
+        else sorted(root.glob("*/buckets.yaml"))
+    )
+    for path in paths:
+        try:
+            snapshot = load_universe_snapshot(path)
+        except ValueError as exc:
+            warnings.append(str(exc))
+            continue
+        snapshots.append(
+            {
+                "path": str(path),
+                "digest": snapshot.content_digest,
+                "discovery_start": snapshot.discovery.start.isoformat(),
+                "discovery_end": snapshot.discovery.end.isoformat(),
+                "buckets": {name: len(members) for name, members in snapshot.buckets.items()},
+            }
+        )
+    return {"snapshots": snapshots, "warnings": warnings}
+
+
 def publish_snapshot(
     config: UniverseDiscoveryConfig,
     result: DiscoveryResult,

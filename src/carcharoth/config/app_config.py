@@ -154,6 +154,17 @@ class ModelConfig(StrictModel):
         return self
 
 
+class EligibilityConfig(StrictModel):
+    """Operational data floors, not a guarantee of statistical adequacy."""
+
+    mode: Literal["drop", "strict"] = "drop"
+    min_train_rows: int = Field(default=100, gt=0)
+    min_validation_rows: int = Field(default=30, gt=0)
+    min_usable_coverage: float = Field(default=0.80, gt=0, le=1)
+    min_symbols: int = Field(default=1, gt=0)
+    min_retained_fraction: float = Field(default=0.50, gt=0, le=1)
+
+
 class TrainingConfig(StrictModel):
     train_start: date
     train_end: date
@@ -162,6 +173,7 @@ class TrainingConfig(StrictModel):
     artifact_root: Path = Path("artifacts/models")
     seed: int = 42
     early_stopping_rounds: int = Field(default=50, gt=0)
+    eligibility: EligibilityConfig = EligibilityConfig()
 
     @model_validator(mode="after")
     def _chronological_windows(self) -> "TrainingConfig":
@@ -185,6 +197,7 @@ class RiskConfig(StrictModel):
 
 
 class BacktestConfig(StrictModel):
+    check_data_coverage: bool = False
     initial_capital: float = Field(default=100_000.0, gt=0)
     #: Gross buying-power multiple used by the signed-position simulator.
     margin_multiplier: float = Field(default=2.0, ge=1)

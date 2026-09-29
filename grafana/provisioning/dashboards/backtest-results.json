@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "links": [],
+  "links": [{"title": "Data Eligibility", "type": "link", "url": "/d/data-eligibility?var-run=${run:percentencode}", "includeVars": false}],
   "panels": [
     {
       "datasource": {

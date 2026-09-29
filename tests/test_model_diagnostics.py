@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 
@@ -6,7 +7,7 @@ import pytest
 
 from carcharoth.domain.models import ModelTask
 from carcharoth.modeling.dataset import DatasetRow, ModelDataset
-from carcharoth.modeling.diagnostics import regression_diagnostics
+from carcharoth.modeling.diagnostics import dataset_diagnostics, regression_diagnostics
 
 
 def dataset(
@@ -24,6 +25,15 @@ def dataset(
         task=ModelTask.REGRESSION,
         attempted_rows=len(actual),
     )
+
+
+@pytest.mark.parametrize("with_constant", [False, True])
+def test_dataset_correlations_handle_two_varying_features(with_constant):
+    names = ("a", "b", "constant") if with_constant else ("a", "b")
+    values = np.asarray([[1, 2, 0], [2, 4, 0], [3, 6, 0]], dtype=float)[:, : len(names)]
+    result = dataset_diagnostics(replace(dataset([1, 2, 3], names), features=values))
+    assert result["constant_features"] == (["constant"] if with_constant else [])
+    assert result["high_correlations"] == [{"left": "a", "right": "b", "correlation": 1.0}]
 
 
 def test_deciles_include_every_row_once_and_preserve_rank_order() -> None:

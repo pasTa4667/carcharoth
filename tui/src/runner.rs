@@ -17,6 +17,26 @@ use crate::cli;
 /// buffer without bound.
 const MAX_LINES: usize = 5_000;
 
+/// Stop uv and its Python descendants together; child.kill() alone orphans Python.
+fn kill_tree(child: &mut Child) -> Result<()> {
+    #[cfg(unix)]
+    let status = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    #[cfg(windows)]
+    let status = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &child.id().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !status.success() && child.try_wait()?.is_none() {
+        return Err(anyhow!("could not terminate the command's process tree"));
+    }
+    Ok(())
+}
+
 enum Message {
     Line(String),
     Eof,
@@ -71,13 +91,26 @@ impl Runner {
     /// Spawn `uv run carcharoth <args...>`. Refuses while a command is
     /// still running — one child at a time keeps the DB and logs sane.
     pub fn start(&mut self, args: &[String]) -> Result<()> {
+        self.spawn(
+            Command::new(cli::LAUNCHER).args(cli::argv(args)),
+            cli::display_command(args),
+        )
+    }
+
+    fn spawn(&mut self, command: &mut Command, display: String) -> Result<()> {
         if self.is_running() {
             return Err(anyhow!(
                 "a command is already running (press x to cancel it)"
             ));
         }
-        let mut child = Command::new(cli::LAUNCHER)
-            .args(cli::argv(args))
+        // uv is a parent process, not an exec: give each invocation its own group.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
+            .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -90,7 +123,7 @@ impl Runner {
         pump(stdout, tx.clone(), "");
         pump(stderr, tx, "! ");
 
-        self.command = cli::display_command(args);
+        self.command = display;
         self.lines = vec![format!("$ {}", self.command)];
         self.status = Status::Running;
         self.scroll = None;
@@ -151,10 +184,7 @@ impl Runner {
         let Some(running) = self.running.as_mut() else {
             return Err(anyhow!("no command is running"));
         };
-        running
-            .child
-            .kill()
-            .map_err(|err| anyhow!("could not cancel: {err}"))?;
+        kill_tree(&mut running.child)?;
         self.status = Status::Cancelled;
         Ok(())
     }
@@ -162,7 +192,7 @@ impl Runner {
     /// Kill any child on shutdown so quitting never leaves an orphan.
     pub fn shutdown(&mut self) {
         if let Some(mut running) = self.running.take() {
-            let _ = running.child.kill();
+            let _ = kill_tree(&mut running.child);
             let _ = running.child.wait();
         }
     }
@@ -226,6 +256,39 @@ fn pump<R: std::io::Read + Send + 'static>(stream: R, tx: Sender<Message>, prefi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "spawns uv and a sleeping Python child (no trading services)"]
+    fn cancellation_closes_real_uv_python_descendant_streams() {
+        use std::time::{Duration, Instant};
+        let mut runner = Runner::default();
+        runner.spawn(Command::new("uv")
+            .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .args(["run", "--no-sync", "python", "-c",
+                "import time; print('stage started', flush=True); time.sleep(60); print('next stage')"]),
+            "cancellation smoke".into()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !runner.lines.iter().any(|line| line == "stage started") && Instant::now() < deadline
+        {
+            runner.poll();
+            thread::sleep(Duration::from_millis(20));
+        }
+        let started = runner.lines.iter().any(|line| line == "stage started");
+        runner.cancel().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while runner.is_running() && Instant::now() < deadline {
+            runner.poll();
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(started);
+        // EOF on Python's inherited pipes proves uv's descendant was stopped as well.
+        assert!(
+            !runner.is_running(),
+            "Python retained stdout after cancellation"
+        );
+        assert_eq!(runner.status, Status::Cancelled);
+        assert!(!runner.lines.iter().any(|line| line == "next stage"));
+    }
 
     fn runner_with(count: usize) -> Runner {
         Runner {

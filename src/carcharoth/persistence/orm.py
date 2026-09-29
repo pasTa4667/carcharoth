@@ -56,6 +56,15 @@ class RunRow(Base):
     backtest_start: Mapped[datetime | None]
     backtest_end: Mapped[datetime | None]
     note: Mapped[str | None] = mapped_column(Text)
+    loop_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+
+    __table_args__ = (
+        Index(
+            "ix_runs_loop_id",
+            loop_context["loop_id"].astext,
+            postgresql_where=loop_context.is_not(None),
+        ),
+    )
 
 
 class BacktestPerformanceRow(Base):
@@ -283,6 +292,24 @@ class PermutationResultRow(Base):
     profit_factor: Mapped[float | None]
     num_round_trips: Mapped[int]
     final_equity: Mapped[float | None]
+
+
+class DataEligibilityAssessmentRow(Base):
+    """Assessments exist independently of successful model artifacts."""
+
+    __tablename__ = "data_eligibility_assessments"
+
+    assessment_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    scope: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(index=True)
+    updated_at: Mapped[datetime]
+    config_hash: Mapped[str]
+    status: Mapped[str]
+    model_id: Mapped[str | None] = mapped_column(index=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.run_id", ondelete="CASCADE"), index=True
+    )
+    report: Mapped[dict[str, Any]]
 
 
 class ModelDiagnosticsRow(Base):

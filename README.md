@@ -144,6 +144,104 @@ hash in stored configs and model artifacts. Discovery must end before training s
 bucket-trained model with a pooled (`all`) model on the same later bucket/window; do not combine
 per-bucket portfolio returns as one capital-constrained portfolio.
 
+### Training data eligibility
+
+Training screens **both** splits before fitting, for explicit symbol lists as well as frozen
+buckets. By default, a symbol failing either split is dropped from **both** datasets. The
+requested config/snapshot stays immutable; `manifest.json` records `effective_symbols`
+separately. This is a global model: a training exclusion does not prohibit later inference.
+
+Defaults in `training.eligibility`:
+
+| Setting | Default |
+|---|---:|
+| `mode` | `drop` (`strict` rejects the whole attempt on any exclusion) |
+| `min_train_rows` / `min_validation_rows` | 100 / 30 usable rows per symbol |
+| `min_usable_coverage` | 0.80 in each split |
+| `min_symbols` / `min_retained_fraction` | 1 / 0.50 |
+
+The retained count must reach `max(min_symbols, ceil(requested_count * min_retained_fraction))`.
+These are operational floors, **not statistical guarantees**. Coverage compares usable rows
+with exchange-scheduled target opportunities, accounting for feature warmup, target horizon,
+split boundaries, holidays, early closes and DST. Target paths with missing intraday intervals
+are rejected rather than stretching the horizon. Invalid OHLCV/conflicting duplicates exclude
+a symbol; missing required benchmark data is a global failure. A successful exchange calendar
+request is required for training; there is no weekday-only fallback.
+
+```bash
+# Fail rather than drop any ticker:
+uv run carcharoth train --set training.eligibility.mode=strict
+# Raise coverage or the retained cohort floor:
+uv run carcharoth train --set training.eligibility.min_usable_coverage=0.95 \
+  --set training.eligibility.min_retained_fraction=0.8
+# Optional report-only backtest check (also available through backtest-loop --set):
+uv run carcharoth backtest --set backtest.check_data_coverage=true
+```
+
+Every training assessment has a UUID and an atomic local report at
+`<training.artifact_root>/_assessments/<uuid>.json`, including rejected attempts and fetch/fit
+errors. Successful artifacts also embed eligibility in `report.json`. Logs show excluded
+symbols, reasons and observed/required values. PostgreSQL publication is best-effort: a DB
+outage leaves the local report and warns, without invalidating a valid model. A pre-fit local
+audit-write failure blocks fitting. Apply `uv run alembic upgrade head` to provision
+`data_eligibility_assessments`; the **Data Eligibility** Grafana dashboard shows success,
+exclusions, strict rejection, shared-context errors and unknown reference-data status.
+Model Diagnostics, Backtest Results and Backtest Loops link to it. Models without an assessment
+are **not assessed**, not evidence of zero exclusions.
+
+Backtest checks are off by default and add feature-computation/calendar overhead when enabled.
+They write `logs/backtests/<run_id>.eligibility.json`, report feature readiness without future
+labels, and **never** alter replay membership, positions, trades or training selection. Missing
+backtest data can compromise results; this check is not delisting-return handling.
+
+We have no point-in-time security master/corporate-action feed: listing/action status remains
+`unknown/not_available`, never a guessed delisting or merger. No current-active catalogue filter,
+forward filling, automatic ticker stitching, or new data adjustment/cache semantics are applied.
+Missing history is evidence of missing history only. Validation-availability selection itself
+conditions the training cohort; do not interpret it as a survivorship-unbiased historical universe.
+Each loop iteration assesses independently and keeps its own linked audit trail.
+
+### Backtest loops
+
+Apply `uv run alembic upgrade head` before using loop grouping. In the Rust TUI, open
+**Backtest Loop**: **F2** refreshes model/universe artifacts, **F3** validates and previews
+all windows, and **Enter** confirms Start. Choose the universe artifact first, then its
+bucket. **PgUp/PgDn** scroll the preview; Output shows progress and **x** cancels the loop.
+
+Set the iteration count and backtest period (quarterly / half-year / yearly). Training is
+opt-in: set its original start, **initial** training period, and validation period. Training
+expands by one backtest period per iteration; validation and backtest keep their durations.
+Each iteration trains a fresh model and backtests that exact artifact. With training off,
+select an existing model and backtest start date instead; all iterations reuse that model.
+Every backtest starts with fresh capital and positions. Prepared history is a separate,
+explicit toggle (off by default in loops, even if the profile enables it).
+
+The same workflow is available without the TUI:
+
+```bash
+uv run carcharoth backtest-loop --iterations 4 --label quarterly-research \
+  --train --train-start 2020-01-01 --train-period yearly \
+  --validation-period quarterly --backtest-period quarterly \
+  --snapshot artifacts/universes/<id>/buckets.yaml --bucket all \
+  --prepared-history false --dry-run --json
+# Remove --dry-run --json to execute.
+
+uv run carcharoth backtest-loop --iterations 4 --label fixed-model \
+  --artifact artifacts/models/<id> --start 2025-01-01 --backtest-period quarterly \
+  --snapshot artifacts/universes/<id>/buckets.yaml --bucket bucket-001 \
+  --prepared-history true --dry-run --json
+```
+
+Periods are 3/6/12 calendar months from the chosen start (month-end days are clamped without
+cumulative drift). All backtests must finish before today UTC. The first error stops the loop;
+completed artifacts/results remain available, but there is no automatic retry or resume.
+Cancellation kills the entire child process tree; an interrupted run can remain unfinished.
+
+The provisioned **Backtest Loops** Grafana dashboard groups runs by a separate loop UUID and
+optional label, with per-iteration metrics, independent equity series and links to run/model
+and performance details. Run UUIDs remain unchanged. It does not compound independent runs;
+training-only failures appear in Output, not as fabricated backtest rows.
+
 ## CLI
 
 | Command | Purpose |
@@ -152,8 +250,10 @@ per-bucket portfolio returns as one capital-constrained portfolio.
 | `carcharoth run` | Live Alpaca paper trading with an explicitly selected artifact |
 | `carcharoth quicktest` | Fast per-symbol, fixed-artifact long/short simulation |
 | `carcharoth backtest` | Replay the full engine, risk, signed broker, and next-open fills |
+| `carcharoth backtest-loop` | Repeat independent backtests with optional expanding-window training |
 | `carcharoth optimize` | Optuna search over fixed-artifact decision/risk settings |
 | `carcharoth universe discover` | Manually rank and group an immutable Alpaca universe |
+| `carcharoth universe list --json` | List validated local universe snapshots and their buckets |
 | `carcharoth quicktest --permute [METHOD]` | Bar permutation or trade Monte Carlo |
 | `carcharoth backtest --permute [METHOD]` | Trade-based Monte Carlo on a finished run |
 | `carcharoth analyze --run-id UUID` | Recompute metrics and signed FIFO round trips |

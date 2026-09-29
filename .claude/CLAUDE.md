@@ -32,7 +32,7 @@ src/carcharoth/
   services/backtest/      historical snapshots and signed next-open broker
   risk/                   target-transition checks and sizing
   quicktest/              fast fixed-artifact per-symbol simulation
-  backtest/               full-engine replay
+  backtest/               full-engine replay and expanding-window loop orchestration
   analysis/               signed FIFO trips, MAE/MFE, metrics, objectives
   services/optuna/        fixed-artifact optimization adapter
   persistence/            run-scoped ORM/repositories/buffering
@@ -59,6 +59,10 @@ cargo run -p carcharoth-tui  # promote only after review
 ```
 
 Never rewrite an artifact directory or auto-update paper config from training.
+The TUI Backtest Loop tab / `backtest-loop` can repeat independent backtests with optional
+fresh expanding-window training. Python owns the preview/schedule; each training return selects
+that iteration's exact artifact. Nullable `runs.loop_context` groups UUID runs for Grafana without
+changing config hashes. See [backtest.md](backtest.md#backtest-loops).
 
 ### Change model task
 

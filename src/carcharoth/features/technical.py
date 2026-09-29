@@ -370,6 +370,7 @@ class TimeOfDayVolumeZScoreFeature(Feature):
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkReturnFeature(Feature):
+    requires_benchmark = True
     period: int
     implementation_version: int = 1
 

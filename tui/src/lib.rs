@@ -6,6 +6,7 @@
 //! single source of truth (see [`cli`]).
 
 pub mod app;
+pub mod backtest_loop;
 pub mod catalog;
 pub mod cli;
 pub mod config_tree;

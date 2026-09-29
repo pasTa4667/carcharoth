@@ -27,6 +27,7 @@ class Feature(ABC):
     """One scalar, versioned feature definition."""
 
     implementation_version: int = 1
+    requires_benchmark: bool = False
 
     @property
     @abstractmethod

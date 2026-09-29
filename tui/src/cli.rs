@@ -61,6 +61,15 @@ pub fn capture(args: &[String]) -> Result<Output> {
     })
 }
 
+/// A short read-only JSON command, with normal CLI failures surfaced to the form.
+pub fn capture_json(args: &[String]) -> Result<Value> {
+    let output = capture(args)?;
+    if !output.ok {
+        return Err(anyhow!(first_error_line(&output)));
+    }
+    serde_json::from_str(&output.stdout).map_err(|err| anyhow!("invalid CLI JSON: {err}"))
+}
+
 /// `--set path=value` arguments for a list of overrides, in stable order.
 pub fn set_args(overrides: &[(String, String)]) -> Vec<String> {
     let mut args = Vec::new();

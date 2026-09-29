@@ -30,6 +30,19 @@ bulk-inserts high-volume rows.
   `report.json` for Grafana and is keyed by immutable `model_id`, not `run_id`.
 - Model decisions and signed round trips remain auditable after the run completes.
 
+## Research loop grouping
+
+`runs.loop_context` is nullable JSONB (`none_as_null=True`), storing `loop_id`, optional `label`,
+one-based `iteration`, requested `iterations`, and `model_id`. It is inserted with the run row
+and indexed on `loop_id` for non-null contexts. Normal backtests, paper and Optuna runs remain
+ungrouped. This execution metadata is not a `RunConfig` field and does not change config hashes.
+No foreign keys or run UUID formats change. Deleting runs still uses existing cascade behavior.
+
+The Backtest Loops dashboard joins portfolio metrics (`symbol IS NULL`), equity snapshots and
+optional performance executions. Unfinished runs remain visible via left joins. Completion
+requires analysis metrics; `finished_at` alone only indicates replay finished. Training failures
+before run creation have no run row. Independent runs are never compounded.
+
 ## Backtest performance snapshots
 
 `backtest_performance` has an execution ID independent of its nullable `run_id`, allowing

@@ -105,6 +105,14 @@ class FeaturePipeline:
         self._schema_hash = hashlib.blake2b(canonical.encode(), digest_size=16).hexdigest()
 
     @property
+    def benchmark_columns(self) -> tuple[int, ...]:
+        return tuple(i for i, feature in enumerate(self._features) if feature.requires_benchmark)
+
+    @property
+    def requires_benchmark(self) -> bool:
+        return bool(self.benchmark_columns)
+
+    @property
     def benchmark_symbol(self) -> str:
         return self._benchmark_symbol
 

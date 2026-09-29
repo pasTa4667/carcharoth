@@ -26,8 +26,8 @@ import time
 import types
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
-from datetime import UTC, datetime, timedelta
-from functools import partial
+from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -54,6 +54,7 @@ from carcharoth.config.settings import Settings
 from carcharoth.domain.models import BacktestResult, OptimizationResult, RunType
 from carcharoth.engine.engine import TradingEngine
 from carcharoth.engine.scheduler import Scheduler
+from carcharoth.features.session import CalendarFetcher, TradingSession
 from carcharoth.interfaces import BarsFetcher, ByteStore
 from carcharoth.logging_setup import (
     setup_logging,
@@ -64,6 +65,8 @@ from carcharoth.logging_setup import (
 )
 from carcharoth.modeling import build_signal_generator, train_and_publish
 from carcharoth.modeling.artifact import MANIFEST_FILENAME, REPORT_FILENAME, load_manifest
+from carcharoth.modeling.assessment_io import EligibilityError
+from carcharoth.modeling.eligibility import EligibilityReport
 from carcharoth.optimize.bars_cache import BarsCache
 from carcharoth.performance import Monitor, replay_profile, stage
 from carcharoth.permutation.registry import method_kind
@@ -84,6 +87,7 @@ from carcharoth.persistence.repositories import (
     SqlAlchemyAnalysisReader,
     SqlAlchemyBacktestMetricsRepository,
     SqlAlchemyConfigurationRepository,
+    SqlAlchemyEligibilityRepository,
     SqlAlchemyModelDecisionRepository,
     SqlAlchemyModelDiagnosticsRepository,
     SqlAlchemyOrderRepository,
@@ -105,6 +109,7 @@ from carcharoth.services.alpaca import (
     build_trading_client,
 )
 from carcharoth.services.alpaca.historical import fetch_historical_bars, warmup_window
+from carcharoth.services.alpaca.universe import fetch_sessions
 from carcharoth.services.backtest import HistoricalMarketDataService, SimulatedBroker
 from carcharoth.services.cache.bars import BARS_PREFIX, V1_BARS_PREFIX, PersistentBarsCache
 from carcharoth.services.cache.noop import NoOpCache
@@ -134,6 +139,14 @@ DEFAULT_PROFILES = {
     "quicktest": "quicktest",
     "optimize": "optimization",
 }
+
+
+def _calendar_fetcher(settings: Settings) -> CalendarFetcher:
+    @lru_cache(maxsize=32)
+    def fetch(start: date, end: date) -> tuple[TradingSession, ...]:
+        return tuple(fetch_sessions(build_trading_client(settings), start, end))
+
+    return fetch
 
 
 def _build_bars_store(settings: Settings, config: RunConfig) -> ByteStore | None:
@@ -221,6 +234,8 @@ def run_backtest_once(
     provenance: dict[str, Any] | None = None,
     performance_monitor: Monitor | None = None,
     profile_output: Path | None = None,
+    loop_context: dict[str, Any] | None = None,
+    fetch_calendar: CalendarFetcher | None = None,
 ) -> BacktestResult:
     # All existing callers (including Optuna) remain unmonitored by default.
     with performance_monitor.execution() if performance_monitor else nullcontext():
@@ -236,6 +251,8 @@ def run_backtest_once(
             provenance,
             performance_monitor,
             profile_output,
+            loop_context,
+            fetch_calendar,
         )
 
 
@@ -251,6 +268,8 @@ def _execute_backtest(
     provenance: dict[str, Any] | None = None,
     performance_monitor: Monitor | None = None,
     profile_output: Path | None = None,
+    loop_context: dict[str, Any] | None = None,
+    fetch_calendar: CalendarFetcher | None = None,
 ) -> BacktestResult:
     """One fully-persisted backtest run: creates the run row, replays the
     window, analyzes. Knows nothing about its caller — manual CLI runs and
@@ -272,7 +291,10 @@ def _execute_backtest(
         started_at=started_at,
         backtest_start=start,
         backtest_end=end_exclusive,
+        loop_context=loop_context,
     )
+    if loop_context is not None:
+        provenance = {**(provenance or {}), "loop": loop_context}
     if performance_monitor is not None:
         performance_monitor.run_id = run_id
         performance_monitor.metadata["lookback"] = model.market_requirements().bars.lookback
@@ -307,6 +329,21 @@ def _execute_backtest(
             spec.timeframe,
             start - warmup_window(spec),
             end_exclusive,
+        )
+    if config.backtest.check_data_coverage:
+        from carcharoth.modeling.backtest_eligibility import report_backtest_eligibility
+
+        try:
+            report_backtest_eligibility(
+                config, bars, symbols, start, end_exclusive, run_id, fetch_calendar,
+                LOG_DIR / "backtests", SqlAlchemyEligibilityRepository(session_factory).save,
+                loop_context,
+            )
+        except Exception:
+            logger.warning("backtest %s data diagnostics unavailable", run_id, exc_info=True)
+        logger.warning(
+            "backtest coverage is report-only: gaps may compromise results; "
+            "no membership changes or delisting-return handling were applied"
         )
     if config.model.prepared_history:
         model.prepare_history(bars, symbols=symbols, start=start, end_exclusive=end_exclusive)
@@ -418,7 +455,8 @@ def _run_backtest(
     performance_interval: float = 10,
     no_performance: bool = False,
     profile_output: Path | None = None,
-) -> None:
+    loop_context: dict[str, Any] | None = None,
+) -> BacktestResult:
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = resolved.config
     watchlist = config.symbols
@@ -463,6 +501,7 @@ def _run_backtest(
                 "profile_output": str(profile_output) if profile_output else None,
                 "python": platform.python_version(),
                 "platform": platform.platform(),
+                "loop": loop_context,
             },
         )
     permutation_outcome = None
@@ -481,6 +520,10 @@ def _run_backtest(
             provenance=resolved.stamp(),
             performance_monitor=monitor,
             profile_output=profile_output,
+            loop_context=loop_context,
+            fetch_calendar=(
+                _calendar_fetcher(settings) if config.backtest.check_data_coverage else None
+            ),
         )
         if permutation is not None:
             # Monte carlo the finished run's closed trades — read back from
@@ -525,6 +568,7 @@ def _run_backtest(
         print("monte carlo trade analysis complete")
         print(f"  test_id: {permutation_outcome.test_id}")
         print(f"  summary: {LOG_DIR / 'permutation' / f'{permutation_outcome.test_id}.yaml'}")
+    return result
 
 
 def _optimize_view_or_exit(config: RunConfig) -> OptimizeConfig:
@@ -561,6 +605,7 @@ def _run_optimize(resolved: ResolvedConfig) -> None:
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
     # One data client + in-process/persistent bars cache for the whole study.
+    fetch_calendar = _calendar_fetcher(settings)
     bars_store = _build_bars_store(settings, config)
     upstream: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
     if bars_store is not None:
@@ -570,7 +615,8 @@ def _run_optimize(resolved: ResolvedConfig) -> None:
     def run_trial_backtest(
         config: RunConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
     ) -> BacktestResult:
-        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars)
+        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars,
+                                 fetch_calendar=fetch_calendar)
 
     optimizer = OptunaOptimizer(
         run_backtest=run_trial_backtest,
@@ -640,6 +686,7 @@ def _optimize_worker(
     db_engine = build_engine(settings.database_url, pool_size=2, max_overflow=2)
     session_factory = build_session_factory(db_engine)
     # Each worker connects to the persistent bars cache itself.
+    fetch_calendar = _calendar_fetcher(settings)
     bars_store = _build_bars_store(settings, config)
     upstream: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
     if bars_store is not None:
@@ -649,7 +696,8 @@ def _optimize_worker(
     def run_trial_backtest(
         config: RunConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
     ) -> BacktestResult:
-        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars)
+        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars,
+                                 fetch_calendar=fetch_calendar)
 
     optimizer = OptunaOptimizer(
         run_backtest=run_trial_backtest,
@@ -809,19 +857,38 @@ def _run_analyze(run_id: UUID) -> None:
             config.risk,
             metrics,
             config_hash=config_hash(config),
+            provenance={"loop": run.loop_context} if run.loop_context is not None else None,
         )
     finally:
         db_engine.dispose()
 
 
-def _run_train(resolved: ResolvedConfig) -> None:
+def _publish_eligibility(settings: Settings, report: EligibilityReport) -> None:
+    db_engine = build_engine(settings.database_url)
+    try:
+        SqlAlchemyEligibilityRepository(build_session_factory(db_engine)).save(report)
+    finally:
+        db_engine.dispose()
+
+
+def _run_train(
+    resolved: ResolvedConfig, loop_context: dict[str, Any] | None = None,
+) -> Path:
     settings = Settings()  # type: ignore[call-arg]
     config = resolved.config
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
     bars_store = _build_bars_store(settings, config)
     if bars_store is not None:
         fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
-    artifact = train_and_publish(config, resolved.hash, fetch_bars)
+    try:
+        artifact = train_and_publish(
+            config, resolved.hash, fetch_bars,
+            _calendar_fetcher(settings),
+            partial(_publish_eligibility, settings),
+            loop_context=loop_context,
+        )
+    except EligibilityError as exc:
+        raise SystemExit(str(exc)) from None
     manifest = load_manifest(artifact / MANIFEST_FILENAME)
     report_value = json.loads((artifact / REPORT_FILENAME).read_text())
     if not isinstance(report_value, dict):
@@ -856,6 +923,7 @@ def _run_train(resolved: ResolvedConfig) -> None:
     if dashboard_published:
         print(f"  diagnostics: Grafana Model Diagnostics (model_id={manifest.model_id})")
     print("  activation: set model.artifact_path explicitly, backtest it, then promote")
+    return artifact
 
 
 def _cache_store_or_exit() -> ByteStore:
@@ -1203,6 +1271,29 @@ def _build_parser() -> argparse.ArgumentParser:
         train.add_argument(flag, dest=destination, type=_parse_date, default=None)
     train.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
+    loop = subparsers.add_parser("backtest-loop", help="run independent expanding-window backtests")
+    _add_profile_args(loop, "backtest")
+    loop.add_argument("--iterations", type=int, required=True)
+    loop.add_argument("--label", default="")
+    loop.add_argument("--train", action="store_true")
+    loop.add_argument("--train-start", type=date.fromisoformat)
+    loop.add_argument("--start", type=date.fromisoformat)
+    loop.add_argument("--artifact", type=Path)
+    for flag, default in (
+        ("train-period", "yearly"),
+        ("validation-period", "quarterly"),
+        ("backtest-period", "quarterly"),
+    ):
+        loop.add_argument(
+            f"--{flag}", choices=("quarterly", "half-year", "yearly"), default=default
+        )
+    loop.add_argument("--snapshot", type=Path, required=True)
+    loop.add_argument("--bucket", required=True)
+    loop.add_argument("--prepared-history", choices=("true", "false"), default="false")
+    loop.add_argument("--dry-run", action="store_true")
+    loop.add_argument("--json", action="store_true", help="JSON preview (requires --dry-run)")
+    loop.add_argument("--verbose", action="store_true", help="enable INFO console logging")
+
     backtest = subparsers.add_parser("backtest", help="replay historical data through the engine")
     _add_profile_args(backtest, DEFAULT_PROFILES["backtest"])
     _add_window_args(backtest)
@@ -1270,6 +1361,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     universe = subparsers.add_parser("universe", help="offline Alpaca universe discovery")
     universe_sub = universe.add_subparsers(dest="universe_command", required=True)
+    listing = universe_sub.add_parser("list", help="list local frozen universe snapshots")
+    listing.add_argument("--root", type=Path, default=Path("artifacts/universes"))
+    listing.add_argument("--json", action="store_true")
     discover = universe_sub.add_parser("discover", help="rank and group a frozen universe")
     discover.add_argument("--config", type=Path, required=True, help="standalone discovery YAML")
     discover.add_argument(
@@ -1407,6 +1501,44 @@ def _run_universe_discover(config_path: Path, reuse_data: Path | None) -> None:
     )
 
 
+def _run_backtest_loop(args: argparse.Namespace) -> None:
+    from carcharoth.backtest.loop import LoopOptions, execute_loop, plan_loop, preview
+
+    if args.json and not args.dry_run:
+        raise SystemExit("--json requires --dry-run")
+    options = LoopOptions(
+        iterations=args.iterations,
+        snapshot=args.snapshot,
+        bucket=args.bucket,
+        train=args.train,
+        train_start=args.train_start,
+        train_period=args.train_period,
+        validation_period=args.validation_period,
+        backtest_period=args.backtest_period,
+        start=args.start,
+        artifact=args.artifact,
+        prepared_history=args.prepared_history == "true",
+        label=args.label,
+        profile=args.profile or "backtest",
+    )
+    try:
+        plans = plan_loop(options, _parse_set(args.set))
+    except (ValueError, ConfigError) as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.dry_run:
+        print(json.dumps(preview(options, plans), indent=2))
+        return
+    setup_logging(LOG_DIR, console_level="INFO" if args.verbose else "WARNING")
+    execute_loop(
+        options,
+        plans,
+        _run_train,
+        lambda resolved, context: _run_backtest(
+            resolved, verbose=args.verbose, loop_context=context
+        ),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     import sys
 
@@ -1414,6 +1546,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not args_list:
         args_list = ["run"]  # plain `carcharoth` keeps starting the live bot
     args = _build_parser().parse_args(args_list)
+
+    if args.command == "backtest-loop":
+        _run_backtest_loop(args)
+        return
+    if args.command == "universe" and args.universe_command == "list":
+        from carcharoth.universe import list_snapshots
+
+        catalogue = list_snapshots(args.root)
+        print(json.dumps(catalogue, indent=2) if args.json else yaml.safe_dump(catalogue))
+        return
 
     console_level = (
         "INFO" if args.command == "run" or getattr(args, "verbose", False) else "WARNING"

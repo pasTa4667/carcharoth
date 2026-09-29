@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from carcharoth.config.loader import config_hash, load_profile
 from carcharoth.config.run_config import RunConfig
 from carcharoth.domain.models import Bar
+from carcharoth.features.session import MARKET_TZ, TradingSession
 from carcharoth.modeling.artifact import MANIFEST_FILENAME, MODEL_FILENAME, REPORT_FILENAME
 from carcharoth.modeling.training import train_and_publish
 
@@ -38,6 +39,7 @@ def test_train_publishes_immutable_artifact(tmp_path) -> None:
         "artifact_root": tmp_path,
         "seed": 1,
         "early_stopping_rounds": 3,
+        "eligibility": {"min_train_rows": 5, "min_validation_rows": 5, "min_usable_coverage": 0.2},
     }
     config = RunConfig.model_validate(raw)
     all_bars = {
@@ -49,6 +51,13 @@ def test_train_publishes_immutable_artifact(tmp_path) -> None:
         config,
         config_hash(config),
         lambda symbols, timeframe, start, end: all_bars,
+        lambda start, end: [
+            TradingSession(
+                datetime(2024, 1, day, 9, 30, tzinfo=MARKET_TZ),
+                datetime(2024, 1, day, 16, tzinfo=MARKET_TZ),
+            )
+            for day in (2, 3)
+        ],
     )
     assert artifact.parent == tmp_path
     assert (artifact / MODEL_FILENAME).is_file()

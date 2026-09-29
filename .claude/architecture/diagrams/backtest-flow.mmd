@@ -1,4 +1,10 @@
 flowchart LR
+  TUI[Backtest Loop TUI tab] --> CLI[One backtest-loop CLI child]
+  CLI --> W[Validate and preview all calendar windows]
+  W --> Mode{Train each iteration?}
+  Mode -->|yes| Train[Fresh training on expanding window]
+  Train -->|exact returned artifact path| A
+  Mode -->|no: fixed artifact| A
   A[Validated immutable artifact] --> M[ModelSignalGenerator]
   B[Cached historical bars<br/>tradables + SPY] --> H[HistoricalMarketDataService]
   H --> R[BacktestRunner]
@@ -8,3 +14,6 @@ flowchart LR
   S -->|order at t queued| N[next bar t+1]
   N -->|fill at open, mark at close| E
   E --> P[Run-scoped persistence + analyzer]
+  P --> G[Grafana Backtest Loops<br/>loop UUID + iteration; independent returns]
+  P --> Next{More iterations?}
+  Next -->|yes: fresh broker and capital| Mode

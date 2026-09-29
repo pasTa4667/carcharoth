@@ -229,10 +229,19 @@ class InMemoryRunRepository(RunRepository):
         started_at: datetime,
         backtest_start: datetime | None = None,
         backtest_end: datetime | None = None,
+        loop_context: dict[str, Any] | None = None,
     ) -> UUID:
         run_id = uuid4()
         self.runs[run_id] = RunInfo(
-            run_id, run_type, started_at, None, list(symbols), backtest_start, backtest_end, config
+            run_id,
+            run_type,
+            started_at,
+            None,
+            list(symbols),
+            backtest_start,
+            backtest_end,
+            config,
+            loop_context,
         )
         return run_id
 
@@ -247,6 +256,7 @@ class InMemoryRunRepository(RunRepository):
             current.backtest_start,
             current.backtest_end,
             current.config,
+            current.loop_context,
         )
 
     def get(self, run_id: UUID) -> RunInfo | None:

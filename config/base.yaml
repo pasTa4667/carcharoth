@@ -69,8 +69,16 @@ training:
   artifact_root: artifacts/models
   seed: 42
   early_stopping_rounds: 50
+  eligibility:
+    mode: drop # strict rejects the whole attempt if any symbol fails.
+    min_train_rows: 100
+    min_validation_rows: 30
+    min_usable_coverage: 0.80
+    min_symbols: 1
+    min_retained_fraction: 0.50
 
 backtest:
+  check_data_coverage: false # Report-only; never changes replay membership.
   initial_capital: 100000.0
   margin_multiplier: 2.0
   spread_pct: 0.0005

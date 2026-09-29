@@ -26,16 +26,20 @@ def dataset_diagnostics(
         if matrix.shape[0] == 0 or float(np.ptp(matrix[:, index])) == 0.0
     ]
     high_correlations: list[dict[str, float | str]] = []
-    if matrix.shape[0] >= 2 and matrix.shape[1] >= 2:
-        correlation = np.asarray(spearmanr(matrix, axis=0).statistic, dtype=np.float64)
-        for left in range(matrix.shape[1]):
-            for right in range(left + 1, matrix.shape[1]):
+    varying = [i for i, name in enumerate(dataset.feature_names) if name not in constants]
+    if matrix.shape[0] >= 2 and len(varying) >= 2:
+        correlation = np.asarray(spearmanr(matrix[:, varying], axis=0).statistic, dtype=np.float64)
+        if correlation.ndim == 0:  # scipy returns a scalar for exactly two columns.
+            value = float(correlation)
+            correlation = np.asarray([[1.0, value], [value, 1.0]])
+        for left in range(len(varying)):
+            for right in range(left + 1, len(varying)):
                 value = float(correlation[left, right])
                 if np.isfinite(value) and abs(value) >= correlation_threshold:
                     high_correlations.append(
                         {
-                            "left": dataset.feature_names[left],
-                            "right": dataset.feature_names[right],
+                            "left": dataset.feature_names[varying[left]],
+                            "right": dataset.feature_names[varying[right]],
                             "correlation": value,
                         }
                     )
@@ -43,6 +47,14 @@ def dataset_diagnostics(
         "attempted_rows": dataset.attempted_rows,
         "complete_rows": dataset.complete_rows,
         "dropped_rows": dataset.attempted_rows - dataset.complete_rows,
+        "rows_by_symbol": {
+            symbol: {
+                **evidence.model_dump(mode="json"),
+                "usable_coverage": evidence.usable_coverage,
+                "raw_coverage": evidence.raw_coverage,
+            }
+            for symbol, evidence in dataset.evidence.items()
+        },
         "constant_features": constants,
         "high_correlations": high_correlations,
     }

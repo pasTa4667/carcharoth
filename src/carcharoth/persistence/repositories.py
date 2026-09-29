@@ -43,12 +43,14 @@ from carcharoth.domain.models import (
     TargetExposure,
     TradeRecord,
 )
+from carcharoth.modeling.eligibility import EligibilityReport
 from carcharoth.performance import measured
 from carcharoth.persistence.orm import (
     BacktestMetricRow,
     BacktestPerformanceRow,
     BacktestPerformanceStageRow,
     ConfigurationRow,
+    DataEligibilityAssessmentRow,
     EquitySnapshotRow,
     ModelDecisionRow,
     ModelDiagnosticsRow,
@@ -186,6 +188,7 @@ class RunRepository(ABC):
         started_at: datetime,
         backtest_start: datetime | None = None,
         backtest_end: datetime | None = None,
+        loop_context: dict[str, Any] | None = None,
     ) -> UUID: ...
 
     @abstractmethod
@@ -445,6 +448,7 @@ class SqlAlchemyRunRepository(RunRepository):
         started_at: datetime,
         backtest_start: datetime | None = None,
         backtest_end: datetime | None = None,
+        loop_context: dict[str, Any] | None = None,
     ) -> UUID:
         run_id = uuid4()
         with self._session_factory.begin() as session:
@@ -459,6 +463,7 @@ class SqlAlchemyRunRepository(RunRepository):
                     backtest_start=backtest_start,
                     backtest_end=backtest_end,
                     note=None,
+                    loop_context=loop_context,
                 )
             )
         return run_id
@@ -483,6 +488,7 @@ class SqlAlchemyRunRepository(RunRepository):
                 backtest_start=row.backtest_start,
                 backtest_end=row.backtest_end,
                 config=dict(row.config),
+                loop_context=dict(row.loop_context) if row.loop_context is not None else None,
             )
 
     def list_run_ids(self, run_type: RunType | None = None) -> list[UUID]:
@@ -495,6 +501,32 @@ class SqlAlchemyRunRepository(RunRepository):
     def delete(self, run_id: UUID) -> None:
         with self._session_factory.begin() as session:
             session.execute(delete(RunRow).where(RunRow.run_id == run_id))
+
+
+class SqlAlchemyEligibilityRepository:
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save(self, report: EligibilityReport) -> None:
+        values = {
+            "assessment_id": report.assessment_id,
+            "scope": report.scope,
+            "created_at": report.created_at,
+            "updated_at": report.updated_at,
+            "config_hash": report.config_hash,
+            "status": report.status,
+            "model_id": report.model_id,
+            "run_id": report.run_id,
+            "report": report.payload(),
+        }
+        statement = pg_insert(DataEligibilityAssessmentRow).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[DataEligibilityAssessmentRow.assessment_id],
+            set_={key: value for key, value in values.items() if key != "assessment_id"},
+            where=DataEligibilityAssessmentRow.updated_at <= statement.excluded.updated_at,
+        )
+        with self._session_factory.begin() as session:
+            session.execute(statement)
 
 
 class SqlAlchemyModelDiagnosticsRepository:

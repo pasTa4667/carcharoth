@@ -1,7 +1,8 @@
 """NYSE regular-session helpers shared by features and replay."""
 
-from collections.abc import Sequence
-from datetime import datetime, time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from carcharoth.domain.models import Bar
@@ -10,6 +11,44 @@ MARKET_TZ = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 SESSION_CLOSE = time(16, 0)
 REGULAR_SESSION_MINUTES = 390
+
+
+@dataclass(frozen=True, slots=True)
+class TradingSession:
+    open: datetime
+    close: datetime
+
+    def __post_init__(self) -> None:
+        if any(t.tzinfo is None or t.utcoffset() is None for t in (self.open, self.close)):
+            raise ValueError("trading sessions require aware timestamps")
+        if self.close <= self.open:
+            raise ValueError("session close must follow open")
+
+
+CalendarFetcher = Callable[[date, date], Sequence[TradingSession]]
+
+
+def scheduled_bars(
+    sessions: Sequence[TradingSession], timeframe_minutes: int
+) -> dict[datetime, date]:
+    """Regular-session interval starts, including a partial final interval.
+
+    Alpaca minute aggregates align to clock intervals from local midnight,
+    not a fresh interval grid at the exchange open.
+    """
+    step = timedelta(minutes=timeframe_minutes)
+    if timeframe_minutes <= 0:
+        raise ValueError("timeframe must be positive")
+    result: dict[datetime, date] = {}
+    for session in sessions:
+        opened = session.open.astimezone(MARKET_TZ)
+        midnight = opened.replace(hour=0, minute=0, second=0, microsecond=0)
+        slots, remainder = divmod(opened - midnight, step)
+        cursor = midnight + (slots + bool(remainder)) * step
+        while cursor < session.close:
+            result[cursor] = opened.date()
+            cursor += step
+    return result
 
 
 def is_regular_session(ts: datetime) -> bool:

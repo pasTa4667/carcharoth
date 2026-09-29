@@ -21,3 +21,22 @@
 
 Slim mode stores equity/trades/orders/round trips/metrics; `--verbose-db` additionally stores
 model decisions and position snapshots. The same analyzer handles both directions.
+
+## Sequential loops
+
+`backtest/loop.py` computes all windows and resolves configs before execution. Training windows
+expand from an anchored start; validation/backtest windows keep fixed calendar-month durations.
+The TUI only renders the JSON preview and launches one CLI invocation. In-process stage calls
+reuse `_run_train` (including diagnostics) and `_run_backtest` (including caching and telemetry).
+Training's returned `Path`, never console output or latest-directory discovery, selects the
+artifact. Every backtest constructs a new broker/engine. Exceptions stop subsequent stages.
+
+Fixed-artifact mode validates the selected model against the first backtest and selected universe,
+using manifest train/validation dates instead of unrelated profile defaults. Later backtests have
+strictly later starts and the same artifact/configuration. Runtime still validates every artifact.
+
+`runs.loop_context` is written alongside run creation, with the same context in summary provenance
+and performance metadata. Backtest Loops shows only runs that actually started; it does not
+fabricate rows for failed training. UUID run keys and trading config hashes are unchanged.
+
+Diagram source: [backtest-flow.mmd](diagrams/backtest-flow.mmd).
