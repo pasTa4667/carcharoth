@@ -52,6 +52,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         // into the output pane no matter which screen is visible.
         app.runner.poll();
         if app.should_quit {
+            app.backtest_loop.cancel_preview();
             app.runner.shutdown();
             return Ok(());
         }

@@ -19,20 +19,10 @@ const MAX_LINES: usize = 5_000;
 
 /// Stop uv and its Python descendants together; child.kill() alone orphans Python.
 fn kill_tree(child: &mut Child) -> Result<()> {
-    #[cfg(unix)]
-    let status = Command::new("/bin/kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    #[cfg(windows)]
-    let status = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &child.id().to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if !status.success() && child.try_wait()?.is_none() {
-        return Err(anyhow!("could not terminate the command's process tree"));
+    if let Err(err) = cli::kill_process_tree(child.id()) {
+        if child.try_wait()?.is_none() {
+            return Err(err.into());
+        }
     }
     Ok(())
 }

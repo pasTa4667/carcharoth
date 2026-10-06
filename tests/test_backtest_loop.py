@@ -237,6 +237,7 @@ def test_local_universe_listing(options, monkeypatch, capsys):
     main(["universe", "list", "--root", str(options.snapshot.parent), "--json"])
     listing = json.loads(capsys.readouterr().out)
     assert listing["snapshots"][0]["buckets"] == {"all": 2, "bucket-001": 2}
+    assert listing["snapshots"][0]["earliest_training_start"] == "2017-01-01"
     assert not listing["warnings"]
     options.snapshot.write_text("broken")
     listing = list_snapshots(options.snapshot.parent)

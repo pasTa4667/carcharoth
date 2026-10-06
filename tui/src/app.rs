@@ -430,19 +430,20 @@ impl App {
 
     fn loop_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('x') if self.backtest_loop.cancel_preview() => {
+                self.status = "preview cancelled".into();
+            }
             KeyCode::F(2) => {
                 self.status = self
                     .backtest_loop
                     .refresh(&self.overrides)
                     .unwrap_or_else(|err| err.to_string());
             }
-            KeyCode::F(3) => {
-                self.status = match self.backtest_loop.request_preview(&self.overrides) {
-                    Ok(()) => "schedule validated; Enter confirms Start".into(),
-                    Err(err) => err.to_string(),
-                };
-            }
             KeyCode::Enter => {
+                if self.backtest_loop.previewing() {
+                    self.status = "validating schedule… press x to cancel".into();
+                    return;
+                }
                 if self.runner.is_running() {
                     self.status = "a command is already running; cancel it in Output first".into();
                     return;
@@ -463,10 +464,20 @@ impl App {
                             action: Action::Run(args),
                         }
                     }
-                    Err(err) => self.status = err.to_string(),
+                    Err(_) => {
+                        self.status = match self.backtest_loop.request_preview(&self.overrides) {
+                            Ok(()) => "validating schedule… press x to cancel (30s timeout)".into(),
+                            Err(err) => err.to_string(),
+                        };
+                    }
                 }
             }
-            KeyCode::Esc => self.screen = Screen::Commands,
+            KeyCode::Esc => {
+                if self.backtest_loop.cancel_preview() {
+                    self.status = "preview cancelled".into();
+                }
+                self.screen = Screen::Commands;
+            }
             code => self.backtest_loop.edit(code),
         }
     }
@@ -771,6 +782,9 @@ impl App {
 
     /// Lazy per-screen loading, run once per frame.
     pub fn refresh(&mut self) {
+        if let Some(result) = self.backtest_loop.poll_preview() {
+            self.status = result.unwrap_or_else(|err| err.to_string());
+        }
         self.backtest_loop.invalidate_if_changed(&self.overrides);
         match self.screen {
             Screen::BacktestLoop if !self.backtest_loop.loaded => {
@@ -797,7 +811,7 @@ impl App {
             },
             Screen::Config => "↑↓ move · Enter expand/edit · e edit · d drop · D drop all · p profile · r reload · z collapse",
             Screen::Promote => "↑↓ move · space select · a all · s source · r reload · Enter promote",
-            Screen::BacktestLoop => "↑↓ field · ←→ choice · type edit · F2 refresh · F3 preview · PgUp/Dn windows · Enter start · Esc back",
+            Screen::BacktestLoop => "↑↓ field · ←→ choice · type edit · F2 refresh · PgUp/Dn windows · Enter preview/confirm · x cancel · Esc back",
             Screen::Output => "↑↓/PgUp/PgDn scroll · End follow · x cancel · q quit",
         }
     }

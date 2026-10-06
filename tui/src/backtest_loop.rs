@@ -2,11 +2,13 @@
 use anyhow::{anyhow, Result};
 use crossterm::event::KeyCode;
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::catalog::{resolve_model_artifact_options, Field, Kind, OMIT};
 use crate::cli;
 
 const PERIODS: &[&str] = &["quarterly", "half-year", "yearly"];
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 pub const FIELDS: &[Field] = &[
     Field::text(
         "profile",
@@ -106,8 +108,11 @@ pub struct LoopForm {
     pub cursor: usize,
     pub loaded: bool,
     pub preview: Option<Value>,
+    pub preview_error: Option<String>,
     pub preview_scroll: usize,
     preview_args: Vec<String>,
+    pending_preview_args: Vec<String>,
+    preview_job: Option<cli::JsonCommand>,
     options: Vec<Vec<String>>,
     snapshots: Vec<Value>,
 }
@@ -119,8 +124,11 @@ impl Default for LoopForm {
             cursor: 0,
             loaded: false,
             preview: None,
+            preview_error: None,
             preview_scroll: 0,
             preview_args: vec![],
+            pending_preview_args: vec![],
+            preview_job: None,
             options: vec![vec![]; FIELDS.len()],
             snapshots: vec![],
         };
@@ -170,9 +178,24 @@ impl LoopForm {
     }
 
     pub fn invalidate(&mut self) {
+        self.cancel_preview();
         self.preview = None;
+        self.preview_error = None;
         self.preview_args.clear();
         self.preview_scroll = 0;
+    }
+
+    pub fn previewing(&self) -> bool {
+        self.preview_job.is_some()
+    }
+
+    pub fn cancel_preview(&mut self) -> bool {
+        let Some(job) = self.preview_job.take() else {
+            return false;
+        };
+        drop(job);
+        self.pending_preview_args.clear();
+        true
     }
 
     pub fn args(&self, overrides: &[(String, String)]) -> Vec<String> {
@@ -266,7 +289,7 @@ impl LoopForm {
             })
             .unwrap_or_default();
         Ok(if warnings.is_empty() {
-            "refreshed local artifacts; F3 previews the schedule".into()
+            "refreshed local artifacts; Enter previews the schedule".into()
         } else {
             warnings
         })
@@ -302,6 +325,22 @@ impl LoopForm {
             .map(|b| b.keys().cloned().collect())
             .unwrap_or_default();
         self.keep_valid("bucket");
+        self.prefill_train_start();
+    }
+
+    fn prefill_train_start(&mut self) {
+        if !self.training() || !self.value("train-start").is_empty() {
+            return;
+        }
+        let start = self
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot["path"].as_str() == Some(self.value("snapshot")))
+            .and_then(|snapshot| snapshot["earliest_training_start"].as_str())
+            .map(str::to_string);
+        if let Some(start) = start {
+            self.set("train-start", start);
+        }
     }
 
     pub fn universe_hint(&self) -> String {
@@ -324,9 +363,35 @@ impl LoopForm {
         let args = self.args(overrides);
         let mut preview_args = args.clone();
         preview_args.extend(["--dry-run".into(), "--json".into()]);
-        self.preview = Some(cli::capture_json(&preview_args)?);
-        self.preview_args = args;
+        self.preview_job = Some(cli::JsonCommand::start(&preview_args, PREVIEW_TIMEOUT));
+        self.pending_preview_args = args;
         Ok(())
+    }
+
+    pub fn poll_preview(&mut self) -> Option<Result<String>> {
+        let result = self.preview_job.as_ref()?.poll()?;
+        self.preview_job.take();
+        let args = std::mem::take(&mut self.pending_preview_args);
+        Some(match result {
+            Ok(output) => {
+                self.preview = Some(output.value);
+                self.preview_args = args;
+                let warning = output
+                    .stderr
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty());
+                Ok(match warning {
+                    Some(line) => format!("schedule validated; CLI warning: {line}"),
+                    None => "schedule validated; review it, then press Enter again".into(),
+                })
+            }
+            Err(err) => {
+                let message = err.to_string();
+                self.preview_error = Some(message.clone());
+                Err(anyhow!(message))
+            }
+        })
     }
 
     pub fn ready_args(&self, overrides: &[(String, String)]) -> Result<Vec<String>> {
@@ -334,14 +399,17 @@ impl LoopForm {
         let args = self.args(overrides);
         if self.preview.is_none() || args != self.preview_args {
             return Err(anyhow!(
-                "F3 previews and validates the current settings before Start"
+                "Enter previews and validates the current settings before Start"
             ));
         }
         Ok(args)
     }
 
     pub fn invalidate_if_changed(&mut self, overrides: &[(String, String)]) {
-        if self.preview.is_some() && self.args(overrides) != self.preview_args {
+        let args = self.args(overrides);
+        if (self.preview.is_some() && args != self.preview_args)
+            || (self.previewing() && args != self.pending_preview_args)
+        {
             self.invalidate();
         }
     }
@@ -409,6 +477,7 @@ impl LoopForm {
                     self.set("bucket", String::new());
                     self.load_buckets();
                 }
+                "--train" => self.prefill_train_start(),
                 "root" => {
                     self.set("snapshot", String::new());
                     self.set("bucket", String::new());
@@ -462,6 +531,24 @@ mod tests {
         assert!(form.preview.is_none());
         form.set("iterations", "0".into());
         assert!(form.check_required().is_err());
+    }
+
+    #[test]
+    fn training_start_defaults_to_the_day_after_universe_discovery() {
+        let mut form = LoopForm::default();
+        form.set("--train", "on".into());
+        form.load_snapshots(&json!({"snapshots": [{
+            "path": "a",
+            "earliest_training_start": "2017-01-01",
+            "buckets": {"all": 10}
+        }]}));
+        form.cursor = form
+            .visible()
+            .iter()
+            .position(|i| *i == index("snapshot"))
+            .unwrap();
+        form.edit(KeyCode::Right);
+        assert_eq!(form.value("train-start"), "2017-01-01");
     }
 
     #[test]

@@ -78,7 +78,9 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let running = if app.runner.is_running() {
+    let running = if app.backtest_loop.previewing() {
+        Span::styled(" ● validating ", Style::default().fg(Color::Yellow))
+    } else if app.runner.is_running() {
         Span::styled(" ● running ", Style::default().fg(Color::Yellow))
     } else {
         Span::styled(
@@ -280,8 +282,22 @@ fn draw_loop(frame: &mut Frame, app: &App, area: Rect) {
             )));
             preview.push(Line::raw(""));
         }
+    } else if form.previewing() {
+        preview.push(Line::styled(
+            "Validating schedule…",
+            Style::default().fg(ACCENT),
+        ));
+        preview.push(Line::raw("Press x to cancel · 30s timeout"));
+    } else if let Some(error) = &form.preview_error {
+        preview.push(Line::styled(
+            "Preview failed",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+        preview.push(Line::raw(error));
+        preview.push(Line::raw(""));
+        preview.push(Line::raw("Fix the settings and press Enter to retry."));
     } else {
-        preview.push(Line::raw("F3: validate and preview all windows."));
+        preview.push(Line::raw("Enter: validate and preview all windows."));
         preview.push(Line::raw("Choose universe artifact, then bucket."));
         preview.push(Line::raw("Each backtest starts with fresh capital."));
     }
@@ -589,8 +605,8 @@ fn help_text() -> String {
          selects values, Enter validates and writes them to {}.\n\
          \n\
          Backtest Loop  choose universe then bucket; training is optional.\n\
-         F2 refreshes artifacts, F3 validates/previews, Enter confirms Start.\n\
-         PgUp/PgDn scroll windows. Every backtest resets capital and positions.\n\
+         F2 refreshes artifacts; Enter previews, then Enter again confirms Start.\n\
+         Preview has a 30s timeout; x cancels it. PgUp/PgDn scroll windows. Every backtest resets capital and positions.\n\
          \n\
          Output    one command at a time; ↑↓/PgUp/PgDn scroll, End follows the\n\
          tail, x cancels the running child.",
@@ -641,6 +657,18 @@ mod tests {
         // Tiny terminals should degrade without panicking.
         let mut tiny = Terminal::new(TestBackend::new(25, 8)).unwrap();
         tiny.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn loop_preview_errors_are_visible_in_the_schedule_pane() {
+        let mut app = App {
+            screen: Screen::BacktestLoop,
+            ..App::default()
+        };
+        app.backtest_loop.preview_error = Some("artifact validation failed".into());
+        let text = screen(&mut app);
+        assert!(text.contains("Preview failed"));
+        assert!(text.contains("artifact validation failed"));
     }
 
     #[test]

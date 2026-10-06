@@ -204,9 +204,10 @@ Each loop iteration assesses independently and keeps its own linked audit trail.
 ### Backtest loops
 
 Apply `uv run alembic upgrade head` before using loop grouping. In the Rust TUI, open
-**Backtest Loop**: **F2** refreshes model/universe artifacts, **F3** validates and previews
-all windows, and **Enter** confirms Start. Choose the universe artifact first, then its
-bucket. **PgUp/PgDn** scroll the preview; Output shows progress and **x** cancels the loop.
+**Backtest Loop**: **F2** refreshes model/universe artifacts. Press **Enter** to validate
+and show all windows in the right pane, review them, then press **Enter** again to confirm
+Start. Choose the universe artifact first, then its bucket. **PgUp/PgDn** scroll the preview;
+Output shows progress and **x** cancels the loop.
 
 Set the iteration count and backtest period (quarterly / half-year / yearly). Training is
 opt-in: set its original start, **initial** training period, and validation period. Training

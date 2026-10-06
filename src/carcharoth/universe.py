@@ -9,7 +9,7 @@ import os
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
@@ -284,6 +284,9 @@ def list_snapshots(root: Path) -> dict[str, Any]:
                 "digest": snapshot.content_digest,
                 "discovery_start": snapshot.discovery.start.isoformat(),
                 "discovery_end": snapshot.discovery.end.isoformat(),
+                "earliest_training_start": (
+                    snapshot.discovery.end + timedelta(days=1)
+                ).isoformat(),
                 "buckets": {name: len(members) for name, members in snapshot.buckets.items()},
             }
         )

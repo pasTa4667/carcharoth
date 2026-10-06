@@ -5,7 +5,12 @@
 //! Commands are spawned with an explicit argument vector (no shell), so
 //! values containing spaces or quotes can never be reinterpreted.
 
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -44,6 +49,162 @@ pub struct Output {
     pub ok: bool,
     pub stdout: String,
     pub stderr: String,
+}
+
+/// A completed asynchronous JSON invocation.
+pub struct JsonOutput {
+    pub value: Value,
+    pub stderr: String,
+}
+
+/// A cancellable, time-bounded JSON invocation.
+pub struct JsonCommand {
+    result: mpsc::Receiver<Result<JsonOutput>>,
+    cancel: mpsc::Sender<()>,
+    pid: Arc<AtomicU32>,
+}
+
+impl JsonCommand {
+    pub fn start(args: &[String], timeout: Duration) -> Self {
+        let mut command = Command::new(LAUNCHER);
+        command.args(argv(args));
+        Self::spawn(command, timeout)
+    }
+
+    fn spawn(mut command: Command, timeout: Duration) -> Self {
+        let (result_tx, result) = mpsc::channel();
+        let (cancel, cancel_rx) = mpsc::channel();
+        let pid = Arc::new(AtomicU32::new(0));
+        let worker_pid = Arc::clone(&pid);
+        thread::spawn(move || {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            let outcome = (|| -> Result<JsonOutput> {
+                let mut child = command
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|err| anyhow!("failed to start `{LAUNCHER}`: {err}"))?;
+                worker_pid.store(child.id(), Ordering::Release);
+                let stdout = read_all(child.stdout.take().expect("stdout piped"));
+                let stderr = read_all(child.stderr.take().expect("stderr piped"));
+                let started = Instant::now();
+                let ending = loop {
+                    if cancel_rx.try_recv().is_ok() {
+                        break "preview cancelled";
+                    }
+                    if started.elapsed() >= timeout {
+                        break "preview timed out";
+                    }
+                    if let Some(status) = child.try_wait()? {
+                        let stdout = stdout.join().unwrap_or_default();
+                        let stderr = stderr.join().unwrap_or_default();
+                        if !status.success() {
+                            return Err(anyhow!(first_error(&stderr, &stdout)));
+                        }
+                        let stderr = String::from_utf8_lossy(&stderr).into_owned();
+                        let value = serde_json::from_slice(&stdout).map_err(|err| {
+                            let detail = stderr.lines().find(|line| !line.trim().is_empty());
+                            match detail {
+                                Some(line) => anyhow!("invalid CLI JSON: {err}: {}", line.trim()),
+                                None => anyhow!("invalid CLI JSON: {err}"),
+                            }
+                        })?;
+                        return Ok(JsonOutput { value, stderr });
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                };
+                let _ = kill_process_tree(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                let stdout = stdout.join().unwrap_or_default();
+                let stderr = stderr.join().unwrap_or_default();
+                let detail = first_error(&stderr, &stdout);
+                if detail == "command failed without output" {
+                    Err(anyhow!(ending))
+                } else {
+                    Err(anyhow!("{ending}: {detail}"))
+                }
+            })();
+            worker_pid.store(0, Ordering::Release);
+            let _ = result_tx.send(outcome);
+        });
+        Self {
+            result,
+            cancel,
+            pid,
+        }
+    }
+
+    pub fn poll(&self) -> Option<Result<JsonOutput>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(anyhow!("preview worker stopped unexpectedly")))
+            }
+        }
+    }
+
+    pub fn cancel(&self) {
+        let _ = self.cancel.send(());
+        let pid = self.pid.load(Ordering::Acquire);
+        if pid != 0 {
+            let _ = kill_process_tree(pid);
+        }
+    }
+}
+
+impl Drop for JsonCommand {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+fn read_all<R: Read + Send + 'static>(mut stream: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stream.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn first_error(stderr: &[u8], stdout: &[u8]) -> String {
+    for bytes in [stderr, stdout] {
+        if let Some(line) = String::from_utf8_lossy(bytes)
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            return line.to_string();
+        }
+    }
+    "command failed without output".to_string()
+}
+
+pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let status = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    #[cfg(windows)]
+    let status = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("could not terminate process tree"))
+    }
 }
 
 /// Run a CLI command to completion and capture its output. Used for the
@@ -197,7 +358,7 @@ fn parse_validation(output: &Output) -> Result<Validation> {
 /// Whatever the CLI said about a failure, in one line.
 fn first_error_line(output: &Output) -> String {
     for stream in [&output.stderr, &output.stdout] {
-        if let Some(line) = stream.lines().map(str::trim).find(|l| !l.is_empty()) {
+        if let Some(line) = stream.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
             return line.to_string();
         }
     }
@@ -291,5 +452,37 @@ mod tests {
             stderr: "\nno such profile\n".to_string(),
         };
         assert!(parse_validation(&output).is_err());
+    }
+
+    #[test]
+    fn cli_errors_prefer_the_final_message_over_usage_text() {
+        let output = Output {
+            ok: false,
+            stdout: String::new(),
+            stderr: "usage: carcharoth backtest-loop ...\nerror: invalid date\n".into(),
+        };
+        assert_eq!(first_error_line(&output), "error: invalid date");
+        assert_eq!(
+            first_error(output.stderr.as_bytes(), output.stdout.as_bytes()),
+            "error: invalid date"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_json_command_times_out_and_reports_stderr() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo still-working >&2; sleep 5"]);
+        let job = JsonCommand::spawn(command, Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let error = loop {
+            if let Some(result) = job.poll() {
+                break result.err().expect("command should time out").to_string();
+            }
+            assert!(Instant::now() < deadline, "preview worker did not finish");
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(error.contains("preview timed out"));
+        assert!(error.contains("still-working"));
     }
 }
