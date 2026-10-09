@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from carcharoth.config.run_config import RunConfig
     from carcharoth.config.universe_config import UniverseMetadata
     from carcharoth.features.session import CalendarFetcher
+    from carcharoth.interfaces.cache import ByteStore
     from carcharoth.interfaces.optimization import BarsFetcher
     from carcharoth.modeling.assessment_io import AssessmentPublisher
     from carcharoth.modeling.signal_generator import XGBoostSignalGenerator
@@ -21,10 +22,11 @@ def build_signal_generator(
     config: ModelConfig,
     evaluation_start: date | None = None,
     evaluation_universe: UniverseMetadata | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> XGBoostSignalGenerator:
     from carcharoth.modeling.signal_generator import build_signal_generator as build
 
-    return build(config, evaluation_start, evaluation_universe)
+    return build(config, evaluation_start, evaluation_universe, hmm_store)
 
 
 def train_and_publish(
@@ -35,6 +37,7 @@ def train_and_publish(
     publish_assessment: AssessmentPublisher | None = None,
     *,
     loop_context: dict[str, object] | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> Path:
     from carcharoth.modeling.training import train_and_publish as train
 
@@ -45,6 +48,7 @@ def train_and_publish(
         fetch_calendar,
         publish_assessment,
         loop_context=loop_context,
+        hmm_store=hmm_store,
     )
 
 

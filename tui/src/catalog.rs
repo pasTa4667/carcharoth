@@ -192,6 +192,11 @@ const TRAIN_FIELDS: &[Field] = &[
         "--validation-end",
         "YYYY-MM-DD; overrides training.validation_end",
     ),
+    Field::flag(
+        "--no-hmm",
+        "disable HMM",
+        "train without HMM regime features",
+    ),
     Field::flag("--verbose", "verbose", "INFO console logging"),
 ];
 
@@ -234,6 +239,11 @@ const BACKTEST_FIELDS: &[Field] = &[
         "prepared history",
         "--set",
         "enable prepared history mode",
+    ),
+    Field::flag(
+        "--no-hmm",
+        "disable HMM",
+        "replay an artifact trained without HMM features",
     ),
     Field::flag("--verbose", "verbose", "INFO console logging"),
     Field::flag(
@@ -791,7 +801,8 @@ mod tests {
             "AAPL,MSFT".to_string(),
             OMIT.to_string(),
             "monte_carlo_trades".to_string(),
-            String::new(), // prepared-history text override
+            String::new(),     // prepared-history text override
+            "off".to_string(), // HMM remains enabled
             "on".to_string(),
             "off".to_string(),
         ];
@@ -812,6 +823,16 @@ mod tests {
                 "--verbose",
             ]
         );
+    }
+
+    #[test]
+    fn hmm_opt_out_is_explicit() {
+        for command in ["train model", "run backtest"] {
+            let mut form = form(command);
+            assert!(!form.args(&[]).contains(&"--no-hmm".to_string()));
+            form.set("--no-hmm", "on".to_string());
+            assert!(form.args(&[]).contains(&"--no-hmm".to_string()));
+        }
     }
 
     #[test]

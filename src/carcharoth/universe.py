@@ -12,15 +12,11 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-import numpy as np
-import pandas as pd
 import yaml
-from scipy.cluster.hierarchy import fcluster, linkage
-from scipy.spatial.distance import squareform
 
 from carcharoth.config.universe_config import (
     DESCRIPTOR_NAMES,
@@ -30,6 +26,9 @@ from carcharoth.config.universe_config import (
     snapshot_digest,
 )
 from carcharoth.domain.models import Bar
+
+if TYPE_CHECKING:
+    import numpy as np
 
 _MARKET_TZ = ZoneInfo("America/New_York")
 _FLOOR = 1e-8
@@ -91,6 +90,8 @@ def _descriptors(
     calendar: Sequence[date],
     benchmark_returns: Mapping[date, float],
 ) -> dict[str, float] | None:
+    import numpy as np
+
     ordered = [clean[day] for day in calendar if day in clean]
     returns = _return_series(clean, calendar)
     aligned_days = sorted(set(returns) & set(benchmark_returns))
@@ -145,6 +146,10 @@ def discover(
     config: UniverseDiscoveryConfig,
 ) -> DiscoveryResult:
     """Screen, rank, describe and complete-linkage cluster one frozen window."""
+    import numpy as np
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+
     sessions = sorted(day for day in calendar if config.start <= day <= config.end)
     if not sessions:
         raise ValueError("discovery window contains no trading sessions")
@@ -304,6 +309,9 @@ def publish_snapshot(
     asset_catalogue_retrieved_at: datetime | None = None,
 ) -> Path:
     """Write one immutable, checksummed snapshot using atomic directory rename."""
+    import numpy as np
+    import pandas as pd
+
     root = config.output_root
     root.mkdir(parents=True, exist_ok=True)
     temporary = root / f".universe.tmp-{uuid4().hex}"
@@ -422,6 +430,8 @@ def load_reuse_inputs(
     path: Path, config: UniverseDiscoveryConfig
 ) -> tuple[list[dict[str, str]], list[date], dict[str, list[Bar]], datetime]:
     """Load and checksum frozen source inputs for network-free reclustering."""
+    import pandas as pd
+
     directory = path if path.is_dir() else path.parent
     snapshot = load_snapshot(directory)
     previous = snapshot.discovery

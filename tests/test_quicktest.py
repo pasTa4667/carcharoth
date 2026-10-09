@@ -121,6 +121,7 @@ def test_preload_callers_prepare_targets_and_each_transformed_input(monkeypatch)
     def build(*args, **kwargs):
         model = ScriptedModel({})
         model.prepare_history = Mock()
+        model.prepare_hmm_history = Mock()
         models.append(model)
         return model
 

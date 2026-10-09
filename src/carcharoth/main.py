@@ -15,6 +15,8 @@ through the layered config loader; `--set path=value` applies tracked
 overrides on top.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -35,9 +37,6 @@ from uuid import UUID
 import yaml
 from pydantic import ValidationError
 
-from carcharoth.analysis.analyzer import BacktestAnalyzer
-from carcharoth.analysis.metrics import match_round_trips
-from carcharoth.backtest.runner import BacktestRunner
 from carcharoth.config.loader import (
     CONFIG_DIR,
     ConfigError,
@@ -52,78 +51,19 @@ from carcharoth.config.permutation_config import PermutationConfig
 from carcharoth.config.run_config import RunConfig, run_config_from_stored
 from carcharoth.config.settings import Settings
 from carcharoth.domain.models import BacktestResult, OptimizationResult, RunType
-from carcharoth.engine.engine import TradingEngine
-from carcharoth.engine.scheduler import Scheduler
-from carcharoth.features.session import CalendarFetcher, TradingSession
 from carcharoth.interfaces import BarsFetcher, ByteStore
-from carcharoth.logging_setup import (
-    setup_logging,
-    write_backtest_summary,
-    write_optimize_summary,
-    write_permutation_summary,
-    write_quicktest_summary,
-)
-from carcharoth.modeling import build_signal_generator, train_and_publish
-from carcharoth.modeling.artifact import MANIFEST_FILENAME, REPORT_FILENAME, load_manifest
-from carcharoth.modeling.assessment_io import EligibilityError
-from carcharoth.modeling.eligibility import EligibilityReport
-from carcharoth.optimize.bars_cache import BarsCache
-from carcharoth.performance import Monitor, replay_profile, stage
-from carcharoth.permutation.registry import method_kind
-from carcharoth.permutation.runner import run_monte_carlo_test, run_permutation_test
-from carcharoth.persistence.buffered import (
-    BufferedEquityOnlyRepository,
-    BufferedModelDecisionRepository,
-    BufferedPositionSnapshotRepository,
-    NoOpModelDecisionRepository,
-    WriteBuffer,
-    sqlalchemy_flush,
-)
-from carcharoth.persistence.db import build_engine, build_performance_engine, build_session_factory
-from carcharoth.persistence.repositories import (
-    ModelDecisionRepository,
-    PositionSnapshotRepository,
-    RunRepository,
-    SqlAlchemyAnalysisReader,
-    SqlAlchemyBacktestMetricsRepository,
-    SqlAlchemyConfigurationRepository,
-    SqlAlchemyEligibilityRepository,
-    SqlAlchemyModelDecisionRepository,
-    SqlAlchemyModelDiagnosticsRepository,
-    SqlAlchemyOrderRepository,
-    SqlAlchemyPerformanceRepository,
-    SqlAlchemyPermutationRepository,
-    SqlAlchemyPositionSnapshotRepository,
-    SqlAlchemyRoundTripRepository,
-    SqlAlchemyRunRepository,
-    SqlAlchemyTradeRepository,
-)
-from carcharoth.quicktest.runner import run_quicktest_once
-from carcharoth.risk.basic import BasicRiskManager
-from carcharoth.services.alpaca import (
-    AlpacaAccountService,
-    AlpacaMarketClock,
-    AlpacaMarketDataService,
-    AlpacaOrderExecutor,
-    build_data_client,
-    build_trading_client,
-)
-from carcharoth.services.alpaca.historical import fetch_historical_bars, warmup_window
-from carcharoth.services.alpaca.universe import fetch_sessions
-from carcharoth.services.backtest import HistoricalMarketDataService, SimulatedBroker
-from carcharoth.services.cache.bars import BARS_PREFIX, V1_BARS_PREFIX, PersistentBarsCache
-from carcharoth.services.cache.noop import NoOpCache
-from carcharoth.services.cache.redis_store import build_redis_store
-from carcharoth.services.optuna import (
-    OptunaOptimizer,
-    build_worker_storage,
-    create_or_load_study,
-    prepare_storage_url,
-    summarize_study,
-)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
+
+    from carcharoth.features.session import CalendarFetcher, TradingSession
+    from carcharoth.modeling.eligibility import EligibilityReport
+    from carcharoth.performance import Monitor
+    from carcharoth.persistence.repositories import (
+        ModelDecisionRepository,
+        PositionSnapshotRepository,
+        RunRepository,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +82,9 @@ DEFAULT_PROFILES = {
 
 
 def _calendar_fetcher(settings: Settings) -> CalendarFetcher:
+    from carcharoth.services.alpaca import build_trading_client
+    from carcharoth.services.alpaca.universe import fetch_sessions
+
     @lru_cache(maxsize=32)
     def fetch(start: date, end: date) -> tuple[TradingSession, ...]:
         return tuple(fetch_sessions(build_trading_client(settings), start, end))
@@ -149,8 +92,10 @@ def _calendar_fetcher(settings: Settings) -> CalendarFetcher:
     return fetch
 
 
-def _build_bars_store(settings: Settings, config: RunConfig) -> ByteStore | None:
-    if not (config.cache.enabled and config.cache.bars):
+def _build_cache_store(settings: Settings, config: RunConfig) -> ByteStore | None:
+    from carcharoth.services.cache.redis_store import build_redis_store
+
+    if not (config.cache.enabled and (config.cache.bars or config.cache.hmm)):
         return None
     return build_redis_store(settings.redis_url)
 
@@ -160,6 +105,29 @@ def _model_description(config: RunConfig) -> str:
 
 
 def _run_live(resolved: ResolvedConfig) -> None:
+    from carcharoth.engine.engine import TradingEngine
+    from carcharoth.engine.scheduler import Scheduler
+    from carcharoth.modeling import build_signal_generator
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.persistence.repositories import (
+        SqlAlchemyConfigurationRepository,
+        SqlAlchemyModelDecisionRepository,
+        SqlAlchemyOrderRepository,
+        SqlAlchemyPositionSnapshotRepository,
+        SqlAlchemyRunRepository,
+        SqlAlchemyTradeRepository,
+    )
+    from carcharoth.risk.basic import BasicRiskManager
+    from carcharoth.services.alpaca import (
+        AlpacaAccountService,
+        AlpacaMarketClock,
+        AlpacaMarketDataService,
+        AlpacaOrderExecutor,
+        build_data_client,
+        build_trading_client,
+    )
+    from carcharoth.services.cache.noop import NoOpCache
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = resolved.config
     model = build_signal_generator(config.model, evaluation_universe=config.universe_metadata)
@@ -227,7 +195,7 @@ def run_backtest_once(
     start: datetime,
     end_exclusive: datetime,
     symbols: Sequence[str],
-    session_factory: "sessionmaker[Session]",
+    session_factory: sessionmaker[Session],
     fetch_bars: BarsFetcher,
     show_progress: bool = False,
     verbose_db: bool = False,
@@ -236,6 +204,7 @@ def run_backtest_once(
     profile_output: Path | None = None,
     loop_context: dict[str, Any] | None = None,
     fetch_calendar: CalendarFetcher | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> BacktestResult:
     # All existing callers (including Optuna) remain unmonitored by default.
     with performance_monitor.execution() if performance_monitor else nullcontext():
@@ -253,6 +222,7 @@ def run_backtest_once(
             profile_output,
             loop_context,
             fetch_calendar,
+            hmm_store,
         )
 
 
@@ -261,7 +231,7 @@ def _execute_backtest(
     start: datetime,
     end_exclusive: datetime,
     symbols: Sequence[str],
-    session_factory: "sessionmaker[Session]",
+    session_factory: sessionmaker[Session],
     fetch_bars: BarsFetcher,
     show_progress: bool = False,
     verbose_db: bool = False,
@@ -270,10 +240,38 @@ def _execute_backtest(
     profile_output: Path | None = None,
     loop_context: dict[str, Any] | None = None,
     fetch_calendar: CalendarFetcher | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> BacktestResult:
     """One fully-persisted backtest run: creates the run row, replays the
     window, analyzes. Knows nothing about its caller — manual CLI runs and
     optimizer trials are indistinguishable."""
+    from carcharoth.analysis.analyzer import BacktestAnalyzer
+    from carcharoth.backtest.runner import BacktestRunner
+    from carcharoth.engine.engine import TradingEngine
+    from carcharoth.logging_setup import write_backtest_summary
+    from carcharoth.modeling import build_signal_generator
+    from carcharoth.performance import replay_profile, stage
+    from carcharoth.persistence.buffered import (
+        BufferedEquityOnlyRepository,
+        BufferedModelDecisionRepository,
+        BufferedPositionSnapshotRepository,
+        NoOpModelDecisionRepository,
+        WriteBuffer,
+        sqlalchemy_flush,
+    )
+    from carcharoth.persistence.repositories import (
+        SqlAlchemyAnalysisReader,
+        SqlAlchemyBacktestMetricsRepository,
+        SqlAlchemyEligibilityRepository,
+        SqlAlchemyOrderRepository,
+        SqlAlchemyRoundTripRepository,
+        SqlAlchemyRunRepository,
+        SqlAlchemyTradeRepository,
+    )
+    from carcharoth.risk.basic import BasicRiskManager
+    from carcharoth.services.alpaca.historical import warmup_window
+    from carcharoth.services.backtest import HistoricalMarketDataService, SimulatedBroker
+
     # Validate/load before creating a run row so a bad artifact leaves no
     # unfinished database record.
     with stage("setup"):
@@ -281,6 +279,7 @@ def _execute_backtest(
             config.model,
             evaluation_start=start.date(),
             evaluation_universe=config.universe_metadata,
+            hmm_store=hmm_store,
         )
     runs_repo = SqlAlchemyRunRepository(session_factory)
     started_at = datetime.now(UTC)
@@ -338,6 +337,7 @@ def _execute_backtest(
                 config, bars, symbols, start, end_exclusive, run_id, fetch_calendar,
                 LOG_DIR / "backtests", SqlAlchemyEligibilityRepository(session_factory).save,
                 loop_context,
+                hmm_store if config.cache.hmm else None,
             )
         except Exception:
             logger.warning("backtest %s data diagnostics unavailable", run_id, exc_info=True)
@@ -347,6 +347,8 @@ def _execute_backtest(
         )
     if config.model.prepared_history:
         model.prepare_history(bars, symbols=symbols, start=start, end_exclusive=end_exclusive)
+    else:
+        model.prepare_hmm_history(bars, symbols=symbols)
     total_bars = sum(len(symbol_bars) for symbol_bars in bars.values())
     logger.info("fetched %d bars for %d symbols", total_bars, len(symbols))
 
@@ -423,6 +425,8 @@ def _backtest_permutation_config(config: RunConfig, method_override: str) -> Per
     when absent) with the CLI method override applied. Only trade-based
     methods can run against a finished backtest — bar methods would need to
     re-run the engine per permutation."""
+    from carcharoth.permutation.registry import method_kind
+
     section = config.backtest.permutation or PermutationConfig(method="monte_carlo_trades")
     if method_override:
         section = PermutationConfig.model_validate(
@@ -457,6 +461,25 @@ def _run_backtest(
     profile_output: Path | None = None,
     loop_context: dict[str, Any] | None = None,
 ) -> BacktestResult:
+    from carcharoth.analysis.metrics import match_round_trips
+    from carcharoth.logging_setup import write_permutation_summary
+    from carcharoth.performance import Monitor
+    from carcharoth.permutation.runner import run_monte_carlo_test
+    from carcharoth.persistence.buffered import sqlalchemy_flush
+    from carcharoth.persistence.db import (
+        build_engine,
+        build_performance_engine,
+        build_session_factory,
+    )
+    from carcharoth.persistence.repositories import (
+        SqlAlchemyAnalysisReader,
+        SqlAlchemyPerformanceRepository,
+        SqlAlchemyPermutationRepository,
+    )
+    from carcharoth.services.alpaca import build_data_client
+    from carcharoth.services.alpaca.historical import fetch_historical_bars
+    from carcharoth.services.cache.bars import PersistentBarsCache
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = resolved.config
     watchlist = config.symbols
@@ -467,10 +490,10 @@ def _run_backtest(
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
-    bars_store = _build_bars_store(settings, config)
+    cache_store = _build_cache_store(settings, config)
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
-    if bars_store is not None:
-        fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    if cache_store is not None and config.cache.bars:
+        fetch_bars = PersistentBarsCache(cache_store, fetch_bars)
     telemetry_engine = None
     monitor = None
     if not no_performance:
@@ -524,6 +547,7 @@ def _run_backtest(
             fetch_calendar=(
                 _calendar_fetcher(settings) if config.backtest.check_data_coverage else None
             ),
+            hmm_store=cache_store if config.cache.hmm else None,
         )
         if permutation is not None:
             # Monte carlo the finished run's closed trades — read back from
@@ -579,6 +603,14 @@ def _optimize_view_or_exit(config: RunConfig) -> OptimizeConfig:
 
 
 def _run_optimize(resolved: ResolvedConfig) -> None:
+    from carcharoth.logging_setup import write_optimize_summary
+    from carcharoth.optimize.bars_cache import BarsCache
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.services.alpaca import build_data_client
+    from carcharoth.services.alpaca.historical import fetch_historical_bars
+    from carcharoth.services.cache.bars import PersistentBarsCache
+    from carcharoth.services.optuna import OptunaOptimizer, prepare_storage_url
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     config = resolved.config
     optimize_config = _optimize_view_or_exit(config)
@@ -604,19 +636,27 @@ def _run_optimize(resolved: ResolvedConfig) -> None:
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
-    # One data client + in-process/persistent bars cache for the whole study.
+    # One data client + shared persistent cache for the whole study.
     fetch_calendar = _calendar_fetcher(settings)
-    bars_store = _build_bars_store(settings, config)
+    cache_store = _build_cache_store(settings, config)
     upstream: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
-    if bars_store is not None:
-        upstream = PersistentBarsCache(bars_store, upstream)
+    if cache_store is not None and config.cache.bars:
+        upstream = PersistentBarsCache(cache_store, upstream)
     fetch_bars: BarsFetcher = BarsCache(upstream)
 
     def run_trial_backtest(
         config: RunConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
     ) -> BacktestResult:
-        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars,
-                                 fetch_calendar=fetch_calendar)
+        return run_backtest_once(
+            config,
+            start,
+            end_exclusive,
+            symbols,
+            session_factory,
+            fetch_bars,
+            fetch_calendar=fetch_calendar,
+            hmm_store=cache_store if config.cache.hmm else None,
+        )
 
     optimizer = OptunaOptimizer(
         run_backtest=run_trial_backtest,
@@ -665,6 +705,18 @@ def _optimize_worker(
     parent resolved and asserts the config hash matches — a mismatch means
     the config changed on disk mid-run. The parent writes the summary.
     """
+    from carcharoth.logging_setup import setup_logging
+    from carcharoth.optimize.bars_cache import BarsCache
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.services.alpaca import build_data_client
+    from carcharoth.services.alpaca.historical import fetch_historical_bars
+    from carcharoth.services.cache.bars import PersistentBarsCache
+    from carcharoth.services.optuna import (
+        OptunaOptimizer,
+        build_worker_storage,
+        prepare_storage_url,
+    )
+
     setup_logging(LOG_DIR, console_level="WARNING", filename_suffix=f".w{worker_index}")
     # Stagger startup so the workers' initial full-window bar fetches don't
     # hit Alpaca in the same instant (the bars cache is per-process).
@@ -685,19 +737,27 @@ def _optimize_worker(
 
     db_engine = build_engine(settings.database_url, pool_size=2, max_overflow=2)
     session_factory = build_session_factory(db_engine)
-    # Each worker connects to the persistent bars cache itself.
+    # Each worker connects to the shared persistent cache itself.
     fetch_calendar = _calendar_fetcher(settings)
-    bars_store = _build_bars_store(settings, config)
+    cache_store = _build_cache_store(settings, config)
     upstream: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
-    if bars_store is not None:
-        upstream = PersistentBarsCache(bars_store, upstream)
+    if cache_store is not None and config.cache.bars:
+        upstream = PersistentBarsCache(cache_store, upstream)
     fetch_bars: BarsFetcher = BarsCache(upstream)
 
     def run_trial_backtest(
         config: RunConfig, start: datetime, end_exclusive: datetime, symbols: Sequence[str]
     ) -> BacktestResult:
-        return run_backtest_once(config, start, end_exclusive, symbols, session_factory, fetch_bars,
-                                 fetch_calendar=fetch_calendar)
+        return run_backtest_once(
+            config,
+            start,
+            end_exclusive,
+            symbols,
+            session_factory,
+            fetch_bars,
+            fetch_calendar=fetch_calendar,
+            hmm_store=cache_store if config.cache.hmm else None,
+        )
 
     optimizer = OptunaOptimizer(
         run_backtest=run_trial_backtest,
@@ -721,6 +781,9 @@ def _run_optimize_parallel(
     optimize_config: OptimizeConfig,
     storage_url: str,
 ) -> None:
+    from carcharoth.logging_setup import write_optimize_summary
+    from carcharoth.services.optuna import create_or_load_study, summarize_study
+
     # Fail fast in the parent instead of in every worker at once.
     validate_override_paths(resolved.raw, optimize_config.search_space)
     n_trials = optimize_config.study.n_trials
@@ -824,6 +887,16 @@ def _log_optimize_result(result: OptimizationResult, storage_url: str) -> None:
 
 
 def _run_analyze(run_id: UUID) -> None:
+    from carcharoth.analysis.analyzer import BacktestAnalyzer
+    from carcharoth.logging_setup import write_backtest_summary
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.persistence.repositories import (
+        SqlAlchemyAnalysisReader,
+        SqlAlchemyBacktestMetricsRepository,
+        SqlAlchemyRoundTripRepository,
+        SqlAlchemyRunRepository,
+    )
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
@@ -864,6 +937,9 @@ def _run_analyze(run_id: UUID) -> None:
 
 
 def _publish_eligibility(settings: Settings, report: EligibilityReport) -> None:
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.persistence.repositories import SqlAlchemyEligibilityRepository
+
     db_engine = build_engine(settings.database_url)
     try:
         SqlAlchemyEligibilityRepository(build_session_factory(db_engine)).save(report)
@@ -874,18 +950,28 @@ def _publish_eligibility(settings: Settings, report: EligibilityReport) -> None:
 def _run_train(
     resolved: ResolvedConfig, loop_context: dict[str, Any] | None = None,
 ) -> Path:
+    from carcharoth.modeling import train_and_publish
+    from carcharoth.modeling.artifact import MANIFEST_FILENAME, REPORT_FILENAME, load_manifest
+    from carcharoth.modeling.assessment_io import EligibilityError
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.persistence.repositories import SqlAlchemyModelDiagnosticsRepository
+    from carcharoth.services.alpaca import build_data_client
+    from carcharoth.services.alpaca.historical import fetch_historical_bars
+    from carcharoth.services.cache.bars import PersistentBarsCache
+
     settings = Settings()  # type: ignore[call-arg]
     config = resolved.config
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
-    bars_store = _build_bars_store(settings, config)
-    if bars_store is not None:
-        fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    cache_store = _build_cache_store(settings, config)
+    if cache_store is not None and config.cache.bars:
+        fetch_bars = PersistentBarsCache(cache_store, fetch_bars)
     try:
         artifact = train_and_publish(
             config, resolved.hash, fetch_bars,
             _calendar_fetcher(settings),
             partial(_publish_eligibility, settings),
             loop_context=loop_context,
+            hmm_store=cache_store if config.cache.hmm else None,
         )
     except EligibilityError as exc:
         raise SystemExit(str(exc)) from None
@@ -927,6 +1013,8 @@ def _run_train(
 
 
 def _cache_store_or_exit() -> ByteStore:
+    from carcharoth.services.cache.redis_store import build_redis_store
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     store = build_redis_store(settings.redis_url, resilient=False)
     if store is None:
@@ -937,6 +1025,8 @@ def _cache_store_or_exit() -> ByteStore:
 
 
 def _run_cache_stats() -> None:
+    from carcharoth.services.cache.bars import BARS_PREFIX, V1_BARS_PREFIX
+
     store = _cache_store_or_exit()
     print(f"  bars v1 entries:  {store.count_prefix(V1_BARS_PREFIX)}")
     print(f"  bars v2 chunks:   {store.count_prefix(BARS_PREFIX)}")
@@ -946,6 +1036,8 @@ def _run_cache_stats() -> None:
 
 
 def _run_cache_clear(bars_version: str = "v2") -> None:
+    from carcharoth.services.cache.bars import BARS_PREFIX, V1_BARS_PREFIX
+
     store = _cache_store_or_exit()
     for version, prefix in (("v1", V1_BARS_PREFIX), ("v2", BARS_PREFIX)):
         if bars_version in (version, "all"):
@@ -953,6 +1045,9 @@ def _run_cache_clear(bars_version: str = "v2") -> None:
 
 
 def _run_delete(run_id: UUID | None, all_backtests: bool, all_quicktests: bool = False) -> None:
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.persistence.repositories import SqlAlchemyRunRepository
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
@@ -1013,6 +1108,22 @@ def _run_quicktest(
 
     With ``--permute`` it becomes the baseline of a permutation test.
     """
+    from carcharoth.logging_setup import write_permutation_summary, write_quicktest_summary
+    from carcharoth.permutation.registry import method_kind
+    from carcharoth.permutation.runner import run_monte_carlo_test, run_permutation_test
+    from carcharoth.persistence.buffered import sqlalchemy_flush
+    from carcharoth.persistence.db import build_engine, build_session_factory
+    from carcharoth.persistence.repositories import (
+        SqlAlchemyBacktestMetricsRepository,
+        SqlAlchemyPermutationRepository,
+        SqlAlchemyRoundTripRepository,
+        SqlAlchemyRunRepository,
+    )
+    from carcharoth.quicktest.runner import run_quicktest_once
+    from carcharoth.services.alpaca import build_data_client
+    from carcharoth.services.alpaca.historical import fetch_historical_bars
+    from carcharoth.services.cache.bars import PersistentBarsCache
+
     settings = Settings()  # type: ignore[call-arg]  # values come from .env
     base_config = resolved.config
     try:
@@ -1029,10 +1140,10 @@ def _run_quicktest(
 
     db_engine = build_engine(settings.database_url)
     session_factory = build_session_factory(db_engine)
-    bars_store = _build_bars_store(settings, base_config)
+    cache_store = _build_cache_store(settings, base_config)
     fetch_bars: BarsFetcher = partial(fetch_historical_bars, build_data_client(settings))
-    if bars_store is not None:
-        fetch_bars = PersistentBarsCache(bars_store, fetch_bars)
+    if cache_store is not None and base_config.cache.bars:
+        fetch_bars = PersistentBarsCache(cache_store, fetch_bars)
     started_at = datetime.now(UTC)
     permutation_outcome = None
     try:
@@ -1050,6 +1161,7 @@ def _run_quicktest(
                 flush=sqlalchemy_flush(session_factory),
                 round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
                 metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
+                hmm_store=cache_store if base_config.cache.hmm else None,
             )
             if permutation is not None:
                 # Trade-shuffle methods need no re-simulation: monte-carlo the
@@ -1073,6 +1185,7 @@ def _run_quicktest(
                 round_trips_repo=SqlAlchemyRoundTripRepository(session_factory),
                 metrics_repo=SqlAlchemyBacktestMetricsRepository(session_factory),
                 permutation_repo=SqlAlchemyPermutationRepository(session_factory),
+                hmm_store=cache_store if base_config.cache.hmm else None,
             )
     finally:
         db_engine.dispose()
@@ -1269,6 +1382,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ("--validation-end", "validation_end"),
     ):
         train.add_argument(flag, dest=destination, type=_parse_date, default=None)
+    train.add_argument(
+        "--no-hmm", action="store_true", help="train without HMM regime features"
+    )
     train.add_argument("--verbose", action="store_true", help="enable INFO console logging")
 
     loop = subparsers.add_parser("backtest-loop", help="run independent expanding-window backtests")
@@ -1290,6 +1406,9 @@ def _build_parser() -> argparse.ArgumentParser:
     loop.add_argument("--snapshot", type=Path, required=True)
     loop.add_argument("--bucket", required=True)
     loop.add_argument("--prepared-history", choices=("true", "false"), default="false")
+    loop.add_argument(
+        "--no-hmm", action="store_true", help="train and replay without HMM regime features"
+    )
     loop.add_argument("--dry-run", action="store_true")
     loop.add_argument("--json", action="store_true", help="JSON preview (requires --dry-run)")
     loop.add_argument("--verbose", action="store_true", help="enable INFO console logging")
@@ -1302,6 +1421,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=lambda s: s.split(","),
         default=None,
         help="comma-separated override of the symbol universe",
+    )
+    backtest.add_argument(
+        "--no-hmm", action="store_true", help="replay an artifact trained without HMM features"
     )
     backtest.add_argument("--verbose", action="store_true", help="enable INFO console logging")
     backtest.add_argument(
@@ -1434,6 +1556,8 @@ def _run_universe_discover(config_path: Path, reuse_data: Path | None) -> None:
     """Standalone path: deliberately does not initialize DB, Redis, engine, or models."""
     from carcharoth.config.universe_config import UniverseDiscoveryConfig
     from carcharoth.domain.models import Timeframe
+    from carcharoth.services.alpaca import build_data_client, build_trading_client
+    from carcharoth.services.alpaca.historical import fetch_historical_bars
     from carcharoth.services.alpaca.universe import fetch_assets, fetch_calendar
     from carcharoth.universe import discover, load_reuse_inputs, publish_snapshot
 
@@ -1518,6 +1642,7 @@ def _run_backtest_loop(args: argparse.Namespace) -> None:
         start=args.start,
         artifact=args.artifact,
         prepared_history=args.prepared_history == "true",
+        hmm_enabled=not args.no_hmm,
         label=args.label,
         profile=args.profile or "backtest",
     )
@@ -1528,6 +1653,8 @@ def _run_backtest_loop(args: argparse.Namespace) -> None:
     if args.dry_run:
         print(json.dumps(preview(options, plans), indent=2))
         return
+    from carcharoth.logging_setup import setup_logging
+
     setup_logging(LOG_DIR, console_level="INFO" if args.verbose else "WARNING")
     execute_loop(
         options,
@@ -1557,15 +1684,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(json.dumps(catalogue, indent=2) if args.json else yaml.safe_dump(catalogue))
         return
 
-    console_level = (
-        "INFO" if args.command == "run" or getattr(args, "verbose", False) else "WARNING"
-    )
-    setup_logging(LOG_DIR, console_level=console_level)
-
-    if args.command == "universe":
-        _run_universe_discover(args.config, args.reuse_data)
-        return
-
     if args.command == "config":
         overrides = _parse_set(getattr(args, "set", None))
         if args.config_command == "list":
@@ -1582,6 +1700,17 @@ def main(argv: Sequence[str] | None = None) -> None:
             print(json.dumps(RunConfig.model_json_schema(), indent=2))
         return
 
+    from carcharoth.logging_setup import setup_logging
+
+    console_level = (
+        "INFO" if args.command == "run" or getattr(args, "verbose", False) else "WARNING"
+    )
+    setup_logging(LOG_DIR, console_level=console_level)
+
+    if args.command == "universe":
+        _run_universe_discover(args.config, args.reuse_data)
+        return
+
     if args.command in DEFAULT_PROFILES:
         profile = args.profile or DEFAULT_PROFILES[args.command]
         overrides = _parse_set(args.set)
@@ -1591,6 +1720,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             overrides["data.start"] = args.start.date()
         if getattr(args, "end", None) is not None:
             overrides["data.end"] = args.end.date()
+        if args.command in {"train", "backtest"} and args.no_hmm:
+            overrides["model.hmm.enabled"] = False
         if args.command == "train":
             for field in (
                 "train_start",

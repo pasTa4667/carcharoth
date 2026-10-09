@@ -100,6 +100,11 @@ pub const FIELDS: &[Field] = &[
         &["false", "true"],
         "opt-in: batch initialization can differ from rolling live history",
     ),
+    Field::flag(
+        "--no-hmm",
+        "disable HMM",
+        "train and replay without HMM regime features",
+    ),
     Field::flag("--verbose", "verbose", "INFO console logging"),
 ];
 
@@ -522,6 +527,10 @@ mod tests {
             .any(|v| v == ["--prepared-history", "false"]));
         assert!(args.windows(2).any(|v| v == ["--train-period", "yearly"]));
         assert!(!args.contains(&"--artifact".to_string()));
+        assert!(!args.contains(&"--no-hmm".to_string()));
+        form.set("--no-hmm", "on".into());
+        assert!(form.args(&[]).contains(&"--no-hmm".to_string()));
+        form.set("--no-hmm", "off".into());
         form.preview = Some(json!({"windows": []}));
         form.preview_args = args.clone();
         assert_eq!(form.ready_args(&[]).unwrap(), args);

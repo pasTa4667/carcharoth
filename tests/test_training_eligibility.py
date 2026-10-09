@@ -18,6 +18,7 @@ def inputs(tmp_path, mode="drop"):
     raw["symbols"] = ["AAPL", "APC"]
     raw["model"]["features"] = [{"name": "log_return", "params": {"period": 1}}]
     raw["model"]["target"] = {"type": "regression", "horizon_bars": 2}
+    raw["model"]["hmm"]["enabled"] = False
     raw["model"]["xgboost_params"] = {"num_boost_round": 3}
     raw["training"].update(
         train_start="2024-01-02",

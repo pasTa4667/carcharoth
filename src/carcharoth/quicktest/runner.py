@@ -17,7 +17,8 @@ from carcharoth.analysis.objective import MissingMetricError, fitness_metric_nam
 from carcharoth.config.app_config import ObjectiveConfig
 from carcharoth.config.quicktest_config import QuickTestConfig
 from carcharoth.domain.models import Bar, MetricValue, RunType
-from carcharoth.features.pipeline import FeaturePipeline
+from carcharoth.features.pipeline import build_feature_pipeline
+from carcharoth.interfaces.cache import ByteStore
 from carcharoth.interfaces.optimization import BarsFetcher
 from carcharoth.modeling.signal_generator import build_signal_generator
 from carcharoth.persistence.buffered import FlushFn, WriteBuffer
@@ -44,11 +45,7 @@ class QuickTestOutcome:
 
 
 def fetch_quicktest_bars(config: QuickTestConfig, fetch_bars: BarsFetcher) -> dict[str, list[Bar]]:
-    pipeline = FeaturePipeline(
-        config.model.features,
-        config.model.timeframe_minutes,
-        config.model.benchmark_symbol,
-    )
+    pipeline = build_feature_pipeline(config.model)
     spec = pipeline.required_bars()
     symbols = list(dict.fromkeys([*config.symbols, config.model.benchmark_symbol]))
     return fetch_bars(
@@ -72,11 +69,13 @@ def simulate_and_analyze(
     config: QuickTestConfig,
     objectives: Mapping[str, ObjectiveConfig],
     bars: Mapping[str, list[Bar]],
+    hmm_store: ByteStore | None = None,
 ) -> tuple[QuickTestResult, list[RoundTrip], list[MetricValue]]:
     model = build_signal_generator(
         config.model,
         evaluation_start=config.start,
         evaluation_universe=config.universe_metadata,
+        hmm_store=hmm_store,
     )
     if config.model.prepared_history:
         model.prepare_history(
@@ -85,6 +84,8 @@ def simulate_and_analyze(
             start=config.start_dt,
             end_exclusive=config.end_exclusive_dt,
         )
+    else:
+        model.prepare_hmm_history(bars, symbols=config.symbols)
     settings = simulation_settings(config)
     result = QuickTestResult(capital_per_symbol=config.capital)
     benchmark = bars.get(config.model.benchmark_symbol, [])
@@ -114,6 +115,7 @@ def run_quicktest_once(
     metrics_repo: BacktestMetricsRepository,
     bars_transform: BarsTransform | None = None,
     bars: dict[str, list[Bar]] | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> QuickTestOutcome:
     started_at = datetime.now(UTC)
     if bars is None:
@@ -128,7 +130,7 @@ def run_quicktest_once(
         config.start,
         config.end,
     )
-    result, round_trips, metrics = simulate_and_analyze(config, objectives, bars)
+    result, round_trips, metrics = simulate_and_analyze(config, objectives, bars, hmm_store)
     run_id = persist_quicktest(
         config,
         result,

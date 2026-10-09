@@ -108,7 +108,8 @@ def validate_artifact(
     if manifest.schema_hash != pipeline.schema_hash:
         raise ArtifactError(
             f"feature schema mismatch: artifact={manifest.schema_hash} "
-            f"runtime={pipeline.schema_hash}"
+            f"runtime={pipeline.schema_hash}; HMM-enabled and --no-hmm runs require "
+            "separately trained matching artifacts"
         )
     if manifest.feature_names != list(pipeline.feature_names):
         raise ArtifactError("artifact feature order does not match runtime pipeline")

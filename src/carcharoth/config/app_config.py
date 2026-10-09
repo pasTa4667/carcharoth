@@ -58,6 +58,12 @@ class HmmDetectorConfig(StrictModel):
     adx_period: int = Field(default=14, gt=1)
 
 
+class ModelHmmConfig(HmmDetectorConfig):
+    """HMM posterior features appended to the XGBoost feature matrix."""
+
+    enabled: bool = True
+
+
 class RegimeConfig(StrictModel):
     """Standalone detector config retained for possible future model context."""
 
@@ -142,6 +148,7 @@ class ModelConfig(StrictModel):
     features: list[FeatureSpecConfig] = Field(min_length=1)
     target: TargetConfig = RegressionTargetConfig()
     decision: DecisionPolicyConfig = DecisionPolicyConfig()
+    hmm: ModelHmmConfig = ModelHmmConfig()
     #: Native xgboost params; objective/eval_metric/seed are owned by the adapter.
     xgboost_params: dict[str, bool | int | float | str] = Field(default_factory=dict)
 
@@ -219,6 +226,8 @@ class CacheConfig(StrictModel):
     enabled: bool = True
     #: historical Alpaca bars, gap-filled per (timeframe, symbol)
     bars: bool = True
+    #: fitted HMMs and historical posterior tables
+    hmm: bool = True
 
 
 class ObjectiveConfig(StrictModel):

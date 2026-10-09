@@ -9,8 +9,9 @@ from uuid import UUID
 from carcharoth.config.loader import config_hash
 from carcharoth.config.run_config import RunConfig
 from carcharoth.domain.models import Bar
-from carcharoth.features.pipeline import FeaturePipeline
+from carcharoth.features.pipeline import build_feature_pipeline
 from carcharoth.features.session import CalendarFetcher
+from carcharoth.interfaces.cache import ByteStore
 from carcharoth.modeling.artifact import MANIFEST_FILENAME, load_manifest
 from carcharoth.modeling.assessment_io import (
     AssessmentPublisher,
@@ -33,10 +34,9 @@ def report_backtest_eligibility(
     output_dir: Path,
     publish: AssessmentPublisher | None = None,
     loop_context: dict[str, object] | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> EligibilityReport:
-    pipeline = FeaturePipeline(
-        config.model.features, config.model.timeframe_minutes, config.model.benchmark_symbol
-    )
+    pipeline = build_feature_pipeline(config.model, hmm_store)
     report = EligibilityReport(
         scope="backtest",
         config_hash=config_hash(config),

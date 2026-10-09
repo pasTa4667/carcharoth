@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from carcharoth.config.permutation_config import PermutationConfig
     from carcharoth.config.quicktest_config import QuickTestConfig
     from carcharoth.domain.models import Bar, MetricValue
+    from carcharoth.interfaces.cache import ByteStore
     from carcharoth.interfaces.optimization import BarsFetcher
     from carcharoth.persistence.buffered import FlushFn
     from carcharoth.persistence.repositories import (
@@ -138,6 +139,8 @@ def build_permutation_context(
                 start=config.start_dt,
                 end_exclusive=config.end_exclusive_dt,
             )
+        else:
+            model.prepare_hmm_history(permuted_bars, symbols=config.symbols)
         settings = simulation_settings(config)
         result = QuickTestResult(capital_per_symbol=config.capital)
         benchmark = permuted_bars.get(config.model.benchmark_symbol, [])
@@ -411,6 +414,7 @@ def run_permutation_test(
     metrics_repo: BacktestMetricsRepository,
     permutation_repo: PermutationRepository,
     workers: int | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> tuple[QuickTestOutcome, PermutationTestOutcome]:
     """Baseline quicktest (persisted as a normal QUICKTEST run) + N permuted
     re-runs, then one batched write of the verdict and per-permutation rows."""
@@ -431,6 +435,7 @@ def run_permutation_test(
         round_trips_repo=round_trips_repo,
         metrics_repo=metrics_repo,
         bars=bars,
+        hmm_store=hmm_store,
     )
     observed_score = observed_fitness(baseline.metrics, config.objective)
 

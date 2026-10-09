@@ -6,14 +6,14 @@ from uuid import uuid4
 import pytest
 import yaml
 
-from carcharoth.backtest.loop import LoopOptions, add_months, execute_loop, plan_loop
+from carcharoth.backtest.loop import LoopOptions, add_months, execute_loop, plan_loop, preview
 from carcharoth.config.universe_config import (
     UniverseDiscoveryConfig,
     UniverseSnapshot,
     snapshot_digest,
 )
 from carcharoth.domain.models import BacktestResult
-from carcharoth.features.pipeline import FeaturePipeline
+from carcharoth.features.pipeline import build_feature_pipeline
 from carcharoth.main import main
 from carcharoth.modeling.artifact import ArtifactManifest, file_sha256
 
@@ -42,7 +42,7 @@ def artifact(tmp_path, resolved):
     (path / "model.ubj").write_bytes(b"model")
     config = resolved.config
     model = config.model
-    pipeline = FeaturePipeline(model.features, model.timeframe_minutes, model.benchmark_symbol)
+    pipeline = build_feature_pipeline(model)
     manifest = ArtifactManifest(
         model_id="test-model",
         model_sha256=file_sha256(path / "model.ubj"),
@@ -84,6 +84,10 @@ def test_expanding_windows_and_owned_overrides(options):
     assert not first.model.prepared_history
     assert first.symbols == ["AAPL", "MSFT"]
     assert plan_loop(replace(options, prepared_history=True))[0].config.model.prepared_history
+    no_hmm = plan_loop(replace(options, hmm_enabled=False))
+    assert all(not plan.config.model.hmm.enabled for plan in no_hmm)
+    preview_window = preview(replace(options, hmm_enabled=False), no_hmm)["windows"][0]
+    assert preview_window["hmm_enabled"] is False
 
 
 @pytest.mark.parametrize("period,months", [("quarterly", 3), ("half-year", 6), ("yearly", 12)])
@@ -210,7 +214,7 @@ def test_cli_execution_uses_stage_return_values(options, tmp_path, monkeypatch, 
 
     monkeypatch.setattr("carcharoth.main._run_train", train)
     monkeypatch.setattr("carcharoth.main._run_backtest", backtest)
-    monkeypatch.setattr("carcharoth.main.setup_logging", lambda *a, **kw: None)
+    monkeypatch.setattr("carcharoth.logging_setup.setup_logging", lambda *a, **kw: None)
     monkeypatch.setattr("carcharoth.main.Settings", lambda: pytest.fail("real service initialized"))
     main(
         [
@@ -260,6 +264,7 @@ def test_dry_run_json_without_services(options, monkeypatch, capsys):
             str(options.snapshot),
             "--bucket",
             "all",
+            "--no-hmm",
             "--dry-run",
             "--json",
         ]
@@ -268,3 +273,4 @@ def test_dry_run_json_without_services(options, monkeypatch, capsys):
     assert result["iterations"] == 2
     assert result["windows"][1]["backtest"]["start"] == "2021-07-01"
     assert result["windows"][0]["artifact"] is None
+    assert result["windows"][0]["hmm_enabled"] is False

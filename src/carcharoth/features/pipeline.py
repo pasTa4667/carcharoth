@@ -13,12 +13,18 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from carcharoth.config.app_config import FeatureSpecConfig
+from carcharoth.config.app_config import FeatureSpecConfig, ModelConfig, ModelHmmConfig
 from carcharoth.domain.models import Bar, BarSpec, FeatureVector, Timeframe
 from carcharoth.features.base import Feature
 from carcharoth.features.registry import build_feature
 from carcharoth.features.session import regular_session_bars
+from carcharoth.interfaces.cache import ByteStore
 from carcharoth.performance import increment
+from carcharoth.regime.hmm.context import (
+    CONTEXT_IMPLEMENTATION_VERSION,
+    HMM_CONTEXT_NAMES,
+    HmmModelContext,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +70,8 @@ class FeaturePipeline:
         specs: Sequence[FeatureSpecConfig],
         timeframe_minutes: int,
         benchmark_symbol: str,
+        hmm_config: ModelHmmConfig | None = None,
+        hmm_store: ByteStore | None = None,
     ) -> None:
         if not specs:
             raise ValueError("at least one feature is required")
@@ -87,12 +95,31 @@ class FeaturePipeline:
             duplicates = sorted({name for name in names if names.count(name) > 1})
             raise ValueError(f"duplicate feature output names: {duplicates}")
         self._features = tuple(features)
+        self._hmm = (
+            HmmModelContext(hmm_config, timeframe_minutes, hmm_store)
+            if hmm_config is not None and hmm_config.enabled
+            else None
+        )
+        if self._hmm is not None:
+            for name in HMM_CONTEXT_NAMES:
+                descriptors.append(
+                    FeatureDescriptor(
+                        registry_name="hmm_probability",
+                        output_name=name,
+                        params=self._hmm.descriptor_params | {"output": name},
+                        implementation_version=CONTEXT_IMPLEMENTATION_VERSION,
+                    )
+                )
+            names.extend(HMM_CONTEXT_NAMES)
+        if len(names) != len(set(names)):
+            raise ValueError("HMM output names conflict with configured model features")
         self._descriptors = tuple(descriptors)
         self._names = tuple(names)
-        self._spec = BarSpec(
-            timeframe=self._timeframe,
-            lookback=max(feature.required_bars(self._timeframe) for feature in features),
-        )
+        lookback = max(feature.required_bars(self._timeframe) for feature in features)
+        if self._hmm is not None:
+            lookback = max(lookback, self._hmm.required_bars())
+        self._spec = BarSpec(timeframe=self._timeframe, lookback=lookback)
+        self._prepared_hmm: dict[str, _PreparedHistory] = {}
         canonical = json.dumps(
             {
                 "timeframe_minutes": timeframe_minutes,
@@ -131,13 +158,11 @@ class FeaturePipeline:
     def required_bars(self) -> BarSpec:
         return self._spec
 
-    def compute_matrix(
+    def _compute_technical_matrix(
         self,
         symbol_bars: Sequence[Bar],
         benchmark_bars: Sequence[Bar],
     ) -> tuple[tuple[Bar, ...], npt.NDArray[np.float64]]:
-        """All feature rows in linear/vectorized passes (NaN during warm-up)."""
-        increment("feature_matrices")
         bars = tuple(sorted(regular_session_bars(symbol_bars), key=lambda bar: bar.timestamp))
         if not bars:
             return bars, np.empty((0, len(self._features)), dtype=np.float64)
@@ -151,6 +176,19 @@ class FeaturePipeline:
             feature.compute_series(bars, benchmark, self._timeframe) for feature in self._features
         ]
         return bars, np.column_stack(columns).astype(np.float64, copy=False)
+
+    def compute_matrix(
+        self,
+        symbol_bars: Sequence[Bar],
+        benchmark_bars: Sequence[Bar],
+    ) -> tuple[tuple[Bar, ...], npt.NDArray[np.float64]]:
+        """All feature rows in linear/vectorized passes (NaN during warm-up)."""
+        increment("feature_matrices")
+        bars, matrix = self._compute_technical_matrix(symbol_bars, benchmark_bars)
+        if bars and self._hmm is not None:
+            hmm = self._hmm.compute_series(bars[0].symbol, bars)
+            matrix = np.column_stack((matrix, hmm))
+        return bars, matrix
 
     def prepare_history(
         self,
@@ -182,15 +220,41 @@ class FeaturePipeline:
             self._schema_hash,
         )
 
+    def prepare_hmm_history(self, symbol: str, bars: Sequence[Bar]) -> None:
+        """Prepare only HMM context for replay while technical features stay rolling."""
+        if self._hmm is None:
+            return
+        ordered = tuple(sorted(regular_session_bars(bars), key=lambda bar: bar.timestamp))
+        matrix = self._hmm.compute_series(symbol, ordered)
+        matrix.flags.writeable = False
+        self._prepared_hmm[symbol] = _PreparedHistory(
+            MappingProxyType({bar.timestamp: i for i, bar in enumerate(ordered)}),
+            matrix,
+            HMM_CONTEXT_NAMES,
+            self._schema_hash,
+        )
+
     def compute(
         self,
         symbol_bars: Sequence[Bar],
         benchmark_bars: Sequence[Bar],
     ) -> FeatureVector | None:
-        bars, matrix = self.compute_matrix(symbol_bars, benchmark_bars)
+        # Technical features remain vectorized over bounded rolling history. HMM
+        # context is either a precomputed replay lookup or one incremental detector.
+        hmm = self._hmm
+        increment("feature_matrices")
+        bars, matrix = self._compute_technical_matrix(symbol_bars, benchmark_bars)
         if not bars:
             return None
         values = matrix[-1]
+        if hmm is not None:
+            symbol = bars[-1].symbol
+            prepared = self._prepared_hmm.get(symbol)
+            context = prepared.lookup(bars[-1].timestamp) if prepared is not None else None
+            hmm_values = context.values if context is not None else hmm.latest(symbol, bars)
+            if hmm_values is None:
+                return None
+            values = np.concatenate((values, np.asarray(hmm_values, dtype=np.float64)))
         if not np.isfinite(values).all():
             return None
         return FeatureVector(
@@ -199,3 +263,16 @@ class FeaturePipeline:
             schema_hash=self._schema_hash,
             as_of=bars[-1].timestamp,
         )
+
+
+def build_feature_pipeline(
+    config: ModelConfig, hmm_store: ByteStore | None = None
+) -> FeaturePipeline:
+    """The single schema construction path for training and inference."""
+    return FeaturePipeline(
+        config.features,
+        config.timeframe_minutes,
+        config.benchmark_symbol,
+        config.hmm,
+        hmm_store,
+    )

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from carcharoth.config.app_config import ModelConfig, RegimeConfig
 from carcharoth.config.loader import load_profile
 from carcharoth.config.run_config import RunConfig, run_config_from_stored
+from carcharoth.main import _build_parser
 
 
 @pytest.mark.parametrize(
@@ -21,7 +22,16 @@ def test_model_defaults_to_regression_and_spy() -> None:
     model = load_profile("training").config.model
     assert model.target.type == "regression"
     assert model.benchmark_symbol == "SPY"
+    assert model.hmm.enabled
+    assert load_profile("training").config.cache.hmm
     assert len(model.features) == 18
+
+
+@pytest.mark.parametrize("command", ["train", "backtest"])
+def test_hmm_opt_out_cli_is_explicit(command: str) -> None:
+    parser = _build_parser()
+    assert not parser.parse_args([command]).no_hmm
+    assert parser.parse_args([command, "--no-hmm"]).no_hmm
 
 
 def test_classification_target_is_swappable() -> None:

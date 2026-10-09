@@ -43,6 +43,23 @@ model:
     - {name: benchmark_return, params: {period: 20}}
     - {name: time_of_day, params: {component: sin}}
     - {name: time_of_day, params: {component: cos}}
+  hmm:
+    enabled: true
+    evaluate_interval_minutes: 30
+    n_states: 4
+    training_window: 1560
+    refit_interval_bars: 78
+    min_confidence: 0.5
+    seed: 42
+    n_restarts: 2
+    covariance_type: diag
+    n_iter: 100
+    tol: 0.001
+    min_covar: 0.001
+    winsorize_sigma: 5.0
+    vol_window: 20
+    ema_period: 50
+    adx_period: 14
   decision:
     long_entry_threshold: 0.0005
     short_entry_threshold: -0.0005
@@ -112,6 +129,7 @@ optimization:
 cache:
   enabled: true
   bars: true
+  hmm: true
 
 objectives:
   default:

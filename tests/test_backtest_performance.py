@@ -131,7 +131,7 @@ def test_setup_failure_finalizes_before_run_id_exists() -> None:
     monitor = Monitor()
     config = load_profile("backtest").config
     with (
-        patch("carcharoth.main.build_signal_generator", side_effect=ValueError("bad artifact")),
+        patch("carcharoth.modeling.build_signal_generator", side_effect=ValueError("bad artifact")),
         pytest.raises(ValueError, match="bad artifact"),
     ):
         run_backtest_once(

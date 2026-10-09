@@ -109,6 +109,31 @@ A backtest/quicktest window must start strictly after the artifact's validation 
 rejects missing/corrupt artifacts, model hashes, task/schema/config mismatches, and in-sample
 windows.
 
+### HMM regime features and A/B runs
+
+Training and inference include four HMM regime-probability features by default. HMM fits and exact
+historical posterior tables are cached in Redis when `cache.enabled` and `cache.hmm` are true, so
+repeating the same period and input bars avoids the expensive cold calculation.
+
+A model trained with HMM columns cannot be replayed without those columns. Train and select a
+separate artifact for a clean no-HMM comparison:
+
+```bash
+uv run carcharoth train -p training --no-hmm
+uv run carcharoth backtest --no-hmm \
+  --set model.artifact_path=artifacts/models/<no-hmm-id>
+
+# Expanding-window A/B: run once normally and once with --no-hmm.
+uv run carcharoth backtest-loop --train --iterations 2 \
+  --train-start 2020-01-01 --snapshot artifacts/universes/<id>/buckets.yaml --bucket all
+uv run carcharoth backtest-loop --train --iterations 2 --no-hmm \
+  --train-start 2020-01-01 --snapshot artifacts/universes/<id>/buckets.yaml --bucket all
+```
+
+The TUI exposes the same unchecked-by-default **disable HMM** control on training, backtest, and
+backtest-loop forms. For quicktest or optimization with a no-HMM artifact, use
+`--set model.hmm.enabled=false`.
+
 ### Frozen universe grouping
 
 Universe discovery is a manual offline preprocessing step, never an application-startup task:

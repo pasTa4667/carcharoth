@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from carcharoth.config.loader import ResolvedConfig, load_profile
 from carcharoth.domain.models import BacktestResult
-from carcharoth.features.pipeline import FeaturePipeline
+from carcharoth.features.pipeline import build_feature_pipeline
 from carcharoth.modeling.artifact import MANIFEST_FILENAME, load_manifest, validate_artifact
 
 PERIODS = {"quarterly": 3, "half-year": 6, "yearly": 12}
@@ -36,6 +36,7 @@ class LoopOptions:
     artifact: Path | None = None
     start: date | None = None
     prepared_history: bool = False
+    hmm_enabled: bool = True
     label: str = ""
     profile: str = "backtest"
 
@@ -99,6 +100,7 @@ def plan_loop(
         "universe.snapshot": str(options.snapshot),
         "universe.bucket": options.bucket,
         "model.prepared_history": options.prepared_history,
+        "model.hmm.enabled": options.hmm_enabled,
         "model.artifact_path": None if options.train else str(options.artifact),
     }
     if not options.train:
@@ -116,7 +118,7 @@ def plan_loop(
         model = config.model
         validate_artifact(
             options.artifact,
-            FeaturePipeline(model.features, model.timeframe_minutes, model.benchmark_symbol),
+            build_feature_pipeline(model),
             model,
             evaluation_start=config.data.start,
             evaluation_universe=config.universe_metadata,
@@ -181,6 +183,7 @@ def preview(options: LoopOptions, plans: list[ResolvedConfig]) -> dict[str, Any]
                 "universe": resolved.config.universe.model_dump(mode="json"),
                 "symbol_count": len(resolved.config.symbols),
                 "prepared_history": resolved.config.model.prepared_history,
+                "hmm_enabled": resolved.config.model.hmm.enabled,
                 "config_hash": resolved.hash,
             }
             for i, resolved in enumerate(plans, 1)

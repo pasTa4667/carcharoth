@@ -16,8 +16,9 @@ from carcharoth.domain.models import (
     Position,
     TargetExposure,
 )
-from carcharoth.features.pipeline import FeaturePipeline, _PreparedHistory
+from carcharoth.features.pipeline import FeaturePipeline, _PreparedHistory, build_feature_pipeline
 from carcharoth.features.session import minutes_until_close
+from carcharoth.interfaces.cache import ByteStore
 from carcharoth.interfaces.model_signal import ModelSignalGenerator
 from carcharoth.modeling.artifact import ArtifactManifest, validate_artifact
 from carcharoth.modeling.decision import DecisionPolicy
@@ -67,6 +68,12 @@ class XGBoostSignalGenerator(ModelSignalGenerator):
                 increment("preparation_rows", len(table.rows))
         self._prepared = replacement
         self._last_attempt.clear()
+
+    def prepare_hmm_history(
+        self, bars_by_symbol: Mapping[str, Sequence[Bar]], *, symbols: Sequence[str]
+    ) -> None:
+        for symbol in dict.fromkeys(symbols):
+            self._pipeline.prepare_hmm_history(symbol, bars_by_symbol.get(symbol, []))
 
     def market_requirements(self) -> MarketDataRequirements:
         return MarketDataRequirements(
@@ -149,14 +156,11 @@ def build_signal_generator(
     config: ModelConfig,
     evaluation_start: date | None = None,
     evaluation_universe: UniverseMetadata | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> XGBoostSignalGenerator:
     if config.artifact_path is None:
         raise ValueError("model.artifact_path must be explicitly selected for this command")
-    pipeline = FeaturePipeline(
-        config.features,
-        config.timeframe_minutes,
-        config.benchmark_symbol,
-    )
+    pipeline = build_feature_pipeline(config, hmm_store)
     manifest, model_path = validate_artifact(
         config.artifact_path,
         pipeline,

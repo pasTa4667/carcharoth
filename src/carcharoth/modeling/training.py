@@ -18,8 +18,9 @@ import xgboost
 
 from carcharoth.config.run_config import RunConfig
 from carcharoth.domain.models import ModelTask
-from carcharoth.features.pipeline import FeaturePipeline
+from carcharoth.features.pipeline import FeaturePipeline, build_feature_pipeline
 from carcharoth.features.session import CalendarFetcher
+from carcharoth.interfaces.cache import ByteStore
 from carcharoth.interfaces.optimization import BarsFetcher
 from carcharoth.modeling.artifact import (
     MANIFEST_FILENAME,
@@ -69,14 +70,11 @@ def train_and_publish(
     publish_assessment: AssessmentPublisher | None = None,
     *,
     loop_context: dict[str, object] | None = None,
+    hmm_store: ByteStore | None = None,
 ) -> Path:
     model = config.model
     training = config.training
-    pipeline = FeaturePipeline(
-        model.features,
-        model.timeframe_minutes,
-        model.benchmark_symbol,
-    )
+    pipeline = build_feature_pipeline(model, hmm_store)
     report = EligibilityReport(
         config_hash=config_hash,
         policy=training.eligibility,

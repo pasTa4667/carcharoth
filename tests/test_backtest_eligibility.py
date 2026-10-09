@@ -10,6 +10,7 @@ from tests.test_training_eligibility import inputs
 def test_report_only_uses_features_not_future_labels_and_preserves_inputs(tmp_path):
     config, bars, calendar = inputs(tmp_path)
     config.model.artifact_path = None
+    config.model.hmm.enabled = False
     config.model.target.horizon_bars = 500
     before = copy.deepcopy(bars)
     symbols = list(config.symbols)
