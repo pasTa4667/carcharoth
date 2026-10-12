@@ -34,8 +34,14 @@ These flags leave trading config hashes unchanged. See the [performance runbook]
 ## Backtest loops
 
 `backtest-loop` and the **Backtest Loop** TUI tab share Python schedule validation. Select a
-positive iteration count, a frozen universe artifact and bucket, and a 3/6/12-month backtest
-period. With `--train`, supply `--train-start`, `--train-period` and `--validation-period`.
+positive iteration count, a frozen universe artifact, and a 3/6/12-month backtest period.
+Select one bucket with `--bucket`, or every published bucket with `--all-buckets`.
+The TUI **all buckets** toggle is off by default. Turning it on hides the single-bucket selector.
+All-bucket execution includes the combined `all` bucket and excludes diagnostic undersized clusters.
+Each bucket runs the requested iterations sequentially with its own loop UUID and the shared label.
+Every bucket is validated before any execution. Without training, the artifact must be compatible
+with every selected bucket. A failure stops the invocation, including remaining buckets.
+With `--train`, supply `--train-start`, `--train-period` and `--validation-period`.
 Training keeps its original start and expands one backtest period each iteration; validation
 and backtest move forward with unchanged durations. Without training, `--artifact` and
 `--start` are required, and artifact manifest dates supply training chronology for validation.
@@ -50,8 +56,9 @@ backtest must end before today UTC. Models are freshly trained, not incrementall
 
 `--dry-run --json` previews and validates without credentials, network calls or database access.
 `universe list --root artifacts/universes --json` lists validated snapshots and bucket sizes.
-TUI F2 refreshes selectors, F3 previews, Enter confirms Start; edits invalidate the preview.
-The Output tab reports loop ID, iteration, stage, dates, artifact and resulting run ID.
+TUI F2 refreshes selectors. Enter previews the schedule with bucket names and iteration numbers.
+Press Enter again to confirm Start. Edits invalidate the preview.
+The Output tab reports bucket, loop ID, iteration, stage, dates, artifact, and resulting run ID.
 
 Apply migration `e1f2a3b4c5d6` (`uv run alembic upgrade head`) before execution. The first failed
 stage stops the loop; training failures cannot fall back to an old model. Each backtest uses

@@ -234,6 +234,200 @@ def test_cli_execution_uses_stage_return_values(options, tmp_path, monkeypatch, 
     assert "complete (2 backtests)" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_cli_all_buckets(options, tmp_path, monkeypatch, capsys, dry_run):
+    events = []
+
+    def train(resolved, context):
+        folder = tmp_path / f"stage-{len(events)}"
+        folder.mkdir()
+        path = artifact(folder, resolved)
+        events.append(
+            (
+                "train",
+                resolved.config.universe.bucket,
+                context["iteration"],
+                context["loop_id"],
+                path,
+            )
+        )
+        return path
+
+    def backtest(resolved, *, verbose, loop_context):
+        events.append(
+            (
+                "backtest",
+                resolved.config.universe.bucket,
+                loop_context["iteration"],
+                loop_context["loop_id"],
+                resolved.config.model.artifact_path,
+            )
+        )
+        return BacktestResult(uuid4(), [])
+
+    monkeypatch.setattr("carcharoth.main._run_train", train)
+    monkeypatch.setattr("carcharoth.main._run_backtest", backtest)
+    monkeypatch.setattr("carcharoth.logging_setup.setup_logging", lambda *a, **kw: None)
+    monkeypatch.setattr("carcharoth.main.Settings", lambda: pytest.fail("service initialized"))
+    args = [
+        "backtest-loop",
+        "--iterations",
+        "2",
+        "--train",
+        "--train-start",
+        "2020-01-01",
+        "--snapshot",
+        str(options.snapshot),
+        "--all-buckets",
+    ]
+    main(args + (["--dry-run", "--json"] if dry_run else []))
+    output = capsys.readouterr().out
+    if dry_run:
+        result = json.loads(output)
+        assert result["buckets"] == ["all", "bucket-001"]
+        assert [(w["universe"]["bucket"], w["iteration"]) for w in result["windows"]] == [
+            ("all", 1),
+            ("all", 2),
+            ("bucket-001", 1),
+            ("bucket-001", 2),
+        ]
+        assert [w["backtest"]["start"] for w in result["windows"]] == [
+            "2021-04-01",
+            "2021-07-01",
+            "2021-04-01",
+            "2021-07-01",
+        ]
+        assert events == []
+    else:
+        assert [(stage, bucket, iteration) for stage, bucket, iteration, _, _ in events] == [
+            ("train", "all", 1),
+            ("backtest", "all", 1),
+            ("train", "all", 2),
+            ("backtest", "all", 2),
+            ("train", "bucket-001", 1),
+            ("backtest", "bucket-001", 1),
+            ("train", "bucket-001", 2),
+            ("backtest", "bucket-001", 2),
+        ]
+        assert len({event[3] for event in events[:4]}) == 1
+        assert len({event[3] for event in events[4:]}) == 1
+        assert events[0][3] != events[4][3]
+        assert all(events[i][4] == events[i + 1][4] for i in range(0, 8, 2))
+        assert "universe bucket: bucket-001" in output
+
+
+def test_cli_all_buckets_with_fixed_artifact(options, tmp_path, monkeypatch, capsys):
+    path = artifact(tmp_path, plan_loop(options)[0])
+    monkeypatch.setattr("carcharoth.main.Settings", lambda: pytest.fail("service initialized"))
+    main(
+        [
+            "backtest-loop",
+            "--iterations",
+            "2",
+            "--snapshot",
+            str(options.snapshot),
+            "--all-buckets",
+            "--artifact",
+            str(path),
+            "--start",
+            "2021-04-01",
+            "--dry-run",
+            "--json",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["train"] is False
+    assert [
+        (w["universe"]["bucket"], w["iteration"], w["artifact"]) for w in result["windows"]
+    ] == [
+        ("all", 1, str(path)),
+        ("all", 2, str(path)),
+        ("bucket-001", 1, str(path)),
+        ("bucket-001", 2, str(path)),
+    ]
+
+
+def test_cli_all_buckets_preflights_every_bucket(options, monkeypatch):
+    planned = []
+
+    def reject_later_bucket(bucket_options, overrides):
+        planned.append(bucket_options.bucket)
+        if bucket_options.bucket == "bucket-001":
+            raise ValueError("later bucket rejected")
+        return plan_loop(bucket_options, overrides)
+
+    monkeypatch.setattr("carcharoth.backtest.loop.plan_loop", reject_later_bucket)
+    monkeypatch.setattr(
+        "carcharoth.main._run_backtest", lambda *a, **kw: pytest.fail("replay started")
+    )
+    monkeypatch.setattr(
+        "carcharoth.logging_setup.setup_logging", lambda *a, **kw: pytest.fail("execution started")
+    )
+    with pytest.raises(SystemExit, match="later bucket rejected"):
+        main(
+            [
+                "backtest-loop",
+                "--iterations",
+                "1",
+                "--snapshot",
+                str(options.snapshot),
+                "--all-buckets",
+                "--train",
+                "--train-start",
+                "2020-01-01",
+            ]
+        )
+    assert planned == ["all", "bucket-001"]
+
+
+def test_cli_all_buckets_excludes_diagnostics_and_stops_on_failure(options, monkeypatch, capsys):
+    from carcharoth.config.universe_config import load_universe_snapshot
+
+    snapshot = load_universe_snapshot(options.snapshot)
+    snapshot.buckets["bucket-001"] = ["AAPL"]
+    snapshot.undersized_clusters = [["MSFT"]]
+    snapshot.content_digest = snapshot_digest(snapshot)
+    options.snapshot.write_text(yaml.safe_dump(snapshot.model_dump(mode="json")))
+    args = [
+        "backtest-loop",
+        "--iterations",
+        "1",
+        "--snapshot",
+        str(options.snapshot),
+        "--all-buckets",
+        "--train",
+        "--train-start",
+        "2020-01-01",
+    ]
+    main([*args, "--dry-run", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert [(w["universe"]["bucket"], w["symbol_count"]) for w in result["windows"]] == [
+        ("all", 2),
+        ("bucket-001", 1),
+    ]
+    seen = []
+
+    def fail_train(resolved, context):
+        seen.append(resolved.config.universe.bucket)
+        raise ValueError("training failed")
+
+    monkeypatch.setattr("carcharoth.main._run_train", fail_train)
+    monkeypatch.setattr("carcharoth.logging_setup.setup_logging", lambda *a, **kw: None)
+    with pytest.raises(ValueError, match="training failed"):
+        main(args)
+    assert seen == ["all"]
+
+
+def test_cli_bucket_selection_is_exclusive(options):
+    args = ["backtest-loop", "--iterations", "1", "--snapshot", str(options.snapshot)]
+    with pytest.raises(SystemExit) as missing:
+        main(args)
+    assert missing.value.code == 2
+    with pytest.raises(SystemExit) as both:
+        main([*args, "--bucket", "all", "--all-buckets"])
+    assert both.value.code == 2
+
+
 def test_local_universe_listing(options, monkeypatch, capsys):
     from carcharoth.universe import list_snapshots
 

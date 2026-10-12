@@ -452,8 +452,13 @@ impl App {
                     Ok(args) => {
                         self.modal = Modal::Confirm {
                             message: format!(
-                                "Run {} independent backtests{}?\\n\\n{}",
+                                "Run {} independent backtests{}{}?\\n\\n{}",
                                 self.backtest_loop.value("iterations"),
+                                if self.backtest_loop.all_buckets() {
+                                    " per bucket for all published buckets"
+                                } else {
+                                    ""
+                                },
                                 if self.backtest_loop.training() {
                                     " with fresh training each time"
                                 } else {

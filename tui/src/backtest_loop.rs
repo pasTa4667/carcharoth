@@ -86,6 +86,11 @@ pub const FIELDS: &[Field] = &[
         &[],
         "select a frozen universe first; F2 refreshes",
     ),
+    Field::flag(
+        "--all-buckets",
+        "all buckets",
+        "run every published bucket sequentially, including the combined all bucket",
+    ),
     Field::choice(
         "bucket",
         "universe bucket",
@@ -166,6 +171,9 @@ impl LoopForm {
     pub fn training(&self) -> bool {
         self.value("--train") == "on"
     }
+    pub fn all_buckets(&self) -> bool {
+        self.value("--all-buckets") == "on"
+    }
 
     pub fn visible(&self) -> Vec<usize> {
         FIELDS
@@ -175,6 +183,7 @@ impl LoopForm {
                 let visible = match f.key {
                     "train-start" | "train-period" | "validation-period" => self.training(),
                     "artifact" | "start" => !self.training(),
+                    "bucket" => !self.all_buckets(),
                     _ => true,
                 };
                 visible.then_some(i)
@@ -224,7 +233,10 @@ impl LoopForm {
     }
 
     fn check_required(&self) -> Result<()> {
-        let mut required = vec!["profile", "iterations", "snapshot", "bucket"];
+        let mut required = vec!["profile", "iterations", "snapshot"];
+        if !self.all_buckets() {
+            required.push("bucket");
+        }
         if self.training() {
             required.push("train-start");
         } else {
@@ -353,13 +365,20 @@ impl LoopForm {
             .iter()
             .find(|s| s["path"].as_str() == Some(self.value("snapshot")))
             .map(|s| {
+                let selection = if self.all_buckets() {
+                    format!(
+                        "{} buckets",
+                        s["buckets"].as_object().map(|b| b.len()).unwrap_or(0)
+                    )
+                } else {
+                    format!("{} members", s["buckets"][self.value("bucket")])
+                };
                 format!(
-                    "discovery ends {} · {} members · survivorship-biased",
-                    s["discovery_end"].as_str().unwrap_or("?"),
-                    s["buckets"][self.value("bucket")]
+                    "discovery ends {} · {selection} · survivorship-biased",
+                    s["discovery_end"].as_str().unwrap_or("?")
                 )
             })
-            .unwrap_or_else(|| "select a universe artifact, then a bucket (F2 refresh)".into())
+            .unwrap_or_else(|| "select a universe artifact (F2 refresh)".into())
     }
 
     pub fn request_preview(&mut self, overrides: &[(String, String)]) -> Result<()> {
@@ -540,6 +559,66 @@ mod tests {
         assert!(form.preview.is_none());
         form.set("iterations", "0".into());
         assert!(form.check_required().is_err());
+    }
+
+    #[test]
+    fn all_buckets_toggle_hides_selection_and_invalidates_preview() {
+        let mut form = LoopForm::default();
+        for (key, value) in [
+            ("--train", "on"),
+            ("train-start", "2020-01-01"),
+            ("snapshot", "a"),
+        ] {
+            form.set(key, value.into());
+        }
+        form.load_snapshots(&json!({"snapshots": [{
+            "path": "a", "buckets": {"all": 10, "bucket-001": 4}
+        }]}));
+        assert!(!form.all_buckets());
+        assert!(form.check_required().is_err());
+        form.cursor = form
+            .visible()
+            .iter()
+            .position(|i| *i == index("--all-buckets"))
+            .unwrap();
+        form.edit(KeyCode::Char(' '));
+        assert!(form.all_buckets());
+        assert!(!form.visible().contains(&index("bucket")));
+        assert!(form.check_required().is_ok());
+        let args = form.args(&[]);
+        assert!(args.contains(&"--all-buckets".into()));
+        assert!(!args.contains(&"--bucket".into()));
+        assert!(form.universe_hint().contains("2 buckets"));
+        form.preview = Some(json!({"windows": []}));
+        form.preview_args = args.clone();
+        assert_eq!(form.ready_args(&[]).unwrap(), args);
+        form.edit(KeyCode::Right);
+        assert!(!form.all_buckets());
+        assert!(form.preview.is_none());
+        assert!(form.visible().contains(&index("bucket")));
+        assert!(form.check_required().is_err());
+        form.cursor = form
+            .visible()
+            .iter()
+            .position(|i| *i == index("bucket"))
+            .unwrap();
+        form.edit(KeyCode::Right);
+        assert_eq!(form.value("bucket"), "all");
+        form.edit(KeyCode::Right);
+        assert_eq!(form.value("bucket"), "bucket-001");
+        assert!(form.check_required().is_ok());
+        assert!(form
+            .args(&[])
+            .windows(2)
+            .any(|v| v == ["--bucket", "bucket-001"]));
+        form.cursor = form
+            .visible()
+            .iter()
+            .position(|i| *i == index("--all-buckets"))
+            .unwrap();
+        form.edit(KeyCode::Right);
+        form.edit(KeyCode::Left);
+        assert_eq!(form.value("bucket"), "bucket-001");
     }
 
     #[test]

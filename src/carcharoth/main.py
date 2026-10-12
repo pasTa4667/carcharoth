@@ -1404,7 +1404,13 @@ def _build_parser() -> argparse.ArgumentParser:
             f"--{flag}", choices=("quarterly", "half-year", "yearly"), default=default
         )
     loop.add_argument("--snapshot", type=Path, required=True)
-    loop.add_argument("--bucket", required=True)
+    buckets = loop.add_mutually_exclusive_group(required=True)
+    buckets.add_argument("--bucket", help="run one published universe bucket")
+    buckets.add_argument(
+        "--all-buckets",
+        action="store_true",
+        help="run every published bucket, including 'all', sequentially",
+    )
     loop.add_argument("--prepared-history", choices=("true", "false"), default="false")
     loop.add_argument(
         "--no-hmm", action="store_true", help="train and replay without HMM regime features"
@@ -1626,14 +1632,17 @@ def _run_universe_discover(config_path: Path, reuse_data: Path | None) -> None:
 
 
 def _run_backtest_loop(args: argparse.Namespace) -> None:
+    from dataclasses import replace
+
     from carcharoth.backtest.loop import LoopOptions, execute_loop, plan_loop, preview
+    from carcharoth.config.universe_config import load_universe_snapshot
 
     if args.json and not args.dry_run:
         raise SystemExit("--json requires --dry-run")
     options = LoopOptions(
         iterations=args.iterations,
         snapshot=args.snapshot,
-        bucket=args.bucket,
+        bucket=args.bucket or "all",
         train=args.train,
         train_start=args.train_start,
         train_period=args.train_period,
@@ -1647,23 +1656,41 @@ def _run_backtest_loop(args: argparse.Namespace) -> None:
         profile=args.profile or "backtest",
     )
     try:
-        plans = plan_loop(options, _parse_set(args.set))
+        bucket_names = (
+            sorted(load_universe_snapshot(options.snapshot).buckets)
+            if args.all_buckets
+            else [options.bucket]
+        )
+        overrides = _parse_set(args.set)
+        batches: list[tuple[LoopOptions, list[ResolvedConfig]]] = []
+        for bucket in bucket_names:
+            bucket_options = replace(options, bucket=bucket)
+            batches.append((bucket_options, plan_loop(bucket_options, overrides)))
     except (ValueError, ConfigError) as exc:
         raise SystemExit(str(exc)) from exc
     if args.dry_run:
-        print(json.dumps(preview(options, plans), indent=2))
+        output = preview(*batches[0])
+        output["buckets"] = bucket_names
+        output["windows"] = [
+            window
+            for bucket_options, plans in batches
+            for window in preview(bucket_options, plans)["windows"]
+        ]
+        print(json.dumps(output, indent=2))
         return
     from carcharoth.logging_setup import setup_logging
 
     setup_logging(LOG_DIR, console_level="INFO" if args.verbose else "WARNING")
-    execute_loop(
-        options,
-        plans,
-        _run_train,
-        lambda resolved, context: _run_backtest(
-            resolved, verbose=args.verbose, loop_context=context
-        ),
-    )
+    for bucket_options, plans in batches:
+        print(f"universe bucket: {bucket_options.bucket}", flush=True)
+        execute_loop(
+            bucket_options,
+            plans,
+            _run_train,
+            lambda resolved, context: _run_backtest(
+                resolved, verbose=args.verbose, loop_context=context
+            ),
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -231,8 +231,10 @@ Each loop iteration assesses independently and keeps its own linked audit trail.
 Apply `uv run alembic upgrade head` before using loop grouping. In the Rust TUI, open
 **Backtest Loop**: **F2** refreshes model/universe artifacts. Press **Enter** to validate
 and show all windows in the right pane, review them, then press **Enter** again to confirm
-Start. Choose the universe artifact first, then its bucket. **PgUp/PgDn** scroll the preview;
-Output shows progress and **x** cancels the loop.
+Start. Choose the universe artifact first. Turn **all buckets** on to run every published
+bucket sequentially, including the combined `all` bucket. Leave it off to select one bucket.
+The iteration count applies to each bucket. The preview identifies each bucket and iteration.
+**PgUp/PgDn** scroll the preview. Output shows progress and **x** cancels the invocation.
 
 Set the iteration count and backtest period (quarterly / half-year / yearly). Training is
 opt-in: set its original start, **initial** training period, and validation period. Training
@@ -257,6 +259,11 @@ uv run carcharoth backtest-loop --iterations 4 --label fixed-model \
   --snapshot artifacts/universes/<id>/buckets.yaml --bucket bucket-001 \
   --prepared-history true --dry-run --json
 ```
+
+Replace `--bucket all` with `--all-buckets` to run all published buckets. Diagnostic undersized
+clusters are excluded. Each bucket gets its own loop UUID with the same optional label.
+The CLI validates every bucket before execution starts. With training off, the selected artifact
+must be compatible with every bucket, or the entire invocation fails before any backtest.
 
 Periods are 3/6/12 calendar months from the chosen start (month-end days are clamped without
 cumulative drift). All backtests must finish before today UTC. The first error stops the loop;

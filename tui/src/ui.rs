@@ -260,7 +260,11 @@ fn draw_loop(frame: &mut Frame, app: &App, area: Rect) {
             let text =
                 |section: &str, key: &str| window[section][key].as_str().unwrap_or("?").to_string();
             preview.push(Line::styled(
-                format!("Iteration {}", window["iteration"]),
+                format!(
+                    "{} · Iteration {}",
+                    text("universe", "bucket"),
+                    window["iteration"]
+                ),
                 Style::default().fg(ACCENT),
             ));
             if form.training() {
@@ -298,7 +302,9 @@ fn draw_loop(frame: &mut Frame, app: &App, area: Rect) {
         preview.push(Line::raw("Fix the settings and press Enter to retry."));
     } else {
         preview.push(Line::raw("Enter: validate and preview all windows."));
-        preview.push(Line::raw("Choose universe artifact, then bucket."));
+        preview.push(Line::raw(
+            "Choose a universe, then all buckets or one bucket.",
+        ));
         preview.push(Line::raw("Each backtest starts with fresh capital."));
     }
     frame.render_widget(
@@ -604,7 +610,7 @@ fn help_text() -> String {
          Promote   diffs the source profile (plus overrides) against {}; space\n\
          selects values, Enter validates and writes them to {}.\n\
          \n\
-         Backtest Loop  choose universe then bucket; training is optional.\n\
+         Backtest Loop  choose universe, then all buckets or one; training is optional.\n\
          F2 refreshes artifacts; Enter previews, then Enter again confirms Start.\n\
          Preview has a 30s timeout; x cancels it. PgUp/PgDn scroll windows. Every backtest resets capital and positions.\n\
          \n\
@@ -657,6 +663,31 @@ mod tests {
         // Tiny terminals should degrade without panicking.
         let mut tiny = Terminal::new(TestBackend::new(25, 8)).unwrap();
         tiny.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn loop_bucket_toggle_and_preview_are_visible() {
+        let mut app = App {
+            screen: Screen::BacktestLoop,
+            ..App::default()
+        };
+        let fields = app.backtest_loop.visible();
+        app.backtest_loop.cursor = fields
+            .iter()
+            .position(|i| crate::backtest_loop::FIELDS[*i].key == "--all-buckets")
+            .unwrap();
+        assert!(screen(&mut app).contains("all buckets"));
+        app.backtest_loop.edit(crossterm::event::KeyCode::Char(' '));
+        let text = screen(&mut app);
+        assert!(text.contains("all buckets"));
+        assert!(!text.contains("universe bucket"));
+        app.backtest_loop.preview = Some(serde_json::json!({"windows": [
+            {"iteration": 1, "universe": {"bucket": "all"}, "backtest": {"start": "2021-04-01", "end": "2021-06-30"}},
+            {"iteration": 1, "universe": {"bucket": "bucket-001"}, "backtest": {"start": "2021-04-01", "end": "2021-06-30"}}
+        ]}));
+        let text = screen(&mut app);
+        assert!(text.contains("all · Iteration 1"));
+        assert!(text.contains("bucket-001 · Iteration 1"));
     }
 
     #[test]
