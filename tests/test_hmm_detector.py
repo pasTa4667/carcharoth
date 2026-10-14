@@ -1,8 +1,11 @@
 """HMM regime detector: end-to-end classification on synthetic phases,
 warm-up, determinism, refit cadence and fit-failure fallback."""
 
+from datetime import UTC, datetime
+
 import numpy as np
 import pytest
+from hmmlearn.hmm import GaussianHMM
 
 from carcharoth.regime.hmm.detector import HmmRegimeDetector
 from carcharoth.regime.models import Regime
@@ -165,6 +168,68 @@ def test_models_are_kept_per_symbol() -> None:
     assert up is not None and down is not None
     assert up.regime is Regime.TRENDING_UP
     assert down.regime is Regime.TRENDING_DOWN
+
+
+def test_degenerate_transition_fit_returns_none() -> None:
+    rng = np.random.default_rng(0)
+    observations = rng.normal(0, 0.01, (100, 4))
+    observations[-3:] = np.eye(4)[:3] * 10
+    detector = make_detector(training_window=100, seed=0)
+
+    assert detector._fit("AAPL", observations, datetime(2026, 1, 1, tzinfo=UTC)) is None
+
+
+def test_degenerate_restart_does_not_prevent_valid_assessment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_fit = GaussianHMM.fit
+    attempts = 0
+
+    def fit_with_degenerate_first_restart(
+        model: GaussianHMM,
+        observations: np.ndarray,
+    ) -> GaussianHMM:
+        nonlocal attempts
+        original_fit(model, observations)
+        attempts += 1
+        if attempts == 1:
+            model.transmat_[0] = 0.0
+        return model
+
+    monkeypatch.setattr(GaussianHMM, "fit", fit_with_degenerate_first_restart)
+    bars = make_bars(phase_prices(["calm", "wild", "down", "up"]), hl_range=0.3)
+    assessment = make_detector().assess("AAPL", bars)
+
+    assert attempts == 2
+    assert assessment is not None
+    assert assessment.regime is Regime.TRENDING_UP
+    assert assessment.probabilities is not None
+    assert sum(assessment.probabilities.values()) == pytest.approx(1.0)
+
+
+def test_degenerate_refit_keeps_previous_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    detector = make_detector(refit_interval_bars=5)
+    bars = make_bars(phase_prices(["up", "down", "calm", "wild"]), hl_range=0.3)
+    required = detector.required_lookback()
+    assert detector.assess("AAPL", bars[:required]) is not None
+    previous = detector._models["AAPL"]
+    original_fit = GaussianHMM.fit
+
+    def fit_with_degenerate_transitions(
+        model: GaussianHMM,
+        observations: np.ndarray,
+    ) -> GaussianHMM:
+        original_fit(model, observations)
+        model.transmat_[0] = 0.0
+        return model
+
+    monkeypatch.setattr(GaussianHMM, "fit", fit_with_degenerate_transitions)
+    assessment = detector.assess("AAPL", bars[: required + 5])
+
+    assert assessment is not None
+    assert assessment.probabilities is not None
+    assert sum(assessment.probabilities.values()) == pytest.approx(1.0)
+    assert detector._models["AAPL"] is previous
 
 
 def test_rejects_invalid_construction() -> None:

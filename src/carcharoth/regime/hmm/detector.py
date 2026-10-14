@@ -240,4 +240,8 @@ class HmmRegimeDetector(RegimeDetector):
 
     def _is_valid_fit(self, model: GaussianHMM) -> bool:
         params = (model.transmat_, model.means_, model.covars_, model.startprob_)
-        return all(np.all(np.isfinite(np.asarray(p))) for p in params)
+        return bool(
+            all(np.all(np.isfinite(np.asarray(p))) for p in params)
+            and np.allclose(model.transmat_.sum(axis=1), 1.0)
+            and np.allclose(model.startprob_.sum(), 1.0)
+        )
